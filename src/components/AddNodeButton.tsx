@@ -3,6 +3,7 @@ import { useReactFlow } from '@xyflow/react'
 import { generateNodeId } from '../utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from '../utils/imageUtils'
 import { fetchLinkMetadata, isUrl, extractDomain } from '../utils/linkUtils'
+import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
 
 export function AddNodeButton() {
   const { addNodes, screenToFlowPosition, updateNodeData } = useReactFlow()
@@ -11,6 +12,7 @@ export function AddNodeButton() {
   const [linkUrl, setLinkUrl] = useState('')
   const [fetchingLink, setFetchingLink] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const pdfInputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const linkInputRef = useRef<HTMLInputElement>(null)
 
@@ -73,6 +75,38 @@ export function AddNodeButton() {
     [addNodes, getCenterPosition],
   )
 
+  const handleAddPdf = useCallback(() => {
+    pdfInputRef.current?.click()
+    setMenuOpen(false)
+  }, [])
+
+  const handlePdfFileChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      if (!file || !isPdfFile(file)) return
+
+      const pdfDataUrl = await readFileAsDataUrl(file)
+      const { thumbnailDataUrl, pageCount } =
+        await renderPdfThumbnail(pdfDataUrl)
+
+      addNodes({
+        id: generateNodeId(),
+        type: 'pdfCard',
+        position: getCenterPosition(),
+        data: {
+          pdfDataUrl,
+          fileName: file.name,
+          label: '',
+          thumbnailDataUrl,
+          pageCount,
+        },
+      })
+
+      e.target.value = ''
+    },
+    [addNodes, getCenterPosition],
+  )
+
   const handleLinkSubmit = useCallback(async () => {
     const trimmed = linkUrl.trim()
     if (!trimmed || fetchingLink) return
@@ -126,6 +160,7 @@ export function AddNodeButton() {
         handleLinkSubmit()
       }
       if (e.key === 'Escape') {
+        setMenuOpen(false)
         setLinkInputMode(false)
         setLinkUrl('')
       }
@@ -146,6 +181,13 @@ export function AddNodeButton() {
                 value={linkUrl}
                 onChange={(e) => setLinkUrl(e.target.value)}
                 onKeyDown={handleLinkKeyDown}
+                onBlur={() => {
+                  if (!fetchingLink) {
+                    setMenuOpen(false)
+                    setLinkInputMode(false)
+                    setLinkUrl('')
+                  }
+                }}
                 placeholder="Paste a URL..."
                 disabled={fetchingLink}
                 className="w-full text-sm text-gray-700 bg-transparent outline-none placeholder:text-gray-400 min-w-[200px]"
@@ -175,6 +217,12 @@ export function AddNodeButton() {
               >
                 Link Card
               </button>
+              <button
+                onClick={handleAddPdf}
+                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
+              >
+                PDF Card
+              </button>
             </>
           )}
         </div>
@@ -193,6 +241,14 @@ export function AddNodeButton() {
         type="file"
         accept="image/*"
         onChange={handleFileChange}
+        className="hidden"
+        aria-hidden="true"
+      />
+      <input
+        ref={pdfInputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        onChange={handlePdfFileChange}
         className="hidden"
         aria-hidden="true"
       />

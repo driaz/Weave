@@ -12,15 +12,18 @@ import {
 import { TextCardNode } from './components/TextCardNode'
 import { ImageCardNode } from './components/ImageCardNode'
 import { LinkCardNode } from './components/LinkCardNode'
+import { PdfCardNode } from './components/PdfCardNode'
 import { AddNodeButton } from './components/AddNodeButton'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
+import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 
 const nodeTypes = {
   textCard: TextCardNode,
   imageCard: ImageCardNode,
   linkCard: LinkCardNode,
+  pdfCard: PdfCardNode,
 }
 
 const initialNodes: Node[] = [
@@ -51,21 +54,21 @@ export function App() {
       event.preventDefault()
 
       const files = Array.from(event.dataTransfer.files)
-      const imageFiles = files.filter(isImageFile)
-      if (imageFiles.length === 0) return
-
       const instance = reactFlowRef.current
       if (!instance) return
 
       const clientX = event.clientX
       const clientY = event.clientY
+      let offset = 0
 
+      // Handle image files
+      const imageFiles = files.filter(isImageFile)
       for (let i = 0; i < imageFiles.length; i++) {
         const file = imageFiles[i]
         const imageDataUrl = await readFileAsDataUrl(file)
         const position = instance.screenToFlowPosition({
-          x: clientX + i * 30,
-          y: clientY + i * 30,
+          x: clientX + offset * 30,
+          y: clientY + offset * 30,
         })
 
         setNodes((prev) => [
@@ -77,6 +80,37 @@ export function App() {
             data: { imageDataUrl, fileName: file.name, label: '' },
           },
         ])
+        offset++
+      }
+
+      // Handle PDF files
+      const pdfFiles = files.filter(isPdfFile)
+      for (let i = 0; i < pdfFiles.length; i++) {
+        const file = pdfFiles[i]
+        const pdfDataUrl = await readFileAsDataUrl(file)
+        const { thumbnailDataUrl, pageCount } =
+          await renderPdfThumbnail(pdfDataUrl)
+        const position = instance.screenToFlowPosition({
+          x: clientX + offset * 30,
+          y: clientY + offset * 30,
+        })
+
+        setNodes((prev) => [
+          ...prev,
+          {
+            id: generateNodeId(),
+            type: 'pdfCard',
+            position,
+            data: {
+              pdfDataUrl,
+              fileName: file.name,
+              label: '',
+              thumbnailDataUrl,
+              pageCount,
+            },
+          },
+        ])
+        offset++
       }
     },
     [setNodes],
