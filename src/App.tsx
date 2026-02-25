@@ -5,6 +5,7 @@ import {
   Controls,
   Panel,
   type Node,
+  type Edge,
   type OnNodesChange,
   type ReactFlowInstance,
   applyNodeChanges,
@@ -15,6 +16,9 @@ import { LinkCardNode } from './components/LinkCardNode'
 import { PdfCardNode } from './components/PdfCardNode'
 import { AddNodeButton } from './components/AddNodeButton'
 import { WeaveButton } from './components/WeaveButton'
+import { WeaveEdge, type WeaveEdgeData } from './components/WeaveEdge'
+import { EdgeDetailPopup } from './components/EdgeDetailPopup'
+import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import type { Connection } from './api/claude'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
@@ -26,6 +30,10 @@ const nodeTypes = {
   imageCard: ImageCardNode,
   linkCard: LinkCardNode,
   pdfCard: PdfCardNode,
+}
+
+const edgeTypes = {
+  weave: WeaveEdge,
 }
 
 const initialNodes: Node[] = [
@@ -40,11 +48,44 @@ const initialNodes: Node[] = [
 export function App() {
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
   const [connections, setConnections] = useState<Connection[]>([])
-  const reactFlowRef = useRef<ReactFlowInstance | null>(null)
+  const [selectedEdge, setSelectedEdge] = useState<{
+    connection: Connection
+    position: { x: number; y: number }
+  } | null>(null)
+  const reactFlowRef = useRef<ReactFlowInstance<Node, Edge<WeaveEdgeData>> | null>(null)
+  const edges = useStaggeredEdges(connections)
+
+  // Debug: log edges with node ID validation
+  useEffect(() => {
+    if (edges.length === 0) return
+    const nodeIds = new Set(nodes.map((n) => n.id))
+    for (const edge of edges) {
+      const sourceValid = nodeIds.has(edge.source)
+      const targetValid = nodeIds.has(edge.target)
+      console.log(
+        `Edge ${edge.id}: ${edge.source} ${sourceValid ? '✓' : '✗ MISSING'} → ${edge.target} ${targetValid ? '✓' : '✗ MISSING'}`,
+        edge.data,
+      )
+    }
+  }, [edges, nodes])
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
     [],
+  )
+
+  const onEdgeClick = useCallback(
+    (_event: React.MouseEvent, edge: Edge<WeaveEdgeData>) => {
+      const conn = connections.find(
+        (c) => c.from === edge.source && c.to === edge.target,
+      )
+      if (!conn) return
+      setSelectedEdge({
+        connection: conn,
+        position: { x: _event.clientX, y: _event.clientY },
+      })
+    },
+    [connections],
   )
 
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -185,8 +226,11 @@ export function App() {
     <div className="w-screen h-screen">
       <ReactFlow
         nodes={nodes}
+        edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
+        onEdgeClick={onEdgeClick}
         onInit={(instance) => {
           reactFlowRef.current = instance
         }}
@@ -203,6 +247,7 @@ export function App() {
                 `Weave: ${connections.length} → ${result.connections.length} connections:`,
                 result.connections,
               )
+              setSelectedEdge(null)
               setConnections(result.connections)
             }}
           />
@@ -211,6 +256,13 @@ export function App() {
           <AddNodeButton />
         </Panel>
       </ReactFlow>
+      {selectedEdge && (
+        <EdgeDetailPopup
+          connection={selectedEdge.connection}
+          position={selectedEdge.position}
+          onClose={() => setSelectedEdge(null)}
+        />
+      )}
     </div>
   )
 }

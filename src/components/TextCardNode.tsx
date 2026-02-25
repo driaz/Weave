@@ -57,15 +57,19 @@ export function TextCardNode({ id, data }: NodeProps) {
           placeholder="Type something..."
         />
       ) : (
-        <p
-          className="text-sm text-gray-800 leading-relaxed cursor-text whitespace-pre-wrap break-words"
+        <div
+          className="text-sm text-gray-800 leading-relaxed cursor-text whitespace-pre-wrap break-words max-h-[200px] overflow-hidden"
           onDoubleClick={() => {
             setValue(text)
             setEditing(true)
           }}
         >
-          {text || 'Double-click to edit...'}
-        </p>
+          {text
+            ? text.length > 150
+              ? `${text.slice(0, 150)}...`
+              : text
+            : 'Double-click to edit...'}
+        </div>
       )}
       <Handle type="source" position={Position.Right} className="!bg-gray-400" />
       <Handle type="target" position={Position.Left} className="!bg-gray-400" />
