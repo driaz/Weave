@@ -14,6 +14,8 @@ import { ImageCardNode } from './components/ImageCardNode'
 import { LinkCardNode } from './components/LinkCardNode'
 import { PdfCardNode } from './components/PdfCardNode'
 import { AddNodeButton } from './components/AddNodeButton'
+import { WeaveButton } from './components/WeaveButton'
+import type { Connection } from './api/claude'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
@@ -37,6 +39,7 @@ const initialNodes: Node[] = [
 
 export function App() {
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
+  const [connections, setConnections] = useState<Connection[]>([])
   const reactFlowRef = useRef<ReactFlowInstance | null>(null)
 
   const onNodesChange: OnNodesChange = useCallback(
@@ -193,6 +196,17 @@ export function App() {
       >
         <Background />
         <Controls position="bottom-right" />
+        <Panel position="top-center">
+          <WeaveButton
+            onResult={(result) => {
+              console.log(
+                `Weave: ${connections.length} → ${result.connections.length} connections:`,
+                result.connections,
+              )
+              setConnections(result.connections)
+            }}
+          />
+        </Panel>
         <Panel position="bottom-left">
           <AddNodeButton />
         </Panel>
