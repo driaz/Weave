@@ -2,6 +2,8 @@ import type { Connection } from '../api/claude'
 
 export type BoardId = string
 
+export type WeaveMode = 'weave' | 'deeper' | 'tensions'
+
 export type SerializedNode = {
   id: string
   type: string

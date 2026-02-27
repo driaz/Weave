@@ -3,12 +3,21 @@ import type { TextCardData } from '../components/TextCardNode'
 import type { ImageCardData } from '../components/ImageCardNode'
 import type { LinkCardData } from '../components/LinkCardNode'
 import type { PdfCardData } from '../components/PdfCardNode'
+import type { WeaveMode } from '../types/board'
 import { compressBase64Image } from '../utils/imageUtils'
 
 const API_URL = 'https://api.anthropic.com/v1/messages'
 const MODEL = 'claude-opus-4-6'
 
-const SYSTEM_PROMPT = `You are an expert analyst examining objects placed on a spatial canvas. Your job is to identify meaningful, non-obvious relationships between pairs of objects.
+const JSON_FORMAT_INSTRUCTIONS = `You MUST respond with ONLY a valid JSON object. Do not include any text before or after the JSON. Do not include markdown formatting or code fences. Do not explain your reasoning outside the JSON structure. Your entire response must be parseable by JSON.parse().
+
+JSON format:
+{"connections":[{"from":"<node-id>","to":"<node-id>","label":"Short relationship name","explanation":"2-3 sentence description of why these are connected and what insight this reveals.","type":"organically chosen category","strength":0.0,"surprise":0.0}]}
+
+strength and surprise are floats from 0.0 to 1.0.
+If there are fewer than 2 objects or no meaningful connections exist, return: {"connections":[]}`
+
+const WEAVE_PROMPT = `You are an expert analyst examining objects placed on a spatial canvas. Your job is to identify meaningful, non-obvious relationships between pairs of objects.
 
 Guidelines:
 - Only surface connections that reveal genuine insight — things the user likely wouldn't see on their own.
@@ -18,13 +27,32 @@ Guidelines:
 - For each connection, assess how strong the relationship is (strength) and how surprising/non-obvious it is (surprise).
 - Keep labels concise (2-5 words). Keep explanations to 2-3 sentences.
 
-You MUST respond with ONLY a valid JSON object. Do not include any text before or after the JSON. Do not include markdown formatting or code fences. Do not explain your reasoning outside the JSON structure. Your entire response must be parseable by JSON.parse().
+${JSON_FORMAT_INSTRUCTIONS}`
 
-JSON format:
-{"connections":[{"from":"<node-id>","to":"<node-id>","label":"Short relationship name","explanation":"2-3 sentence description of why these are connected and what insight this reveals.","type":"organically chosen category","strength":0.0,"surprise":0.0}]}
+const GO_DEEPER_PROMPT = `You are an expert analyst examining objects placed on a spatial canvas. The user has already found some connections between these objects. Your job is to go DEEPER — find subtler, more surprising, second-order, or metaphorical relationships that go beyond what has already been found.
 
-strength and surprise are floats from 0.0 to 1.0.
-If there are fewer than 2 objects or no meaningful connections exist, return: {"connections":[]}`
+Guidelines:
+- Do NOT repeat any of the previously found connections listed below.
+- Look for connections that require more thought — hidden patterns, structural parallels, ironic juxtapositions, indirect causal chains.
+- Be even more selective than usual. Only surface connections that reveal genuine, non-obvious insight.
+- Prioritize surprise over strength. The user wants to see things they couldn't see on their own.
+- Let relationship types emerge organically.
+- Keep labels concise (2-5 words). Keep explanations to 2-3 sentences.
+
+${JSON_FORMAT_INSTRUCTIONS}`
+
+const FIND_TENSIONS_PROMPT = `You are an expert analyst examining objects placed on a spatial canvas. Your job is to find TENSIONS — contradictions, conflicts, and opposing ideas between these objects.
+
+Guidelines:
+- Look specifically for where these objects disagree, clash, or undermine each other.
+- Surface opposing viewpoints, logical contradictions, unresolved tensions, and incompatible assumptions.
+- Find places where one object's message negates or complicates another's.
+- Be selective — only surface genuine tensions, not forced disagreements.
+- Let relationship types emerge organically (contradicts, undermines, conflicts with, challenges, opposes, etc.).
+- For each tension, assess how strong the conflict is (strength) and how surprising/non-obvious it is (surprise).
+- Keep labels concise (2-5 words). Keep explanations to 2-3 sentences.
+
+${JSON_FORMAT_INSTRUCTIONS}`
 
 export type Connection = {
   from: string
@@ -34,6 +62,7 @@ export type Connection = {
   type: string
   strength: number
   surprise: number
+  mode?: WeaveMode
 }
 
 export type WeaveResult = {
@@ -158,7 +187,31 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
   return content
 }
 
-export async function analyzeCanvas(nodes: Node[]): Promise<WeaveResult> {
+function getSystemPrompt(mode: WeaveMode): string {
+  switch (mode) {
+    case 'deeper':
+      return GO_DEEPER_PROMPT
+    case 'tensions':
+      return FIND_TENSIONS_PROMPT
+    default:
+      return WEAVE_PROMPT
+  }
+}
+
+function serializePreviousConnections(connections: Connection[]): string {
+  if (connections.length === 0) return ''
+
+  const lines = connections.map(
+    (c) => `  - [${c.from}] <-> [${c.to}]: ${c.label} — ${c.explanation}`,
+  )
+  return `\n\nPreviously found connections (do NOT repeat these):\n${lines.join('\n')}\n`
+}
+
+export async function analyzeCanvas(
+  nodes: Node[],
+  mode: WeaveMode = 'weave',
+  previousConnections: Connection[] = [],
+): Promise<WeaveResult> {
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined
 
   if (!apiKey) {
@@ -180,6 +233,14 @@ export async function analyzeCanvas(nodes: Node[]): Promise<WeaveResult> {
 
   const content = await serializeNodes(contentNodes)
 
+  // For "Go Deeper", append previous connections as context in the user message
+  if (mode === 'deeper' && previousConnections.length > 0) {
+    content.push({
+      type: 'text',
+      text: serializePreviousConnections(previousConnections),
+    })
+  }
+
   const response = await fetch(API_URL, {
     method: 'POST',
     headers: {
@@ -191,7 +252,7 @@ export async function analyzeCanvas(nodes: Node[]): Promise<WeaveResult> {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 4096,
-      system: SYSTEM_PROMPT,
+      system: getSystemPrompt(mode),
       messages: [{ role: 'user', content }],
     }),
   })
@@ -227,6 +288,9 @@ export async function analyzeCanvas(nodes: Node[]): Promise<WeaveResult> {
     }
     parsed = JSON.parse(rawText.slice(start, end + 1)) as WeaveResult
   }
+
+  // Tag each connection with the mode
+  parsed.connections = parsed.connections.map((c) => ({ ...c, mode }))
 
   return parsed
 }

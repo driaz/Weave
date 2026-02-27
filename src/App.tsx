@@ -22,6 +22,7 @@ import { BoardSwitcher } from './components/BoardSwitcher'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
+import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
@@ -63,6 +64,7 @@ export function App() {
   const [connections, setConnections] = useState<Connection[]>(
     currentBoard.connections,
   )
+  const [activeLayer, setActiveLayer] = useState<WeaveMode | 'all'>('all')
   const [selectedEdge, setSelectedEdge] = useState<{
     connection: Connection
     position: { x: number; y: number }
@@ -71,7 +73,7 @@ export function App() {
     Node,
     Edge<WeaveEdgeData>
   > | null>(null)
-  const edges = useStaggeredEdges(connections)
+  const edges = useStaggeredEdges(connections, activeLayer)
 
   // Sync state when switching boards or when hydration completes
   const prevBoardIdRef = useRef(currentBoard.id)
@@ -125,9 +127,13 @@ export function App() {
 
   const onEdgeClick = useCallback(
     (_event: React.MouseEvent, edge: Edge<WeaveEdgeData>) => {
-      const conn = connections.find(
-        (c) => c.from === edge.source && c.to === edge.target,
-      )
+      const edgeData = edge.data as WeaveEdgeData | undefined
+      const conn =
+        edgeData?.connectionIndex != null
+          ? connections[edgeData.connectionIndex]
+          : connections.find(
+              (c) => c.from === edge.source && c.to === edge.target,
+            )
       if (!conn) return
       setSelectedEdge({
         connection: conn,
@@ -141,6 +147,7 @@ export function App() {
     (boardId: string) => {
       saveCurrentBoard(nodes, connections)
       switchBoard(boardId)
+      setActiveLayer('all')
     },
     [nodes, connections, saveCurrentBoard, switchBoard],
   )
@@ -317,9 +324,18 @@ export function App() {
         <Controls position="bottom-right" />
         <Panel position="top-center">
           <WeaveButton
-            onResult={(result) => {
+            connections={connections}
+            activeLayer={activeLayer}
+            onLayerChange={setActiveLayer}
+            onResult={(result, mode) => {
               setSelectedEdge(null)
-              setConnections(result.connections)
+              setConnections((prev) => [...prev, ...result.connections])
+              setActiveLayer(mode)
+            }}
+            onClear={() => {
+              setSelectedEdge(null)
+              setConnections([])
+              setActiveLayer('all')
             }}
           />
         </Panel>
