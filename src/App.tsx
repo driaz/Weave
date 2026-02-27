@@ -18,7 +18,9 @@ import { AddNodeButton } from './components/AddNodeButton'
 import { WeaveButton } from './components/WeaveButton'
 import { WeaveEdge, type WeaveEdgeData } from './components/WeaveEdge'
 import { EdgeDetailPopup } from './components/EdgeDetailPopup'
+import { BoardSwitcher } from './components/BoardSwitcher'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
+import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
@@ -36,31 +38,85 @@ const edgeTypes = {
   weave: WeaveEdge,
 }
 
-const initialNodes: Node[] = []
-
 export function App() {
-  const [nodes, setNodes] = useState<Node[]>(initialNodes)
-  const [connections, setConnections] = useState<Connection[]>([])
+  const {
+    currentBoard,
+    allBoards,
+    hydrating,
+    createBoard,
+    switchBoard,
+    renameBoard,
+    deleteBoard,
+    saveCurrentBoard,
+    storageError,
+    dismissStorageError,
+  } = useBoardStorage()
+
+  const [nodes, setNodes] = useState<Node[]>(() =>
+    currentBoard.nodes.map((n) => ({
+      id: n.id,
+      type: n.type,
+      position: n.position,
+      data: n.data,
+    })),
+  )
+  const [connections, setConnections] = useState<Connection[]>(
+    currentBoard.connections,
+  )
   const [selectedEdge, setSelectedEdge] = useState<{
     connection: Connection
     position: { x: number; y: number }
   } | null>(null)
-  const reactFlowRef = useRef<ReactFlowInstance<Node, Edge<WeaveEdgeData>> | null>(null)
+  const reactFlowRef = useRef<ReactFlowInstance<
+    Node,
+    Edge<WeaveEdgeData>
+  > | null>(null)
   const edges = useStaggeredEdges(connections)
 
-  // Debug: log edges with node ID validation
+  // Sync state when switching boards or when hydration completes
+  const prevBoardIdRef = useRef(currentBoard.id)
+  const prevHydratingRef = useRef(hydrating)
   useEffect(() => {
-    if (edges.length === 0) return
-    const nodeIds = new Set(nodes.map((n) => n.id))
-    for (const edge of edges) {
-      const sourceValid = nodeIds.has(edge.source)
-      const targetValid = nodeIds.has(edge.target)
-      console.log(
-        `Edge ${edge.id}: ${edge.source} ${sourceValid ? '✓' : '✗ MISSING'} → ${edge.target} ${targetValid ? '✓' : '✗ MISSING'}`,
-        edge.data,
+    const boardChanged = currentBoard.id !== prevBoardIdRef.current
+    const hydrationJustFinished =
+      prevHydratingRef.current && !hydrating
+
+    if (boardChanged || hydrationJustFinished) {
+      setNodes(
+        currentBoard.nodes.map((n) => ({
+          id: n.id,
+          type: n.type,
+          position: n.position,
+          data: n.data,
+        })),
       )
+      setConnections(currentBoard.connections)
+      if (boardChanged) {
+        setSelectedEdge(null)
+      }
+      prevBoardIdRef.current = currentBoard.id
     }
-  }, [edges, nodes])
+    prevHydratingRef.current = hydrating
+  }, [currentBoard.id, currentBoard.nodes, currentBoard.connections, hydrating])
+
+  // Debounced auto-save (500ms) — skip while hydrating to avoid saving stripped data
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (hydrating) return
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      saveCurrentBoard(nodes, connections)
+    }, 500)
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+      }
+    }
+  }, [nodes, connections, saveCurrentBoard, hydrating])
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -80,6 +136,19 @@ export function App() {
     },
     [connections],
   )
+
+  const handleSwitchBoard = useCallback(
+    (boardId: string) => {
+      saveCurrentBoard(nodes, connections)
+      switchBoard(boardId)
+    },
+    [nodes, connections, saveCurrentBoard, switchBoard],
+  )
+
+  const handleCreateBoard = useCallback(() => {
+    saveCurrentBoard(nodes, connections)
+    createBoard()
+  }, [nodes, connections, saveCurrentBoard, createBoard])
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -216,7 +285,19 @@ export function App() {
   }, [setNodes])
 
   return (
-    <div className="w-screen h-screen">
+    <div className="w-screen h-screen relative">
+      {storageError && (
+        <div className="absolute top-0 left-0 right-0 z-50 bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm text-amber-800 flex items-center justify-between">
+          <span>{storageError}</span>
+          <button
+            onClick={dismissStorageError}
+            className="text-amber-600 hover:text-amber-800 ml-4 text-xs cursor-pointer"
+            aria-label="Dismiss warning"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -237,24 +318,31 @@ export function App() {
         <Panel position="top-center">
           <WeaveButton
             onResult={(result) => {
-              console.log(
-                `Weave: ${connections.length} → ${result.connections.length} connections:`,
-                result.connections,
-              )
               setSelectedEdge(null)
               setConnections(result.connections)
             }}
+          />
+        </Panel>
+        <Panel position="top-left">
+          <BoardSwitcher
+            currentBoardId={currentBoard.id}
+            currentBoardName={currentBoard.name}
+            allBoards={allBoards}
+            onCreateBoard={handleCreateBoard}
+            onSwitchBoard={handleSwitchBoard}
+            onRenameBoard={renameBoard}
+            onDeleteBoard={deleteBoard}
           />
         </Panel>
         <Panel position="bottom-left">
           <AddNodeButton />
         </Panel>
         {nodes.length === 0 && (
-          <Panel position="top-left" className="!inset-0 !m-0 flex items-center justify-center pointer-events-none">
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <p className="text-gray-400 text-lg font-light select-none">
               Drop content or click + to begin
             </p>
-          </Panel>
+          </div>
         )}
       </ReactFlow>
       {selectedEdge && (
