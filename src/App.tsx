@@ -36,14 +36,7 @@ const edgeTypes = {
   weave: WeaveEdge,
 }
 
-const initialNodes: Node[] = [
-  {
-    id: '1',
-    type: 'textCard',
-    position: { x: 250, y: 200 },
-    data: { text: 'Drag me around the canvas. Zoom and pan to explore.' },
-  },
-]
+const initialNodes: Node[] = []
 
 export function App() {
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
@@ -237,6 +230,7 @@ export function App() {
         onDrop={onDrop}
         onDragOver={onDragOver}
         fitView
+        proOptions={{ hideAttribution: true }}
       >
         <Background />
         <Controls position="bottom-right" />
@@ -255,6 +249,13 @@ export function App() {
         <Panel position="bottom-left">
           <AddNodeButton />
         </Panel>
+        {nodes.length === 0 && (
+          <Panel position="top-left" className="!inset-0 !m-0 flex items-center justify-center pointer-events-none">
+            <p className="text-gray-400 text-lg font-light select-none">
+              Drop content or click + to begin
+            </p>
+          </Panel>
+        )}
       </ReactFlow>
       {selectedEdge && (
         <EdgeDetailPopup

@@ -26,7 +26,7 @@ function ScoreBar({ label, value, color }: { label: string; value: number; color
 
 export function EdgeDetailPopup({ connection, position, onClose }: EdgeDetailPopupProps) {
   const popupRef = useRef<HTMLDivElement>(null)
-  const colors = getEdgeColor(connection.type)
+  const colors = getEdgeColor()
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {

@@ -36,7 +36,7 @@ export function WeaveEdge({
     targetPosition,
   })
 
-  const colors = getEdgeColor(edgeData.type)
+  const colors = getEdgeColor()
   const strokeWidth = 1.5 + edgeData.strength * 2.5
 
   return (
@@ -59,11 +59,12 @@ export function WeaveEdge({
           style={{
             position: 'absolute',
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-            backgroundColor: colors.bg,
+            backgroundColor: '#FFFFFF',
             borderWidth: '1px',
             borderStyle: 'solid',
-            borderColor: colors.border,
-            color: colors.text,
+            borderColor: '#D1D5DB',
+            color: '#374151',
+            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08)',
           }}
         >
           {edgeData.label}
