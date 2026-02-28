@@ -1,5 +1,7 @@
-import { useCallback, useRef } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { createPortal } from 'react-dom'
+import { extractYouTubeVideoId } from '../utils/linkUtils'
 
 export type LinkCardData = {
   url: string
@@ -33,6 +35,97 @@ function SkeletonCard() {
         className="!bg-gray-400"
       />
     </div>
+  )
+}
+
+function TweetLightbox({
+  authorName,
+  authorHandle,
+  tweetText,
+  domain,
+  onClose,
+}: {
+  authorName: string
+  authorHandle: string
+  tweetText: string
+  domain: string
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Tweet by ${authorName}`}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl w-[400px] max-w-[90vw] p-5 cursor-default"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3">
+          <p className="text-base font-semibold text-gray-900">{authorName}</p>
+          {authorHandle && (
+            <p className="text-sm text-gray-400">{authorHandle}</p>
+          )}
+        </div>
+        <p className="text-[15px] text-gray-700 leading-relaxed whitespace-pre-line mb-4">
+          {tweetText}
+        </p>
+        <p className="text-xs text-gray-400">{domain}</p>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function YouTubeLightbox({
+  videoId,
+  title,
+  onClose,
+}: {
+  videoId: string
+  title: string
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Video: ${title}`}
+    >
+      <div
+        className="w-[800px] max-w-[90vw] aspect-video cursor-default"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <iframe
+          src={`https://www.youtube.com/embed/${videoId}?autoplay=1`}
+          title={title}
+          className="w-full h-full rounded-lg shadow-2xl"
+          allow="autoplay; encrypted-media"
+          allowFullScreen
+        />
+      </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -173,24 +266,18 @@ export function LinkCardNode({ data }: NodeProps) {
     authorHandle,
     tweetText,
   } = data as LinkCardData
-  const mouseDownPos = useRef<{ x: number; y: number } | null>(null)
+  const [showLightbox, setShowLightbox] = useState(false)
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    mouseDownPos.current = { x: e.clientX, y: e.clientY }
-  }, [])
+  const closeLightbox = useCallback(() => setShowLightbox(false), [])
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (!mouseDownPos.current) return
-      const dx = Math.abs(e.clientX - mouseDownPos.current.x)
-      const dy = Math.abs(e.clientY - mouseDownPos.current.y)
-      if (dx < 5 && dy < 5) {
-        window.open(url, '_blank', 'noopener,noreferrer')
-      }
-      mouseDownPos.current = null
-    },
-    [url],
-  )
+  const handleDoubleClick = useCallback(() => {
+    const cardType = type || 'generic'
+    if (cardType === 'twitter' || cardType === 'youtube') {
+      setShowLightbox(true)
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
+  }, [type, url])
 
   if (loading) {
     return <SkeletonCard />
@@ -199,42 +286,59 @@ export function LinkCardNode({ data }: NodeProps) {
   const cardType = type || 'generic'
 
   return (
-    <div
-      className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden w-[250px] cursor-pointer"
-      onMouseDown={handleMouseDown}
-      onClick={handleClick}
-      role="link"
-      aria-label={`Link to ${title} on ${domain}`}
-    >
-      {cardType === 'twitter' && (
-        <TwitterCard
+    <>
+      <div
+        className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden w-[250px] cursor-pointer"
+        onDoubleClick={handleDoubleClick}
+        role="link"
+        aria-label={`Link to ${title} on ${domain}`}
+      >
+        {cardType === 'twitter' && (
+          <TwitterCard
+            authorName={authorName || ''}
+            authorHandle={authorHandle || ''}
+            tweetText={tweetText || ''}
+            domain={domain}
+          />
+        )}
+        {cardType === 'youtube' && (
+          <YouTubeCard
+            imageUrl={imageUrl}
+            title={title}
+            authorName={authorName || ''}
+            domain={domain}
+          />
+        )}
+        {cardType === 'generic' && (
+          <GenericCard imageUrl={imageUrl} title={title} domain={domain} />
+        )}
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="!bg-gray-400"
+        />
+        <Handle
+          type="target"
+          position={Position.Left}
+          className="!bg-gray-400"
+        />
+      </div>
+      {showLightbox && cardType === 'twitter' && (
+        <TweetLightbox
           authorName={authorName || ''}
           authorHandle={authorHandle || ''}
           tweetText={tweetText || ''}
           domain={domain}
+          onClose={closeLightbox}
         />
       )}
-      {cardType === 'youtube' && (
-        <YouTubeCard
-          imageUrl={imageUrl}
+      {showLightbox && cardType === 'youtube' && (
+        <YouTubeLightbox
+          videoId={extractYouTubeVideoId(url) || ''}
           title={title}
-          authorName={authorName || ''}
-          domain={domain}
+          onClose={closeLightbox}
         />
       )}
-      {cardType === 'generic' && (
-        <GenericCard imageUrl={imageUrl} title={title} domain={domain} />
-      )}
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!bg-gray-400"
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!bg-gray-400"
-      />
-    </div>
+    </>
   )
 }

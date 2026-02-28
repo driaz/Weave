@@ -50,27 +50,31 @@ export function EdgeDetailPopup({ connection, position, onClose }: EdgeDetailPop
         style={{ left: x, top: y }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Type badge */}
-        <span
-          className="inline-block text-[10px] font-medium px-2 py-0.5 rounded-full mb-2"
-          style={{
-            backgroundColor: colors.bg,
-            borderWidth: '1px',
-            borderStyle: 'solid',
-            borderColor: colors.border,
-            color: colors.text,
-          }}
-        >
-          {connection.type}
-        </span>
+        {/* Theme badge */}
+        <div className="flex items-center gap-1.5 mb-2">
+          <span className="text-[9px] uppercase tracking-wide text-gray-400">Theme:</span>
+          <span
+            className="inline-block text-[10px] font-medium px-2 py-0.5 rounded-full"
+            style={{
+              backgroundColor: colors.bg,
+              borderWidth: '1px',
+              borderStyle: 'solid',
+              borderColor: colors.border,
+              color: colors.text,
+            }}
+          >
+            {connection.type}
+          </span>
+        </div>
 
         {/* Explanation */}
         <p className="text-sm text-gray-700 leading-relaxed mb-3">
           {connection.explanation}
         </p>
 
-        {/* Score bars */}
+        {/* Connection score bars */}
         <div className="flex flex-col gap-1.5">
+          <span className="text-[9px] uppercase tracking-wide text-gray-400">Connection</span>
           <ScoreBar label="Strength" value={connection.strength} color={colors.fill} />
           <ScoreBar label="Surprise" value={connection.surprise} color={colors.fill} />
         </div>

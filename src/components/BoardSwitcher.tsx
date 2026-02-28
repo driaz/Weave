@@ -5,7 +5,7 @@ type BoardSwitcherProps = {
   currentBoardId: string
   currentBoardName: string
   allBoards: BoardSummary[]
-  onCreateBoard: () => void
+  onCreateBoard: () => string
   onSwitchBoard: (boardId: string) => void
   onRenameBoard: (boardId: string, newName: string) => void
   onDeleteBoard: (boardId: string) => boolean
@@ -24,19 +24,12 @@ export function BoardSwitcher({
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
+  const [pendingRenameId, setPendingRenameId] = useState<string | null>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
 
-  // Click outside or Escape to close
+  // Escape to close
   useEffect(() => {
     if (!open) return
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false)
-        setRenamingId(null)
-        setConfirmDeleteId(null)
-      }
-    }
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setOpen(false)
@@ -44,13 +37,15 @@ export function BoardSwitcher({
         setConfirmDeleteId(null)
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
     document.addEventListener('keydown', handleEscape)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleEscape)
-    }
+    return () => document.removeEventListener('keydown', handleEscape)
   }, [open])
+
+  const closeMenu = useCallback(() => {
+    setOpen(false)
+    setRenamingId(null)
+    setConfirmDeleteId(null)
+  }, [])
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -59,6 +54,17 @@ export function BoardSwitcher({
       renameInputRef.current.select()
     }
   }, [renamingId])
+
+  // Enter rename mode when a newly created board appears in the list
+  useEffect(() => {
+    if (!pendingRenameId) return
+    const board = allBoards.find((b) => b.id === pendingRenameId)
+    if (board) {
+      setRenamingId(board.id)
+      setRenameValue(board.name)
+      setPendingRenameId(null)
+    }
+  }, [pendingRenameId, allBoards])
 
   // Reset confirm delete after timeout
   useEffect(() => {
@@ -103,7 +109,7 @@ export function BoardSwitcher({
   )
 
   return (
-    <div ref={menuRef} className="relative">
+    <div className="relative">
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200
@@ -125,6 +131,12 @@ export function BoardSwitcher({
       </button>
 
       {open && (
+        <>
+        <div
+          className="fixed inset-0 z-40"
+          onClick={closeMenu}
+          aria-hidden="true"
+        />
         <div
           className="absolute top-full left-0 mt-1 bg-white border border-gray-200
             rounded-lg shadow-md py-1 min-w-[220px] z-50"
@@ -183,8 +195,8 @@ export function BoardSwitcher({
           <div className="border-t border-gray-100 mt-1 pt-1">
             <button
               onClick={() => {
-                onCreateBoard()
-                setOpen(false)
+                const newId = onCreateBoard()
+                setPendingRenameId(newId)
               }}
               className="w-full text-left px-3 py-1.5 text-sm text-gray-500
                 hover:bg-gray-50 hover:text-gray-700 transition-colors duration-150 cursor-pointer"
@@ -193,6 +205,7 @@ export function BoardSwitcher({
             </button>
           </div>
         </div>
+        </>
       )}
     </div>
   )

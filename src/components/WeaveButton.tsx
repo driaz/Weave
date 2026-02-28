@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import type { WeaveMode } from '../types/board'
 import { analyzeCanvas, type Connection, type WeaveResult } from '../api/claude'
@@ -36,7 +36,18 @@ export function WeaveButton({
 }) {
   const [state, setState] = useState<WeaveState>('idle')
   const [loadingMode, setLoadingMode] = useState<WeaveMode | null>(null)
+  const [confirmClear, setConfirmClear] = useState(false)
   const { getNodes } = useReactFlow()
+
+  // Dismiss clear confirmation on Escape
+  useEffect(() => {
+    if (!confirmClear) return
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setConfirmClear(false)
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [confirmClear])
 
   const handleWeave = useCallback(
     async (mode: WeaveMode) => {
@@ -250,13 +261,34 @@ export function WeaveButton({
               )
             })}
           </div>
-          <button
-            onClick={onClear}
-            className="text-[10px] text-gray-400 hover:text-gray-500
-              transition-colors duration-150 cursor-pointer"
-          >
-            Clear
-          </button>
+          {confirmClear ? (
+            <div className="flex items-center gap-1.5 text-[10px]">
+              <span className="text-gray-500">Clear all connections?</span>
+              <button
+                onClick={() => {
+                  onClear()
+                  setConfirmClear(false)
+                }}
+                className="text-red-500 hover:text-red-600 font-medium cursor-pointer"
+              >
+                Yes
+              </button>
+              <button
+                onClick={() => setConfirmClear(false)}
+                className="text-gray-400 hover:text-gray-500 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmClear(true)}
+              className="text-[10px] text-gray-400 hover:text-gray-500
+                transition-colors duration-150 cursor-pointer"
+            >
+              Clear connections
+            </button>
+          )}
         </div>
       )}
     </div>

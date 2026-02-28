@@ -154,7 +154,7 @@ export function App() {
 
   const handleCreateBoard = useCallback(() => {
     saveCurrentBoard(nodes, connections)
-    createBoard()
+    return createBoard()
   }, [nodes, connections, saveCurrentBoard, createBoard])
 
   const onDragOver = useCallback((event: React.DragEvent) => {

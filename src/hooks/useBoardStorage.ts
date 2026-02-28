@@ -300,6 +300,11 @@ export function useBoardStorage() {
       const board = store.boards[boardId]
       if (!board) return
 
+      // Also update hydratedBoard so currentBoard.name reflects the change immediately
+      if (hydratedBoard && hydratedBoard.id === boardId) {
+        setHydratedBoard({ ...hydratedBoard, name: newName })
+      }
+
       persist({
         ...store,
         boards: {
@@ -312,7 +317,7 @@ export function useBoardStorage() {
         },
       })
     },
-    [store, persist],
+    [store, persist, hydratedBoard],
   )
 
   const deleteBoard = useCallback(

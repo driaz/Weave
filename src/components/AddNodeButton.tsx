@@ -13,18 +13,10 @@ export function AddNodeButton() {
   const [fetchingLink, setFetchingLink] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pdfInputRef = useRef<HTMLInputElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
   const linkInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!menuOpen) return
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false)
-        setLinkInputMode(false)
-        setLinkUrl('')
-      }
-    }
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setMenuOpen(false)
@@ -32,13 +24,15 @@ export function AddNodeButton() {
         setLinkUrl('')
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
     document.addEventListener('keydown', handleEscape)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleEscape)
-    }
+    return () => document.removeEventListener('keydown', handleEscape)
   }, [menuOpen])
+
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false)
+    setLinkInputMode(false)
+    setLinkUrl('')
+  }, [])
 
   useEffect(() => {
     if (linkInputMode && linkInputRef.current) {
@@ -181,9 +175,15 @@ export function AddNodeButton() {
   )
 
   return (
-    <div ref={menuRef} className="relative">
+    <div className="relative">
       {menuOpen && (
-        <div className="absolute bottom-12 left-0 bg-white rounded-lg border border-gray-200 shadow-md py-1 min-w-[140px]">
+        <>
+        <div
+          className="fixed inset-0 z-40"
+          onClick={closeMenu}
+          aria-hidden="true"
+        />
+        <div className="absolute bottom-12 left-0 z-50 bg-white rounded-lg border border-gray-200 shadow-md py-1 min-w-[140px]">
           {linkInputMode ? (
             <div className="px-3 py-2">
               <input
@@ -193,11 +193,7 @@ export function AddNodeButton() {
                 onChange={(e) => setLinkUrl(e.target.value)}
                 onKeyDown={handleLinkKeyDown}
                 onBlur={() => {
-                  if (!fetchingLink) {
-                    setMenuOpen(false)
-                    setLinkInputMode(false)
-                    setLinkUrl('')
-                  }
+                  if (!fetchingLink) closeMenu()
                 }}
                 placeholder="Paste a URL..."
                 disabled={fetchingLink}
@@ -237,6 +233,7 @@ export function AddNodeButton() {
             </>
           )}
         </div>
+        </>
       )}
       <button
         onClick={() => setMenuOpen(!menuOpen)}
