@@ -27,7 +27,7 @@ export function BoardSwitcher({
   const menuRef = useRef<HTMLDivElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
 
-  // Click outside to close
+  // Click outside or Escape to close
   useEffect(() => {
     if (!open) return
     const handleClickOutside = (e: MouseEvent) => {
@@ -37,8 +37,19 @@ export function BoardSwitcher({
         setConfirmDeleteId(null)
       }
     }
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false)
+        setRenamingId(null)
+        setConfirmDeleteId(null)
+      }
+    }
     document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleEscape)
+    }
   }, [open])
 
   // Focus rename input when entering rename mode
@@ -91,19 +102,8 @@ export function BoardSwitcher({
     [confirmDeleteId, onDeleteBoard],
   )
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setOpen(false)
-        setRenamingId(null)
-        setConfirmDeleteId(null)
-      }
-    },
-    [],
-  )
-
   return (
-    <div ref={menuRef} className="relative" onKeyDown={handleKeyDown}>
+    <div ref={menuRef} className="relative">
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200

@@ -198,13 +198,13 @@ function getSystemPrompt(mode: WeaveMode): string {
   }
 }
 
-function serializePreviousConnections(connections: Connection[]): string {
+function serializeExistingConnections(connections: Connection[]): string {
   if (connections.length === 0) return ''
 
   const lines = connections.map(
     (c) => `  - [${c.from}] <-> [${c.to}]: ${c.label} — ${c.explanation}`,
   )
-  return `\n\nPreviously found connections (do NOT repeat these):\n${lines.join('\n')}\n`
+  return `\n\nThese connections already exist. Only return NEW connections where at least one of the two nodes has ZERO existing connections in the current graph. Focus specifically on integrating completely unconnected nodes:\n${lines.join('\n')}\n`
 }
 
 export async function analyzeCanvas(
@@ -233,12 +233,26 @@ export async function analyzeCanvas(
 
   const content = await serializeNodes(contentNodes)
 
-  // For "Go Deeper", append previous connections as context in the user message
-  if (mode === 'deeper' && previousConnections.length > 0) {
+  // Include existing connections as context to prevent duplicates.
+  // "Go Deeper" sees ALL previous connections; other modes see only same-mode ones.
+  const contextConnections =
+    mode === 'deeper'
+      ? previousConnections
+      : previousConnections.filter((c) => c.mode === mode)
+
+  if (contextConnections.length > 0) {
+    console.log(
+      `[Weave Debug] Sending ${contextConnections.length} existing connections as context for mode="${mode}":`,
+      contextConnections.map((c) => `${c.from} <-> ${c.to}: ${c.label}`),
+    )
     content.push({
       type: 'text',
-      text: serializePreviousConnections(previousConnections),
+      text: serializeExistingConnections(contextConnections),
     })
+  } else {
+    console.log(
+      `[Weave Debug] No existing connections to send as context for mode="${mode}"`,
+    )
   }
 
   const response = await fetch(API_URL, {

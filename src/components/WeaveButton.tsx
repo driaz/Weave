@@ -4,20 +4,22 @@ import type { WeaveMode } from '../types/board'
 import { analyzeCanvas, type Connection, type WeaveResult } from '../api/claude'
 import { getEdgeColor } from '../utils/edgeColors'
 
-type WeaveState = 'idle' | 'loading' | 'error'
+type WeaveState = 'idle' | 'loading' | 'error' | 'no-new'
 
-const MODE_LABELS: Record<WeaveMode, { label: string; loading: string }> = {
-  weave: { label: 'Weave', loading: 'Weaving...' },
-  deeper: { label: 'Go Deeper', loading: 'Going deeper...' },
-  tensions: { label: 'Find Tensions', loading: 'Finding tensions...' },
+const MODE_CONFIG: Record<
+  WeaveMode,
+  { pill: string; button: string; loading: string }
+> = {
+  weave: { pill: 'Standard', button: 'Weave', loading: 'Weaving...' },
+  deeper: { pill: 'Go Deeper', button: 'Go Deeper', loading: 'Going deeper...' },
+  tensions: {
+    pill: 'Find Tensions',
+    button: 'Find Tensions',
+    loading: 'Finding tensions...',
+  },
 }
 
-const LAYER_OPTIONS: { key: WeaveMode | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'weave', label: 'Weave' },
-  { key: 'deeper', label: 'Go Deeper' },
-  { key: 'tensions', label: 'Find Tensions' },
-]
+const TOGGLE_MODES: WeaveMode[] = ['weave', 'deeper', 'tensions']
 
 export function WeaveButton({
   connections,
@@ -27,8 +29,8 @@ export function WeaveButton({
   onClear,
 }: {
   connections: Connection[]
-  activeLayer: WeaveMode | 'all'
-  onLayerChange: (layer: WeaveMode | 'all') => void
+  activeLayer: WeaveMode
+  onLayerChange: (layer: WeaveMode) => void
   onResult: (result: WeaveResult, mode: WeaveMode) => void
   onClear: () => void
 }) {
@@ -44,9 +46,97 @@ export function WeaveButton({
 
       try {
         const nodes = getNodes()
+        const strip = (id: string) => id.replace(/^node-/, '')
+
+        // Only count connections for THIS specific mode — other modes are irrelevant
+        const modeConns = connections.filter((c) => c.mode === mode)
+        const isFirstRun = modeConns.length === 0
+
+        // Build set of nodes already connected for THIS mode only
+        const connectedNodes = new Set<string>()
+        for (const c of modeConns) {
+          connectedNodes.add(strip(c.from))
+          connectedNodes.add(strip(c.to))
+        }
+
+        // Pre-check: skip API call if all content nodes already have connections FOR THIS MODE.
+        // First run of any mode always proceeds (no connections exist yet).
+        if (!isFirstRun) {
+          const contentNodeIds = nodes
+            .filter((n) => {
+              if (!n.type) return false
+              const d = n.data as Record<string, unknown>
+              switch (n.type) {
+                case 'textCard':
+                  return !!d.text && String(d.text).trim().length > 0
+                case 'imageCard':
+                  return !!d.imageDataUrl
+                case 'linkCard':
+                  return !d.loading && !!d.url
+                case 'pdfCard':
+                  return !!d.pdfDataUrl
+                default:
+                  return false
+              }
+            })
+            .map((n) => strip(n.id))
+
+          if (
+            contentNodeIds.length >= 2 &&
+            contentNodeIds.every((id) => connectedNodes.has(id))
+          ) {
+            console.log(
+              `[Weave Debug] All ${contentNodeIds.length} content nodes already connected for mode="${mode}", skipping API call`,
+            )
+            setState('no-new')
+            setTimeout(() => setState('idle'), 2000)
+            return
+          }
+        }
+
+        console.log(
+          `[Weave Debug] ${isFirstRun ? 'First run' : 'Re-run'} for mode="${mode}", total connections: ${connections.length}, same-mode: ${modeConns.length}, connected nodes for this mode: ${connectedNodes.size}`,
+        )
+
         const result = await analyzeCanvas(nodes, mode, connections)
-        onResult(result, mode)
-        setState('idle')
+
+        console.log(
+          `[Weave Debug] Claude returned ${result.connections.length} connections:`,
+          result.connections.map((c) => `${c.from} <-> ${c.to}: ${c.label}`),
+        )
+
+        // First run: keep all connections (no mode-specific connections exist yet).
+        // Re-run: only keep connections where at least one node is unconnected FOR THIS MODE.
+        let newConnections: typeof result.connections
+
+        if (isFirstRun) {
+          console.log(
+            `[Weave Debug] First run for mode="${mode}", keeping all ${result.connections.length} connections`,
+          )
+          newConnections = result.connections
+        } else {
+          newConnections = result.connections.filter((c) => {
+            const fromConnected = connectedNodes.has(strip(c.from))
+            const toConnected = connectedNodes.has(strip(c.to))
+            const hasUnconnectedNode = !fromConnected || !toConnected
+            console.log(
+              `[Weave Debug]   ${c.from} <-> ${c.to} → from=${fromConnected ? 'connected' : 'NEW'} to=${toConnected ? 'connected' : 'NEW'} → ${hasUnconnectedNode ? 'KEPT' : 'FILTERED'}`,
+            )
+            return hasUnconnectedNode
+          })
+
+          console.log(
+            `[Weave Debug] After filter: ${newConnections.length} kept out of ${result.connections.length}`,
+          )
+        }
+
+        if (newConnections.length === 0) {
+          setState('no-new')
+          setTimeout(() => setState('idle'), 2000)
+        } else {
+          onResult({ connections: newConnections }, mode)
+          setState('idle')
+        }
       } catch (error) {
         console.error('Weave error:', error)
         setState('error')
@@ -68,33 +158,30 @@ export function WeaveButton({
   }, [connections])
 
   const handlePillClick = useCallback(
-    (key: WeaveMode | 'all') => {
-      if (key === 'all') {
-        onLayerChange('all')
-        return
-      }
-      if (availableModes.has(key)) {
+    (mode: WeaveMode) => {
+      if (availableModes.has(mode)) {
         // Already generated — just switch visibility
-        onLayerChange(key)
+        onLayerChange(mode)
       } else {
-        // Not yet generated — run the weave
-        handleWeave(key)
+        // Not yet generated — run the analysis
+        handleWeave(mode)
       }
     },
     [availableModes, onLayerChange, handleWeave],
   )
 
   const isLoading = state === 'loading'
+  const config = MODE_CONFIG[activeLayer]
   const loadingText = loadingMode
-    ? MODE_LABELS[loadingMode].loading
-    : 'Weaving...'
+    ? MODE_CONFIG[loadingMode].loading
+    : config.loading
   const hasConnections = connections.length > 0
 
   return (
     <div className="flex flex-col items-center gap-1.5">
-      {/* Primary Weave button */}
+      {/* Primary action button — re-runs the active mode */}
       <button
-        onClick={() => handleWeave('weave')}
+        onClick={() => handleWeave(activeLayer)}
         disabled={isLoading}
         className={`
           px-4 py-1.5 rounded-full text-sm font-medium shadow-sm border
@@ -102,27 +189,29 @@ export function WeaveButton({
           ${state === 'idle' ? 'bg-white border-gray-200 text-gray-700 hover:shadow-md hover:border-gray-300' : ''}
           ${state === 'loading' ? 'bg-white border-gray-200 text-gray-400 animate-pulse cursor-default' : ''}
           ${state === 'error' ? 'bg-red-50 border-red-200 text-red-500' : ''}
+          ${state === 'no-new' ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-default' : ''}
         `}
         aria-label="Analyze canvas and find connections"
       >
-        {state === 'idle' && 'Weave'}
+        {state === 'idle' && config.button}
         {state === 'loading' && loadingText}
         {state === 'error' && 'Error'}
+        {state === 'no-new' && 'No new connections'}
       </button>
 
       {/* Layer toggle pills — visible after first weave */}
       {hasConnections && !isLoading && (
         <div className="flex flex-col items-center gap-1">
           <div className="flex items-center gap-1">
-            {LAYER_OPTIONS.map(({ key, label }) => {
-              const isActive = activeLayer === key
-              const isGenerated = key === 'all' || availableModes.has(key)
-              const colors = key === 'all' ? null : getEdgeColor(key)
+            {TOGGLE_MODES.map((mode) => {
+              const isActive = activeLayer === mode
+              const isGenerated = availableModes.has(mode)
+              const colors = getEdgeColor(mode)
 
               return (
                 <button
-                  key={key}
-                  onClick={() => handlePillClick(key)}
+                  key={mode}
+                  onClick={() => handlePillClick(mode)}
                   className={`
                     flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px]
                     transition-all duration-150 cursor-pointer
@@ -137,28 +226,26 @@ export function WeaveButton({
                   style={
                     isActive
                       ? {
-                          backgroundColor: colors ? colors.fill : '#374151',
+                          backgroundColor: colors.fill,
                           color: '#FFFFFF',
                           borderWidth: '1px',
                           borderStyle: 'solid',
-                          borderColor: colors ? colors.fill : '#374151',
+                          borderColor: colors.fill,
                         }
                       : undefined
                   }
                 >
-                  {colors && (
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{
-                        backgroundColor: isActive
-                          ? '#FFFFFF'
-                          : isGenerated
-                            ? colors.stroke
-                            : '#9CA3AF',
-                      }}
-                    />
-                  )}
-                  {label}
+                  <span
+                    className="w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{
+                      backgroundColor: isActive
+                        ? '#FFFFFF'
+                        : isGenerated
+                          ? colors.stroke
+                          : '#9CA3AF',
+                    }}
+                  />
+                  {MODE_CONFIG[mode].pill}
                 </button>
               )
             })}

@@ -64,7 +64,7 @@ export function App() {
   const [connections, setConnections] = useState<Connection[]>(
     currentBoard.connections,
   )
-  const [activeLayer, setActiveLayer] = useState<WeaveMode | 'all'>('all')
+  const [activeLayer, setActiveLayer] = useState<WeaveMode>('weave')
   const [selectedEdge, setSelectedEdge] = useState<{
     connection: Connection
     position: { x: number; y: number }
@@ -147,7 +147,7 @@ export function App() {
     (boardId: string) => {
       saveCurrentBoard(nodes, connections)
       switchBoard(boardId)
-      setActiveLayer('all')
+      setActiveLayer('weave')
     },
     [nodes, connections, saveCurrentBoard, switchBoard],
   )
@@ -335,7 +335,7 @@ export function App() {
             onClear={() => {
               setSelectedEdge(null)
               setConnections([])
-              setActiveLayer('all')
+              setActiveLayer('weave')
             }}
           />
         </Panel>

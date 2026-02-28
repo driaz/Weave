@@ -10,7 +10,7 @@ function stripNodePrefix(id: string): string {
 
 export function useStaggeredEdges(
   connections: Connection[],
-  activeLayer: WeaveMode | 'all' = 'all',
+  activeLayer: WeaveMode = 'weave',
 ): Edge<WeaveEdgeData>[] {
   return useMemo(() => {
     // Group by normalised source-target pair to detect parallel edges

@@ -17,7 +17,7 @@ export type WeaveEdgeData = {
   mode?: WeaveMode
   connectionIndex?: number
   edgeOffset?: number
-  activeLayer?: WeaveMode | 'all'
+  activeLayer?: WeaveMode
 }
 
 const OFFSET_PX = 35
@@ -140,8 +140,7 @@ export function WeaveEdge({
 
   // Layer visibility: full opacity when active, dimmed when another layer is focused
   const active =
-    edgeData.activeLayer === 'all' ||
-    edgeData.mode === edgeData.activeLayer
+    (edgeData.mode ?? 'weave') === edgeData.activeLayer
   const pathOpacity = active ? 0.7 : 0.05
 
   return (
