@@ -1,8 +1,8 @@
 # Weave
 
-![Board with connections](./docs/screenshots/Board.png)
-
 Weave is a spatial thinking tool where you drop content onto a canvas — images, text, links, PDFs, tweets, YouTube videos — and let Claude find the connections you can't see on your own.
+
+![Board with connections](./docs/screenshots/Board.png)
 
 Hit **Weave**, and Claude analyzes everything on your board using vision and text understanding, then draws a neural graph of relationships between your content. The connections aren't surface-level pattern matching — they're genuine insights that surface non-obvious relationships and help defeat reflexive thinking.
 
@@ -24,6 +24,8 @@ Hit **Weave**, and Claude analyzes everything on your board using vision and tex
 
 Each mode adds a new layer of connections. Toggle between layers to focus on one mode at a time — inactive layers fade to 5% opacity so you can still see the network shape without the clutter.
 
+![Find Tensions](./docs/screenshots/Tension.png)
+
 ## Content Types
 
 - **Text cards** — Notes, quotes, ideas, anything
@@ -36,6 +38,8 @@ Double-click images for a full-size lightbox, tweets for an expanded view, or Yo
 ## How Claude Thinks
 
 The core of Weave is the system prompt. Rather than forcing connections into predefined categories, Claude generates relationship types organically — producing labels like "theory-to-illustration" or "Dostoevsky's suffering rooms" instead of generic tags like "related" or "thematic." This unconstrained ontology is essential to the tool's anti-reflexivity goal: if we define the categories, we impose our own cognitive framework on the connections.
+
+![Connection insight](./docs/screenshots/Insight.png)
 
 Each connection includes:
 - **Label** — A pithy name for the relationship ("Simulacra made visible")
