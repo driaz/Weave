@@ -1,6 +1,6 @@
 # Weave
 
-![Board](./docs/screenshots/weave-connections.png)
+![Board with connections](./docs/screenshots/Board.png)
 
 Weave is a spatial thinking tool where you drop content onto a canvas — images, text, links, PDFs, tweets, YouTube videos — and let Claude find the connections you can't see on your own.
 
