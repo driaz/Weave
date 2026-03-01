@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { useNodeHighlight } from '../hooks/useNodeHighlight'
 import { createPortal } from 'react-dom'
 import { extractYouTubeVideoId } from '../utils/linkUtils'
 
@@ -254,7 +255,7 @@ function GenericCard({
   )
 }
 
-export function LinkCardNode({ data }: NodeProps) {
+export function LinkCardNode({ id, data }: NodeProps) {
   const {
     url,
     title,
@@ -266,6 +267,7 @@ export function LinkCardNode({ data }: NodeProps) {
     authorHandle,
     tweetText,
   } = data as LinkCardData
+  const highlighted = useNodeHighlight(id)
   const [showLightbox, setShowLightbox] = useState(false)
 
   const closeLightbox = useCallback(() => setShowLightbox(false), [])
@@ -288,7 +290,7 @@ export function LinkCardNode({ data }: NodeProps) {
   return (
     <>
       <div
-        className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden w-[250px] cursor-pointer"
+        className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden w-[250px] cursor-pointer${highlighted ? ' node-highlight' : ''}`}
         onDoubleClick={handleDoubleClick}
         role="link"
         aria-label={`Link to ${title} on ${domain}`}

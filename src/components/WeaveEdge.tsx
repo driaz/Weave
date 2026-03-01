@@ -1,3 +1,4 @@
+import { createContext, useContext } from 'react'
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -6,7 +7,17 @@ import {
   type EdgeProps,
 } from '@xyflow/react'
 import type { WeaveMode } from '../types/board'
+import type { Connection } from '../api/claude'
 import { getEdgeColor } from '../utils/edgeColors'
+
+type EdgeLabelClickHandler = (
+  connection: Connection,
+  position: { x: number; y: number },
+) => void
+
+export const EdgeLabelClickContext = createContext<EdgeLabelClickHandler>(
+  () => {},
+)
 
 export type WeaveEdgeData = {
   label: string
@@ -18,9 +29,10 @@ export type WeaveEdgeData = {
   connectionIndex?: number
   edgeOffset?: number
   activeLayer?: WeaveMode
+  connection?: Connection
 }
 
-const OFFSET_PX = 35
+const OFFSET_PX = 60
 
 /** Return the base control-point delta for a given handle position. */
 function controlPointDelta(
@@ -106,6 +118,7 @@ export function WeaveEdge({
   data,
 }: EdgeProps) {
   const edgeData = data as WeaveEdgeData | undefined
+  const onLabelClick = useContext(EdgeLabelClickContext)
   if (!edgeData) return null
 
   const offset = (edgeData.edgeOffset ?? 0) * OFFSET_PX
@@ -148,11 +161,13 @@ export function WeaveEdge({
       <BaseEdge
         id={id}
         path={edgePath}
+        interactionWidth={0}
         style={{
           stroke: colors.stroke,
           strokeWidth,
           opacity: pathOpacity,
           transition: 'opacity 200ms ease',
+          pointerEvents: 'none',
         }}
       />
 
@@ -161,7 +176,7 @@ export function WeaveEdge({
           <div
             className="nodrag nopan pointer-events-auto cursor-pointer
               text-[11px] leading-tight px-2 py-0.5 rounded-full
-              hover:shadow-md transition-shadow duration-150"
+              shadow-sm hover:shadow-md transition-shadow duration-150"
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
@@ -170,7 +185,14 @@ export function WeaveEdge({
               borderStyle: 'solid',
               borderColor: colors.border,
               color: colors.text,
-              boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08)',
+            }}
+            onClick={(e) => {
+              if (edgeData.connection) {
+                onLabelClick(edgeData.connection, {
+                  x: e.clientX,
+                  y: e.clientY,
+                })
+              }
             }}
           >
             {edgeData.label}

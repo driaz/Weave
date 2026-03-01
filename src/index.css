@@ -24,3 +24,17 @@ body,
   background-size: 800px 100%;
   animation: shimmer 1.5s infinite linear;
 }
+
+@keyframes node-highlight-pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(55, 65, 81, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(55, 65, 81, 0.6);
+  }
+}
+
+.node-highlight {
+  border-color: #374151 !important;
+  animation: node-highlight-pulse 1.8s ease-in-out infinite;
+}

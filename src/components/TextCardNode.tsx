@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
+import { useNodeHighlight } from '../hooks/useNodeHighlight'
 
 export type TextCardData = {
   text: string
@@ -16,6 +17,7 @@ export function TextCardNode({ id, data }: NodeProps) {
   const [value, setValue] = useState(text)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const { updateNodeData } = useReactFlow()
+  const highlighted = useNodeHighlight(id)
 
   useEffect(() => {
     if (editing && textareaRef.current) {
@@ -45,7 +47,9 @@ export function TextCardNode({ id, data }: NodeProps) {
   )
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm w-[280px]">
+    <div
+      className={`rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm w-[280px]${highlighted ? ' node-highlight' : ''}`}
+    >
       {editing ? (
         <textarea
           ref={textareaRef}

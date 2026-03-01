@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
@@ -16,7 +16,11 @@ import { LinkCardNode } from './components/LinkCardNode'
 import { PdfCardNode } from './components/PdfCardNode'
 import { AddNodeButton } from './components/AddNodeButton'
 import { WeaveButton } from './components/WeaveButton'
-import { WeaveEdge, type WeaveEdgeData } from './components/WeaveEdge'
+import {
+  WeaveEdge,
+  EdgeLabelClickContext,
+  type WeaveEdgeData,
+} from './components/WeaveEdge'
 import { EdgeDetailPopup } from './components/EdgeDetailPopup'
 import { BoardSwitcher } from './components/BoardSwitcher'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
@@ -27,6 +31,7 @@ import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
+import { NodeHighlightContext } from './hooks/useNodeHighlight'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -74,6 +79,18 @@ export function App() {
     Edge<WeaveEdgeData>
   > | null>(null)
   const edges = useStaggeredEdges(connections, activeLayer)
+
+  // Derive highlighted node IDs from the selected edge's connection
+  const highlightedNodeIds = useMemo(() => {
+    if (!selectedEdge) return new Set<string>()
+    const conn = selectedEdge.connection
+    return new Set<string>([
+      conn.from,
+      conn.to,
+      conn.from.replace(/^node-/, ''),
+      conn.to.replace(/^node-/, ''),
+    ])
+  }, [selectedEdge])
 
   // Sync state when switching boards or when hydration completes
   const prevBoardIdRef = useRef(currentBoard.id)
@@ -125,22 +142,11 @@ export function App() {
     [],
   )
 
-  const onEdgeClick = useCallback(
-    (_event: React.MouseEvent, edge: Edge<WeaveEdgeData>) => {
-      const edgeData = edge.data as WeaveEdgeData | undefined
-      const conn =
-        edgeData?.connectionIndex != null
-          ? connections[edgeData.connectionIndex]
-          : connections.find(
-              (c) => c.from === edge.source && c.to === edge.target,
-            )
-      if (!conn) return
-      setSelectedEdge({
-        connection: conn,
-        position: { x: _event.clientX, y: _event.clientY },
-      })
+  const onLabelClick = useCallback(
+    (connection: Connection, position: { x: number; y: number }) => {
+      setSelectedEdge({ connection, position })
     },
-    [connections],
+    [],
   )
 
   const handleSwitchBoard = useCallback(
@@ -305,13 +311,14 @@ export function App() {
           </button>
         </div>
       )}
+      <NodeHighlightContext.Provider value={highlightedNodeIds}>
+      <EdgeLabelClickContext.Provider value={onLabelClick}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
-        onEdgeClick={onEdgeClick}
         onInit={(instance) => {
           reactFlowRef.current = instance
         }}
@@ -361,6 +368,8 @@ export function App() {
           </div>
         )}
       </ReactFlow>
+      </EdgeLabelClickContext.Provider>
+      </NodeHighlightContext.Provider>
       {selectedEdge && (
         <EdgeDetailPopup
           connection={selectedEdge.connection}

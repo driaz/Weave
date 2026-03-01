@@ -49,6 +49,7 @@ export function useStaggeredEdges(
           connectionIndex: index,
           edgeOffset,
           activeLayer,
+          connection: conn,
         },
       }
     })

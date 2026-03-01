@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
+import { useNodeHighlight } from '../hooks/useNodeHighlight'
 import { createPortal } from 'react-dom'
 import { renderPdfPage } from '../utils/pdfUtils'
 
@@ -126,6 +127,7 @@ export function PdfCardNode({ id, data }: NodeProps) {
   const [showLightbox, setShowLightbox] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const { updateNodeData } = useReactFlow()
+  const highlighted = useNodeHighlight(id)
 
   const openLightbox = useCallback(() => setShowLightbox(true), [])
   const closeLightbox = useCallback(() => setShowLightbox(false), [])
@@ -158,7 +160,7 @@ export function PdfCardNode({ id, data }: NodeProps) {
   return (
     <>
       <div
-        className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden"
+        className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden${highlighted ? ' node-highlight' : ''}`}
         aria-label={`PDF: ${label || defaultLabel}`}
       >
         {thumbnailDataUrl ? (
