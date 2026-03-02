@@ -5,11 +5,9 @@ Weave is a spatial thinking tool where you drop content onto a canvas — images
 
 Hit **Weave**, and Claude analyzes everything on your board using vision and text understanding, then draws a neural graph of relationships between your content. The connections aren't surface-level pattern matching — they're genuine insights that surface non-obvious relationships and help defeat reflexive thinking.
 
-[![Watch the demo](https://cdn.loom.com/sessions/thumbnails/198234564ff14bfab3ab928669a89ac1-with-play.gif)](https://www.loom.com/share/198234564ff14bfab3ab928669a89ac1)
+🎥 [Watch the demo](https://www.loom.com/share/198234564ff14bfab3ab928669a89ac1)
 
 ![Board with connections](./docs/screenshots/Board.png)
-
-<!-- ![Weave in action](./docs/screenshots/weave-demo.png) -->
 
 ## How It Works
 
