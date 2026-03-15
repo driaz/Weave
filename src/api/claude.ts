@@ -213,12 +213,7 @@ export async function analyzeCanvas(
   previousConnections: Connection[] = [],
 ): Promise<WeaveResult> {
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined
-
-  if (!apiKey) {
-    throw new Error(
-      'Missing VITE_ANTHROPIC_API_KEY. Add it to your .env file.',
-    )
-  }
+  const useProxy = !apiKey
 
   const contentNodes = nodes.filter(
     (n) =>
@@ -233,12 +228,11 @@ export async function analyzeCanvas(
 
   const content = await serializeNodes(contentNodes)
 
-  // Include existing connections as context to prevent duplicates.
-  // "Go Deeper" sees ALL previous connections; other modes see only same-mode ones.
-  const contextConnections =
-    mode === 'deeper'
-      ? previousConnections
-      : previousConnections.filter((c) => c.mode === mode)
+  // Include same-mode connections as context to prevent duplicates.
+  // Each mode only sees its own connections so the "unconnected node" filter
+  // works correctly — a node connected in Standard isn't considered connected
+  // in Go Deeper or Find Tensions.
+  const contextConnections = previousConnections.filter((c) => c.mode === mode)
 
   if (contextConnections.length > 0) {
     console.log(
@@ -255,21 +249,29 @@ export async function analyzeCanvas(
     )
   }
 
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 4096,
-      system: getSystemPrompt(mode),
-      messages: [{ role: 'user', content }],
-    }),
+  const requestBody = JSON.stringify({
+    model: MODEL,
+    max_tokens: 4096,
+    system: getSystemPrompt(mode),
+    messages: [{ role: 'user', content }],
   })
+
+  const response = useProxy
+    ? await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: requestBody,
+      })
+    : await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+          'content-type': 'application/json',
+        },
+        body: requestBody,
+      })
 
   if (!response.ok) {
     const errorBody = await response.text()

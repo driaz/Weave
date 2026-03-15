@@ -121,10 +121,11 @@ async function fetchTwitterMetadata(url: string): Promise<LinkMetadata> {
       tweetText,
     }
   } catch {
-    // Fall through to Microlink
+    // Fall through to Microlink but preserve twitter type
   }
 
-  return fetchMicrolinkMetadata(trimmedUrl)
+  const fallback = await fetchMicrolinkMetadata(trimmedUrl)
+  return { ...fallback, type: 'twitter' as const }
 }
 
 async function fetchYouTubeMetadata(url: string): Promise<LinkMetadata> {
@@ -152,10 +153,11 @@ async function fetchYouTubeMetadata(url: string): Promise<LinkMetadata> {
       authorName: json.author_name || '',
     }
   } catch {
-    // Fall through to Microlink
+    // Fall through to Microlink but preserve youtube type
   }
 
-  return fetchMicrolinkMetadata(trimmedUrl)
+  const fallback = await fetchMicrolinkMetadata(trimmedUrl)
+  return { ...fallback, type: 'youtube' as const }
 }
 
 async function fetchMicrolinkMetadata(url: string): Promise<LinkMetadata> {
