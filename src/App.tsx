@@ -34,6 +34,7 @@ import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 import { NodeHighlightContext } from './hooks/useNodeHighlight'
 import { trackEvent } from './services/eventTracker'
 import { BoardIdContext } from './hooks/useBoardId'
+import { embedNodeAsync } from './services/embeddingService'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -261,6 +262,11 @@ export function App() {
           boardId: currentBoard.id,
           metadata: { node_type: 'imageCard' },
         })
+        embedNodeAsync(currentBoard.id, nodeId, 'imageCard', {
+          imageDataUrl,
+          fileName: file.name,
+          label: '',
+        })
         offset++
       }
 
@@ -296,6 +302,12 @@ export function App() {
           targetId: `${currentBoard.id}:${nodeId}`,
           boardId: currentBoard.id,
           metadata: { node_type: 'pdfCard' },
+        })
+        embedNodeAsync(currentBoard.id, nodeId, 'pdfCard', {
+          thumbnailDataUrl,
+          fileName: file.name,
+          label: '',
+          pageCount,
         })
         offset++
       }
@@ -364,6 +376,12 @@ export function App() {
             : node,
         ),
       )
+
+      // Embed after metadata is available (not during loading state)
+      embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
+        ...metadata,
+        loading: false,
+      })
     }
 
     document.addEventListener('paste', handlePaste)

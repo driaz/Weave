@@ -6,6 +6,7 @@ import { fetchLinkMetadata, isUrl, extractDomain } from '../utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
+import { embedNodeAsync } from '../services/embeddingService'
 
 export function AddNodeButton() {
   const { addNodes, screenToFlowPosition, updateNodeData } = useReactFlow()
@@ -63,6 +64,8 @@ export function AddNodeButton() {
       boardId,
       metadata: { node_type: 'textCard' },
     })
+    // Text is empty at creation — embedNode will skip gracefully
+    embedNodeAsync(boardId, nodeId, 'textCard', { text: '' })
     setMenuOpen(false)
   }, [addNodes, getCenterPosition, boardId])
 
@@ -88,6 +91,11 @@ export function AddNodeButton() {
         targetId: `${boardId}:${nodeId}`,
         boardId,
         metadata: { node_type: 'imageCard' },
+      })
+      embedNodeAsync(boardId, nodeId, 'imageCard', {
+        imageDataUrl,
+        fileName: file.name,
+        label: '',
       })
 
       e.target.value = ''
@@ -126,6 +134,12 @@ export function AddNodeButton() {
         targetId: `${boardId}:${nodeId}`,
         boardId,
         metadata: { node_type: 'pdfCard' },
+      })
+      embedNodeAsync(boardId, nodeId, 'pdfCard', {
+        thumbnailDataUrl,
+        fileName: file.name,
+        label: '',
+        pageCount,
       })
 
       e.target.value = ''
@@ -178,6 +192,12 @@ export function AddNodeButton() {
     // Fetch metadata and update node
     const metadata = await fetchLinkMetadata(urlToFetch)
     updateNodeData(nodeId, {
+      ...metadata,
+      loading: false,
+    })
+
+    // Embed after metadata is available (not during loading state)
+    embedNodeAsync(boardId, nodeId, 'linkCard', {
       ...metadata,
       loading: false,
     })
