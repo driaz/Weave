@@ -3,6 +3,8 @@ import { useReactFlow } from '@xyflow/react'
 import type { WeaveMode } from '../types/board'
 import { analyzeCanvas, type Connection, type WeaveResult } from '../api/claude'
 import { getEdgeColor } from '../utils/edgeColors'
+import { trackEvent } from '../services/eventTracker'
+import { useBoardId } from '../hooks/useBoardId'
 
 type WeaveState = 'idle' | 'loading' | 'error' | 'no-new'
 
@@ -38,6 +40,7 @@ export function WeaveButton({
   const [loadingMode, setLoadingMode] = useState<WeaveMode | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const { getNodes } = useReactFlow()
+  const boardId = useBoardId()
 
   // Dismiss clear confirmation on Escape
   useEffect(() => {
@@ -54,6 +57,11 @@ export function WeaveButton({
       if (state === 'loading') return
       setState('loading')
       setLoadingMode(mode)
+
+      trackEvent('weave_triggered', {
+        boardId,
+        metadata: { mode },
+      })
 
       try {
         const nodes = getNodes()
@@ -156,7 +164,7 @@ export function WeaveButton({
         setLoadingMode(null)
       }
     },
-    [state, getNodes, connections, onResult],
+    [state, getNodes, connections, onResult, boardId],
   )
 
   // Which modes already have connections on the canvas

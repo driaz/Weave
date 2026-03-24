@@ -32,6 +32,8 @@ import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 import { NodeHighlightContext } from './hooks/useNodeHighlight'
+import { trackEvent } from './services/eventTracker'
+import { BoardIdContext } from './hooks/useBoardId'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -118,6 +120,25 @@ export function App() {
     prevHydratingRef.current = hydrating
   }, [currentBoard.id, currentBoard.nodes, currentBoard.connections, hydrating])
 
+  // Track session lifecycle
+  useEffect(() => {
+    trackEvent('session_started', { boardId: currentBoard.id })
+
+    const handleEnd = () => {
+      trackEvent('session_ended', { boardId: currentBoard.id })
+    }
+    window.addEventListener('beforeunload', handleEnd)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') handleEnd()
+    })
+
+    return () => {
+      window.removeEventListener('beforeunload', handleEnd)
+    }
+    // Only fire once on mount — board ID captured at load time
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Debounced auto-save (500ms) — skip while hydrating to avoid saving stripped data
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
@@ -142,11 +163,43 @@ export function App() {
     [],
   )
 
+  // Track when the edge detail popup was opened (for duration_ms on close)
+  const edgeOpenedAtRef = useRef<number | null>(null)
+
+  const closeEdgeDetail = useCallback(() => {
+    if (selectedEdge && edgeOpenedAtRef.current) {
+      const durationMs = Date.now() - edgeOpenedAtRef.current
+      const conn = selectedEdge.connection
+      const edgeId = `weave-${conn.from.replace(/^node-/, '')}-${conn.to.replace(/^node-/, '')}`
+      trackEvent('connection_description_closed', {
+        targetId: edgeId,
+        boardId: currentBoard.id,
+        durationMs,
+      })
+    }
+    edgeOpenedAtRef.current = null
+    setSelectedEdge(null)
+  }, [selectedEdge, currentBoard.id])
+
   const onLabelClick = useCallback(
     (connection: Connection, position: { x: number; y: number }) => {
+      edgeOpenedAtRef.current = Date.now()
       setSelectedEdge({ connection, position })
+
+      // Derive edge ID from connection fields
+      const edgeId = `weave-${connection.from.replace(/^node-/, '')}-${connection.to.replace(/^node-/, '')}`
+      trackEvent('connection_label_clicked', {
+        targetId: edgeId,
+        boardId: currentBoard.id,
+        metadata: {
+          connection_type: connection.type,
+          strength: connection.strength,
+          surprise: connection.surprise,
+          mode: connection.mode,
+        },
+      })
     },
-    [],
+    [currentBoard.id],
   )
 
   const handleSwitchBoard = useCallback(
@@ -154,13 +207,16 @@ export function App() {
       saveCurrentBoard(nodes, connections)
       switchBoard(boardId)
       setActiveLayer('weave')
+      trackEvent('board_switched', { boardId })
     },
     [nodes, connections, saveCurrentBoard, switchBoard],
   )
 
   const handleCreateBoard = useCallback(() => {
     saveCurrentBoard(nodes, connections)
-    return createBoard()
+    const newBoardId = createBoard()
+    trackEvent('board_created', { boardId: newBoardId })
+    return newBoardId
   }, [nodes, connections, saveCurrentBoard, createBoard])
 
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -190,15 +246,21 @@ export function App() {
           y: clientY + offset * 30,
         })
 
+        const nodeId = generateNodeId()
         setNodes((prev) => [
           ...prev,
           {
-            id: generateNodeId(),
+            id: nodeId,
             type: 'imageCard',
             position,
             data: { imageDataUrl, fileName: file.name, label: '' },
           },
         ])
+        trackEvent('item_added', {
+          targetId: `${currentBoard.id}:${nodeId}`,
+          boardId: currentBoard.id,
+          metadata: { node_type: 'imageCard' },
+        })
         offset++
       }
 
@@ -214,10 +276,11 @@ export function App() {
           y: clientY + offset * 30,
         })
 
+        const nodeId = generateNodeId()
         setNodes((prev) => [
           ...prev,
           {
-            id: generateNodeId(),
+            id: nodeId,
             type: 'pdfCard',
             position,
             data: {
@@ -229,10 +292,15 @@ export function App() {
             },
           },
         ])
+        trackEvent('item_added', {
+          targetId: `${currentBoard.id}:${nodeId}`,
+          boardId: currentBoard.id,
+          metadata: { node_type: 'pdfCard' },
+        })
         offset++
       }
     },
-    [setNodes],
+    [setNodes, currentBoard.id],
   )
 
   useEffect(() => {
@@ -280,6 +348,11 @@ export function App() {
           },
         },
       ])
+      trackEvent('item_added', {
+        targetId: `${currentBoard.id}:${nodeId}`,
+        boardId: currentBoard.id,
+        metadata: { node_type: 'linkCard' },
+      })
 
       // Fetch metadata and update the node
       const metadata = await fetchLinkMetadata(text)
@@ -295,9 +368,10 @@ export function App() {
 
     document.addEventListener('paste', handlePaste)
     return () => document.removeEventListener('paste', handlePaste)
-  }, [setNodes])
+  }, [setNodes, currentBoard.id])
 
   return (
+    <BoardIdContext.Provider value={currentBoard.id}>
     <div className="w-screen h-screen relative">
       {storageError && (
         <div className="absolute top-0 left-0 right-0 z-50 bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm text-amber-800 flex items-center justify-between">
@@ -335,12 +409,12 @@ export function App() {
             activeLayer={activeLayer}
             onLayerChange={setActiveLayer}
             onResult={(result, mode) => {
-              setSelectedEdge(null)
+              closeEdgeDetail()
               setConnections((prev) => [...prev, ...result.connections])
               setActiveLayer(mode)
             }}
             onClear={() => {
-              setSelectedEdge(null)
+              closeEdgeDetail()
               setConnections([])
               setActiveLayer('weave')
             }}
@@ -374,9 +448,10 @@ export function App() {
         <EdgeDetailPopup
           connection={selectedEdge.connection}
           position={selectedEdge.position}
-          onClose={() => setSelectedEdge(null)}
+          onClose={closeEdgeDetail}
         />
       )}
     </div>
+    </BoardIdContext.Provider>
   )
 }
