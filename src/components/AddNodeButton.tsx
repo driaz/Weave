@@ -4,9 +4,12 @@ import { generateNodeId } from '../utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from '../utils/imageUtils'
 import { fetchLinkMetadata, isUrl, extractDomain } from '../utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
+import { trackEvent } from '../services/eventTracker'
+import { useBoardId } from '../hooks/useBoardId'
 
 export function AddNodeButton() {
   const { addNodes, screenToFlowPosition, updateNodeData } = useReactFlow()
+  const boardId = useBoardId()
   const [menuOpen, setMenuOpen] = useState(false)
   const [linkInputMode, setLinkInputMode] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
@@ -48,14 +51,20 @@ export function AddNodeButton() {
   }, [screenToFlowPosition])
 
   const handleAddText = useCallback(() => {
+    const nodeId = generateNodeId()
     addNodes({
-      id: generateNodeId(),
+      id: nodeId,
       type: 'textCard',
       position: getCenterPosition(),
       data: { text: '' },
     })
+    trackEvent('item_added', {
+      targetId: `${boardId}:${nodeId}`,
+      boardId,
+      metadata: { node_type: 'textCard' },
+    })
     setMenuOpen(false)
-  }, [addNodes, getCenterPosition])
+  }, [addNodes, getCenterPosition, boardId])
 
   const handleAddImage = useCallback(() => {
     fileInputRef.current?.click()
@@ -68,16 +77,22 @@ export function AddNodeButton() {
       if (!file || !isImageFile(file)) return
 
       const imageDataUrl = await readFileAsDataUrl(file)
+      const nodeId = generateNodeId()
       addNodes({
-        id: generateNodeId(),
+        id: nodeId,
         type: 'imageCard',
         position: getCenterPosition(),
         data: { imageDataUrl, fileName: file.name, label: '' },
       })
+      trackEvent('item_added', {
+        targetId: `${boardId}:${nodeId}`,
+        boardId,
+        metadata: { node_type: 'imageCard' },
+      })
 
       e.target.value = ''
     },
-    [addNodes, getCenterPosition],
+    [addNodes, getCenterPosition, boardId],
   )
 
   const handleAddPdf = useCallback(() => {
@@ -94,8 +109,9 @@ export function AddNodeButton() {
       const { thumbnailDataUrl, pageCount } =
         await renderPdfThumbnail(pdfDataUrl)
 
+      const nodeId = generateNodeId()
       addNodes({
-        id: generateNodeId(),
+        id: nodeId,
         type: 'pdfCard',
         position: getCenterPosition(),
         data: {
@@ -106,10 +122,15 @@ export function AddNodeButton() {
           pageCount,
         },
       })
+      trackEvent('item_added', {
+        targetId: `${boardId}:${nodeId}`,
+        boardId,
+        metadata: { node_type: 'pdfCard' },
+      })
 
       e.target.value = ''
     },
-    [addNodes, getCenterPosition],
+    [addNodes, getCenterPosition, boardId],
   )
 
   const handleLinkSubmit = useCallback(async () => {
@@ -143,6 +164,11 @@ export function AddNodeButton() {
         loading: true,
       },
     })
+    trackEvent('item_added', {
+      targetId: `${boardId}:${nodeId}`,
+      boardId,
+      metadata: { node_type: 'linkCard' },
+    })
 
     // Close menu immediately
     setMenuOpen(false)
@@ -157,7 +183,7 @@ export function AddNodeButton() {
     })
 
     setFetchingLink(false)
-  }, [linkUrl, fetchingLink, addNodes, getCenterPosition, updateNodeData])
+  }, [linkUrl, fetchingLink, addNodes, getCenterPosition, updateNodeData, boardId])
 
   const handleLinkKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
