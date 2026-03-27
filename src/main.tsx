@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import { App } from './App'
 import { backfillEmbeddings } from './utils/backfillEmbeddings'
+import './utils/backfillTweetEmbeds'
 
 // Expose backfill utility on window for console access:
 //   window.backfillEmbeddings()
