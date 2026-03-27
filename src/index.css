@@ -38,3 +38,39 @@ body,
   border-color: #374151 !important;
   animation: node-highlight-pulse 1.8s ease-in-out infinite;
 }
+
+/* Tweet embed: hide raw blockquote, show spinner, reveal after hydration */
+.tweet-embed-container {
+  position: relative;
+  min-height: 100px;
+}
+
+.tweet-embed-container blockquote.twitter-tweet {
+  visibility: hidden !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+}
+
+.tweet-embed-container .twitter-tweet-rendered {
+  visibility: visible !important;
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* Spinner shown while blockquote exists (before hydration) */
+.tweet-embed-container:has(blockquote.twitter-tweet:not(.twitter-tweet-rendered))::before {
+  content: "";
+  display: block;
+  width: 32px;
+  height: 32px;
+  margin: 48px auto;
+  border: 2px solid #e5e7eb;
+  border-top-color: #6b7280;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

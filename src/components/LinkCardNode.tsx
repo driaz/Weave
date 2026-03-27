@@ -81,23 +81,19 @@ function TweetLightbox({
       }
     }
 
-    // If widgets.js is already loaded, hydrate immediately
     if (win.twttr?.widgets) {
       hydrate()
-      return
+    } else {
+      let script = document.querySelector('script[src*="platform.twitter.com/widgets.js"]') as HTMLScriptElement | null
+      if (!script) {
+        script = document.createElement('script')
+        script.src = 'https://platform.twitter.com/widgets.js'
+        script.async = true
+        script.charset = 'utf-8'
+        document.head.appendChild(script)
+      }
+      script.addEventListener('load', hydrate)
     }
-
-    // Inject script if not yet present, then hydrate on load
-    let script = document.querySelector('script[src*="platform.twitter.com/widgets.js"]') as HTMLScriptElement | null
-    if (!script) {
-      script = document.createElement('script')
-      script.src = 'https://platform.twitter.com/widgets.js'
-      script.async = true
-      script.charset = 'utf-8'
-      document.head.appendChild(script)
-    }
-    script.addEventListener('load', hydrate)
-    return () => { script?.removeEventListener('load', hydrate) }
   }, [embedHtml])
 
   // Fallback: detect YouTube URL in tweet text for plain-text mode
@@ -126,10 +122,12 @@ function TweetLightbox({
         onClick={(e) => e.stopPropagation()}
       >
         {embedHtml ? (
-          <div
-            ref={embedRef}
-            dangerouslySetInnerHTML={{ __html: embedHtml }}
-          />
+          <div className="tweet-embed-container">
+            <div
+              ref={embedRef}
+              dangerouslySetInnerHTML={{ __html: embedHtml }}
+            />
+          </div>
         ) : (
           <>
             <div className="mb-3">
