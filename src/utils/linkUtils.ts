@@ -8,6 +8,7 @@ export type LinkMetadata = {
   authorName?: string
   authorHandle?: string
   tweetText?: string
+  embedHtml?: string
 }
 
 export function isUrl(text: string): boolean {
@@ -49,6 +50,13 @@ export function isYouTubeUrl(url: string): boolean {
   }
 }
 
+export function extractYouTubeUrlFromText(text: string): string | null {
+  const match = text.match(
+    /https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\S*|shorts\/\S+)|youtu\.be\/\S+)/,
+  )
+  return match ? match[0] : null
+}
+
 export function extractYouTubeVideoId(url: string): string | null {
   try {
     const parsed = new URL(url.trim())
@@ -81,6 +89,9 @@ function stripHtmlTags(html: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&mdash;/g, '\u2014')
+    .replace(/&ndash;/g, '\u2013')
+    .replace(/&hellip;/g, '\u2026')
     .trim()
 }
 
@@ -119,6 +130,7 @@ async function fetchTwitterMetadata(url: string): Promise<LinkMetadata> {
       authorName,
       authorHandle,
       tweetText,
+      embedHtml: json.html || '',
     }
   } catch {
     // Fall through to Microlink but preserve twitter type

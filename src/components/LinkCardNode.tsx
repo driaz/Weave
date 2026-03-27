@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { useNodeHighlight } from '../hooks/useNodeHighlight'
 import { createPortal } from 'react-dom'
-import { extractYouTubeVideoId } from '../utils/linkUtils'
+import { extractYouTubeVideoId, extractYouTubeUrlFromText } from '../utils/linkUtils'
 
 export type LinkCardData = {
   url: string
@@ -15,6 +15,7 @@ export type LinkCardData = {
   authorName?: string
   authorHandle?: string
   tweetText?: string
+  embedHtml?: string
 }
 
 function SkeletonCard() {
@@ -43,15 +44,21 @@ function TweetLightbox({
   authorName,
   authorHandle,
   tweetText,
+  imageUrl,
+  embedHtml,
   domain,
   onClose,
 }: {
   authorName: string
   authorHandle: string
   tweetText: string
+  imageUrl: string
+  embedHtml: string
   domain: string
   onClose: () => void
 }) {
+  const embedRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -59,6 +66,52 @@ function TweetLightbox({
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [onClose])
+
+  // Load Twitter widgets.js to hydrate the embed HTML
+  useEffect(() => {
+    if (!embedHtml || !embedRef.current) return
+    const container = embedRef.current
+
+    type Twttr = { widgets: { load: (el?: HTMLElement) => void } }
+    const win = window as unknown as { twttr?: Twttr }
+
+    const hydrate = () => {
+      if (win.twttr?.widgets) {
+        win.twttr.widgets.load(container)
+      }
+    }
+
+    // If widgets.js is already loaded, hydrate immediately
+    if (win.twttr?.widgets) {
+      hydrate()
+      return
+    }
+
+    // Inject script if not yet present, then hydrate on load
+    let script = document.querySelector('script[src*="platform.twitter.com/widgets.js"]') as HTMLScriptElement | null
+    if (!script) {
+      script = document.createElement('script')
+      script.src = 'https://platform.twitter.com/widgets.js'
+      script.async = true
+      script.charset = 'utf-8'
+      document.head.appendChild(script)
+    }
+    script.addEventListener('load', hydrate)
+    return () => { script?.removeEventListener('load', hydrate) }
+  }, [embedHtml])
+
+  // Fallback: detect YouTube URL in tweet text for plain-text mode
+  const youtubeUrl = extractYouTubeUrlFromText(tweetText)
+  const youtubeVideoId = youtubeUrl ? extractYouTubeVideoId(youtubeUrl) : null
+
+  // Clean display text for plain-text fallback
+  let displayText = tweetText
+  if (imageUrl) {
+    displayText = displayText.replace(/https?:\/\/pic\.twitter\.com\/\S+/g, '').trim()
+  }
+  if (youtubeVideoId) {
+    displayText = displayText.replace(/https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\S*|shorts\/\S+)|youtu\.be\/\S+)/g, '').trim()
+  }
 
   return createPortal(
     <div
@@ -69,19 +122,49 @@ function TweetLightbox({
       aria-label={`Tweet by ${authorName}`}
     >
       <div
-        className="bg-white rounded-xl shadow-2xl w-[400px] max-w-[90vw] p-5 cursor-default"
+        className="bg-white rounded-xl shadow-2xl w-[550px] max-w-[90vw] max-h-[90vh] overflow-y-auto p-5 cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-3">
-          <p className="text-base font-semibold text-gray-900">{authorName}</p>
-          {authorHandle && (
-            <p className="text-sm text-gray-400">{authorHandle}</p>
-          )}
-        </div>
-        <p className="text-[15px] text-gray-700 leading-relaxed whitespace-pre-line mb-4">
-          {tweetText}
-        </p>
-        <p className="text-xs text-gray-400">{domain}</p>
+        {embedHtml ? (
+          <div
+            ref={embedRef}
+            dangerouslySetInnerHTML={{ __html: embedHtml }}
+          />
+        ) : (
+          <>
+            <div className="mb-3">
+              <p className="text-base font-semibold text-gray-900">{authorName}</p>
+              {authorHandle && (
+                <p className="text-sm text-gray-400">{authorHandle}</p>
+              )}
+            </div>
+            <p className="text-[15px] text-gray-700 leading-relaxed whitespace-pre-line mb-4">
+              {displayText}
+            </p>
+            {imageUrl && (
+              <img
+                src={imageUrl}
+                alt={`Image from tweet by ${authorName}`}
+                className="w-full rounded-lg mb-4"
+                onError={(e) => {
+                  ;(e.target as HTMLImageElement).style.display = 'none'
+                }}
+              />
+            )}
+            {youtubeVideoId && (
+              <div className="w-full aspect-video mb-4">
+                <iframe
+                  src={`https://www.youtube.com/embed/${youtubeVideoId}`}
+                  title="Embedded YouTube video"
+                  className="w-full h-full rounded-lg"
+                  allow="autoplay; encrypted-media"
+                  allowFullScreen
+                />
+              </div>
+            )}
+            <p className="text-xs text-gray-400">{domain}</p>
+          </>
+        )}
       </div>
     </div>,
     document.body,
@@ -266,6 +349,7 @@ export function LinkCardNode({ id, data }: NodeProps) {
     authorName,
     authorHandle,
     tweetText,
+    embedHtml,
   } = data as LinkCardData
   const highlighted = useNodeHighlight(id)
   const [showLightbox, setShowLightbox] = useState(false)
@@ -330,6 +414,8 @@ export function LinkCardNode({ id, data }: NodeProps) {
           authorName={authorName || ''}
           authorHandle={authorHandle || ''}
           tweetText={tweetText || ''}
+          imageUrl={imageUrl || ''}
+          embedHtml={embedHtml || ''}
           domain={domain}
           onClose={closeLightbox}
         />
