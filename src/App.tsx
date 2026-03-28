@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
@@ -31,7 +31,7 @@ import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
-import { NodeHighlightContext } from './hooks/useNodeHighlight'
+import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
 import { BoardIdContext } from './hooks/useBoardId'
 import { embedNodeAsync } from './services/embeddingService'
@@ -73,7 +73,9 @@ export function App() {
     currentBoard.connections,
   )
   const [activeLayer, setActiveLayer] = useState<WeaveMode>('weave')
-  const [selectedEdge, setSelectedEdge] = useState<{
+  const [highlightState, setHighlightState] = useState<HighlightState>(null)
+  // Separate state for the popup — can be open alongside any highlight mode
+  const [popupEdge, setPopupEdge] = useState<{
     connection: Connection
     position: { x: number; y: number }
   } | null>(null)
@@ -81,19 +83,23 @@ export function App() {
     Node,
     Edge<WeaveEdgeData>
   > | null>(null)
-  const edges = useStaggeredEdges(connections, activeLayer)
+  const edges = useStaggeredEdges(connections, activeLayer, highlightState)
 
-  // Derive highlighted node IDs from the selected edge's connection
-  const highlightedNodeIds = useMemo(() => {
-    if (!selectedEdge) return new Set<string>()
-    const conn = selectedEdge.connection
-    return new Set<string>([
-      conn.from,
-      conn.to,
-      conn.from.replace(/^node-/, ''),
-      conn.to.replace(/^node-/, ''),
-    ])
-  }, [selectedEdge])
+  const handleNodeClick = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      setHighlightState((prev) =>
+        prev?.type === 'node' && prev.nodeId === node.id
+          ? null
+          : { type: 'node', nodeId: node.id },
+      )
+    },
+    [],
+  )
+
+  const clearHighlight = useCallback(() => {
+    setHighlightState(null)
+    setPopupEdge(null)
+  }, [])
 
   // Sync state when switching boards or when hydration completes
   const prevBoardIdRef = useRef(currentBoard.id)
@@ -114,7 +120,8 @@ export function App() {
       )
       setConnections(currentBoard.connections)
       if (boardChanged) {
-        setSelectedEdge(null)
+        setHighlightState(null)
+        setPopupEdge(null)
       }
       prevBoardIdRef.current = currentBoard.id
     }
@@ -173,9 +180,9 @@ export function App() {
   const edgeOpenedAtRef = useRef<number | null>(null)
 
   const closeEdgeDetail = useCallback(() => {
-    if (selectedEdge && edgeOpenedAtRef.current) {
+    if (popupEdge && edgeOpenedAtRef.current) {
       const durationMs = Date.now() - edgeOpenedAtRef.current
-      const conn = selectedEdge.connection
+      const conn = popupEdge.connection
       const edgeId = `weave-${conn.from.replace(/^node-/, '')}-${conn.to.replace(/^node-/, '')}`
       trackEvent('connection_description_closed', {
         targetId: edgeId,
@@ -184,16 +191,35 @@ export function App() {
       })
     }
     edgeOpenedAtRef.current = null
-    setSelectedEdge(null)
-  }, [selectedEdge, currentBoard.id])
+    setPopupEdge(null)
+    // If the highlight was from a connection label click, clear it too
+    setHighlightState((prev) =>
+      prev?.type === 'connection' ? null : prev,
+    )
+  }, [popupEdge, currentBoard.id])
 
   const onLabelClick = useCallback(
     (connection: Connection, position: { x: number; y: number }) => {
       edgeOpenedAtRef.current = Date.now()
-      setSelectedEdge({ connection, position })
+      setPopupEdge({ connection, position })
+
+      // Edge case: if label is already highlighted (node mode), keep node highlight
+      const from = connection.from.replace(/^node-/, '')
+      const to = connection.to.replace(/^node-/, '')
+      setHighlightState((prev) => {
+        if (
+          prev?.type === 'node' &&
+          (prev.nodeId === from || prev.nodeId === to)
+        ) {
+          // Label belongs to currently selected node — keep node highlight
+          return prev
+        }
+        // Switch to connection highlight mode
+        return { type: 'connection', connection, position }
+      })
 
       // Derive edge ID from connection fields
-      const edgeId = `weave-${connection.from.replace(/^node-/, '')}-${connection.to.replace(/^node-/, '')}`
+      const edgeId = `weave-${from}-${to}`
       trackEvent('connection_label_clicked', {
         targetId: edgeId,
         boardId: currentBoard.id,
@@ -408,7 +434,7 @@ export function App() {
           </button>
         </div>
       )}
-      <NodeHighlightContext.Provider value={highlightedNodeIds}>
+      <HighlightContext.Provider value={highlightState}>
       <EdgeLabelClickContext.Provider value={onLabelClick}>
       <ReactFlow
         nodes={nodes}
@@ -421,6 +447,8 @@ export function App() {
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
+        onNodeClick={handleNodeClick}
+        onPaneClick={clearHighlight}
         fitView
         proOptions={{ hideAttribution: true }}
       >
@@ -432,12 +460,12 @@ export function App() {
             activeLayer={activeLayer}
             onLayerChange={setActiveLayer}
             onResult={(result, mode) => {
-              closeEdgeDetail()
+              clearHighlight()
               setConnections((prev) => [...prev, ...result.connections])
               setActiveLayer(mode)
             }}
             onClear={() => {
-              closeEdgeDetail()
+              clearHighlight()
               setConnections([])
               setActiveLayer('weave')
             }}
@@ -466,11 +494,11 @@ export function App() {
         )}
       </ReactFlow>
       </EdgeLabelClickContext.Provider>
-      </NodeHighlightContext.Provider>
-      {selectedEdge && (
+      </HighlightContext.Provider>
+      {popupEdge && (
         <EdgeDetailPopup
-          connection={selectedEdge.connection}
-          position={selectedEdge.position}
+          connection={popupEdge.connection}
+          position={popupEdge.position}
           onClose={closeEdgeDetail}
         />
       )}

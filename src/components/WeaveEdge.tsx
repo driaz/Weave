@@ -30,6 +30,7 @@ export type WeaveEdgeData = {
   edgeOffset?: number
   activeLayer?: WeaveMode
   connection?: Connection
+  isHighlighted?: boolean
 }
 
 const OFFSET_PX = 60
@@ -162,6 +163,7 @@ export function WeaveEdge({
         id={id}
         path={edgePath}
         interactionWidth={0}
+        className={edgeData.isHighlighted ? 'edge-highlight' : undefined}
         style={{
           stroke: colors.stroke,
           strokeWidth,
@@ -183,8 +185,8 @@ export function WeaveEdge({
               backgroundColor: '#FFFFFF',
               borderWidth: '1px',
               borderStyle: 'solid',
-              borderColor: colors.border,
-              color: colors.text,
+              borderColor: edgeData.isHighlighted ? '#FF8C00' : colors.border,
+              color: edgeData.isHighlighted ? '#FF8C00' : colors.text,
             }}
             onClick={(e) => {
               if (edgeData.connection) {

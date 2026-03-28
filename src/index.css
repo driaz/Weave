@@ -27,16 +27,45 @@ body,
 
 @keyframes node-highlight-pulse {
   0%, 100% {
-    box-shadow: 0 0 8px rgba(55, 65, 81, 0.3);
+    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
   }
   50% {
-    box-shadow: 0 0 16px rgba(55, 65, 81, 0.6);
+    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 1);
   }
 }
 
 .node-highlight {
-  border-color: #374151 !important;
+  box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
   animation: node-highlight-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes selected-node-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 1);
+  }
+}
+
+.selected-node-highlight {
+  box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
+  animation: selected-node-pulse 0.8s ease-in-out 2;
+}
+
+@keyframes edge-highlight-pulse {
+  0%, 100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.edge-highlight {
+  stroke: #FF8C00 !important;
+  opacity: 0.85 !important;
+  animation: edge-highlight-pulse 0.8s ease-in-out 2;
 }
 
 /* Tweet embed: hide raw blockquote, show spinner, reveal after hydration */

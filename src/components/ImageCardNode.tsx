@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
-import { useNodeHighlight } from '../hooks/useNodeHighlight'
+import { useNodeHighlightStatus } from '../hooks/useSelectedNode'
 import { createPortal } from 'react-dom'
 
 export type ImageCardData = {
@@ -58,7 +58,7 @@ export function ImageCardNode({ id, data }: NodeProps) {
   const [labelValue, setLabelValue] = useState(label || defaultLabel)
   const inputRef = useRef<HTMLInputElement>(null)
   const { updateNodeData } = useReactFlow()
-  const highlighted = useNodeHighlight(id)
+  const { isSelected, isConnected } = useNodeHighlightStatus(id)
 
   const openLightbox = useCallback(() => setShowLightbox(true), [])
   const closeLightbox = useCallback(() => setShowLightbox(false), [])
@@ -88,7 +88,7 @@ export function ImageCardNode({ id, data }: NodeProps) {
   return (
     <>
       <div
-        className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden${highlighted ? ' node-highlight' : ''}`}
+        className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden${isConnected ? ' node-highlight' : ''}${isSelected ? ' selected-node-highlight' : ''}`}
       >
         <img
           src={imageDataUrl}
