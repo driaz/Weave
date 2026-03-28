@@ -48,9 +48,11 @@ export function useStaggeredEdges(
       const edgeOffset =
         total <= 1 ? 0 : posInGroup - (total - 1) / 2
 
+      const onActiveLayer = (conn.mode ?? 'weave') === activeLayer
       let isHighlighted = false
       if (hlNodeId != null) {
-        isHighlighted = source === hlNodeId || target === hlNodeId
+        isHighlighted =
+          onActiveLayer && (source === hlNodeId || target === hlNodeId)
       } else if (hlFrom != null && hlTo != null) {
         isHighlighted = source === hlFrom && target === hlTo
       }
