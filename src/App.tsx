@@ -137,16 +137,8 @@ export function App() {
     }
     window.addEventListener('beforeunload', handleEnd)
 
-    // Track tab visibility separately so it doesn't pollute session counts
-    const handleVisibility = () => {
-      const eventType = document.visibilityState === 'hidden' ? 'tab_hidden' : 'tab_visible'
-      trackEvent(eventType, { boardId: currentBoard.id })
-    }
-    document.addEventListener('visibilitychange', handleVisibility)
-
     return () => {
       window.removeEventListener('beforeunload', handleEnd)
-      document.removeEventListener('visibilitychange', handleVisibility)
     }
     // Only fire once on mount — board ID captured at load time
     // eslint-disable-next-line react-hooks/exhaustive-deps
