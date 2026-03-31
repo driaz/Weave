@@ -141,7 +141,7 @@ async function fetchImageAsBase64(
  * Fetch tweet image URL from Microlink, then convert to base64.
  * Best-effort — returns empty strings on any failure.
  */
-async function fetchTweetImage(
+export async function fetchTweetImage(
   tweetUrl: string,
 ): Promise<{ imageBase64: string; imageMimeType: string }> {
   try {
@@ -167,14 +167,10 @@ async function fetchTwitterMetadata(url: string): Promise<LinkMetadata> {
   const domain = extractDomain(trimmedUrl)
 
   try {
-    // Run oEmbed and tweet image fetch in parallel
-    const [oembedResponse, tweetImage] = await Promise.all([
-      fetch(
-        `https://publish.twitter.com/oembed?url=${encodeURIComponent(trimmedUrl)}&omit_script=true`,
-      ),
-      fetchTweetImage(trimmedUrl),
-    ])
-    const json = await oembedResponse.json()
+    const response = await fetch(
+      `https://publish.twitter.com/oembed?url=${encodeURIComponent(trimmedUrl)}&omit_script=true`,
+    )
+    const json = await response.json()
 
     const authorName = json.author_name || ''
     const authorHandle = json.author_url
@@ -193,8 +189,6 @@ async function fetchTwitterMetadata(url: string): Promise<LinkMetadata> {
       authorHandle,
       tweetText,
       embedHtml: json.html || '',
-      imageBase64: tweetImage.imageBase64 || undefined,
-      imageMimeType: tweetImage.imageMimeType || undefined,
     }
   } catch {
     // Fall through to Microlink but preserve twitter type

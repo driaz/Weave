@@ -29,7 +29,7 @@ import type { Connection } from './api/claude'
 import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
-import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
+import { isUrl, fetchLinkMetadata, fetchTweetImage, extractDomain } from './utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
@@ -400,11 +400,47 @@ export function App() {
         ),
       )
 
-      // Embed after metadata is available (not during loading state)
-      embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
-        ...metadata,
-        loading: false,
-      })
+      if (metadata.type === 'twitter') {
+        // Fetch tweet image async — don't block the card render
+        fetchTweetImage(text).then((tweetImage) => {
+          if (tweetImage.imageBase64 && tweetImage.imageMimeType) {
+            setNodes((prev) =>
+              prev.map((node) =>
+                node.id === nodeId
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        imageBase64: tweetImage.imageBase64,
+                        imageMimeType: tweetImage.imageMimeType,
+                      },
+                    }
+                  : node,
+              ),
+            )
+          }
+        })
+
+        // Delay embedding for tweets to allow image fetch to complete
+        setTimeout(() => {
+          setNodes((prev) => {
+            const current = prev.find((n) => n.id === nodeId)
+            if (current) {
+              embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
+                ...current.data,
+                loading: false,
+              })
+            }
+            return prev
+          })
+        }, 8000)
+      } else {
+        // Embed immediately for non-twitter linkCards
+        embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
+          ...metadata,
+          loading: false,
+        })
+      }
     }
 
     document.addEventListener('paste', handlePaste)

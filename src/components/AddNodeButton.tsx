@@ -2,14 +2,14 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import { generateNodeId } from '../utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from '../utils/imageUtils'
-import { fetchLinkMetadata, isUrl, extractDomain } from '../utils/linkUtils'
+import { fetchLinkMetadata, fetchTweetImage, isUrl, extractDomain } from '../utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
 import { embedNodeAsync } from '../services/embeddingService'
 
 export function AddNodeButton() {
-  const { addNodes, screenToFlowPosition, updateNodeData } = useReactFlow()
+  const { addNodes, screenToFlowPosition, updateNodeData, getNodes } = useReactFlow()
   const boardId = useBoardId()
   const [menuOpen, setMenuOpen] = useState(false)
   const [linkInputMode, setLinkInputMode] = useState(false)
@@ -196,14 +196,37 @@ export function AddNodeButton() {
       loading: false,
     })
 
-    // Embed after metadata is available (not during loading state)
-    embedNodeAsync(boardId, nodeId, 'linkCard', {
-      ...metadata,
-      loading: false,
-    })
+    if (metadata.type === 'twitter') {
+      // Fetch tweet image async — don't block the card render
+      fetchTweetImage(urlToFetch).then((tweetImage) => {
+        if (tweetImage.imageBase64 && tweetImage.imageMimeType) {
+          updateNodeData(nodeId, {
+            imageBase64: tweetImage.imageBase64,
+            imageMimeType: tweetImage.imageMimeType,
+          })
+        }
+      })
+
+      // Delay embedding for tweets to allow image fetch to complete
+      setTimeout(() => {
+        const current = getNodes().find((n) => n.id === nodeId)
+        if (current) {
+          embedNodeAsync(boardId, nodeId, 'linkCard', {
+            ...current.data,
+            loading: false,
+          })
+        }
+      }, 8000)
+    } else {
+      // Embed immediately for non-twitter linkCards
+      embedNodeAsync(boardId, nodeId, 'linkCard', {
+        ...metadata,
+        loading: false,
+      })
+    }
 
     setFetchingLink(false)
-  }, [linkUrl, fetchingLink, addNodes, getCenterPosition, updateNodeData, boardId])
+  }, [linkUrl, fetchingLink, addNodes, getCenterPosition, updateNodeData, getNodes, boardId])
 
   const handleLinkKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
