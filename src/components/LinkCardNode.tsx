@@ -16,6 +16,8 @@ export type LinkCardData = {
   authorHandle?: string
   tweetText?: string
   embedHtml?: string
+  imageBase64?: string
+  imageMimeType?: string
 }
 
 function SkeletonCard() {

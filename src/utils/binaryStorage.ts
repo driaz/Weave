@@ -12,6 +12,7 @@ function makeKey(boardId: string, nodeId: string, field: string): string {
 const BINARY_FIELDS: Record<string, string[]> = {
   imageCard: ['imageDataUrl'],
   pdfCard: ['pdfDataUrl', 'thumbnailDataUrl'],
+  linkCard: ['imageBase64'],
 }
 
 export function getBinaryFields(nodeType: string): string[] {

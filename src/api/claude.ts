@@ -161,6 +161,16 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
           description += `Channel: ${data.authorName}\n`
         }
         content.push({ type: 'text', text: description })
+        if (data.type === 'twitter' && data.imageBase64 && data.imageMimeType) {
+          content.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: data.imageMimeType,
+              data: data.imageBase64,
+            },
+          })
+        }
         break
       }
 

@@ -9,7 +9,11 @@ export type LinkMetadata = {
   authorHandle?: string
   tweetText?: string
   embedHtml?: string
+  imageBase64?: string
+  imageMimeType?: string
 }
+
+import { compressBase64Image } from './imageUtils'
 
 export function isUrl(text: string): boolean {
   try {
@@ -104,15 +108,73 @@ function extractHandleFromUrl(authorUrl: string): string {
   }
 }
 
+/**
+ * Fetch a remote image URL and convert it to compressed base64.
+ * Returns { imageBase64, imageMimeType } or null on any failure.
+ */
+async function fetchImageAsBase64(
+  imageUrl: string,
+): Promise<{ imageBase64: string; imageMimeType: string } | null> {
+  try {
+    const response = await fetch(imageUrl)
+    if (!response.ok) return null
+
+    const blob = await response.blob()
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(blob)
+    })
+
+    const compressed = await compressBase64Image(dataUrl)
+    const match = compressed.match(/^data:([^;]+);base64,(.+)$/)
+    if (!match) return null
+
+    return { imageMimeType: match[1], imageBase64: match[2] }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch tweet image URL from Microlink, then convert to base64.
+ * Best-effort — returns empty strings on any failure.
+ */
+async function fetchTweetImage(
+  tweetUrl: string,
+): Promise<{ imageBase64: string; imageMimeType: string }> {
+  try {
+    const response = await fetch(
+      `https://api.microlink.io?url=${encodeURIComponent(tweetUrl)}`,
+    )
+    const json = await response.json()
+
+    const imageUrl: string | undefined = json.data?.image?.url
+    if (!imageUrl || !imageUrl.includes('pbs.twimg.com')) {
+      return { imageBase64: '', imageMimeType: '' }
+    }
+
+    const result = await fetchImageAsBase64(imageUrl)
+    return result ?? { imageBase64: '', imageMimeType: '' }
+  } catch {
+    return { imageBase64: '', imageMimeType: '' }
+  }
+}
+
 async function fetchTwitterMetadata(url: string): Promise<LinkMetadata> {
   const trimmedUrl = url.trim()
   const domain = extractDomain(trimmedUrl)
 
   try {
-    const response = await fetch(
-      `https://publish.twitter.com/oembed?url=${encodeURIComponent(trimmedUrl)}&omit_script=true`,
-    )
-    const json = await response.json()
+    // Run oEmbed and tweet image fetch in parallel
+    const [oembedResponse, tweetImage] = await Promise.all([
+      fetch(
+        `https://publish.twitter.com/oembed?url=${encodeURIComponent(trimmedUrl)}&omit_script=true`,
+      ),
+      fetchTweetImage(trimmedUrl),
+    ])
+    const json = await oembedResponse.json()
 
     const authorName = json.author_name || ''
     const authorHandle = json.author_url
@@ -131,6 +193,8 @@ async function fetchTwitterMetadata(url: string): Promise<LinkMetadata> {
       authorHandle,
       tweetText,
       embedHtml: json.html || '',
+      imageBase64: tweetImage.imageBase64 || undefined,
+      imageMimeType: tweetImage.imageMimeType || undefined,
     }
   } catch {
     // Fall through to Microlink but preserve twitter type

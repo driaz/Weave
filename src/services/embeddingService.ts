@@ -80,8 +80,14 @@ function buildPartsForNode(
 
       parts.push({ text: combinedText })
 
-      // Skip imageUrl for linkCards — it's a remote URL, not base64.
-      // We can add image fetching later.
+      // Include tweet image if available (fetched and stored as base64)
+      const imageBase64 = data.imageBase64 as string | undefined
+      const imageMimeType = data.imageMimeType as string | undefined
+      if (linkType === 'twitter' && imageBase64 && imageMimeType) {
+        parts.push({
+          inlineData: { data: imageBase64, mimeType: imageMimeType },
+        })
+      }
 
       summary = combinedText.slice(0, 100)
       break
