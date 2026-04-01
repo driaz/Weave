@@ -1,9 +1,6 @@
-const INNERTUBE_URL =
-  'https://www.youtube.com/youtubei/v1/player?prettyPrint=false'
-const ANDROID_VERSION = '20.10.38'
-const ANDROID_USER_AGENT = `com.google.android.youtube/${ANDROID_VERSION} (Linux; U; Android 14)`
+const INNERTUBE_URL = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false'
 const WEB_USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 interface CaptionTrack {
   baseUrl: string
@@ -11,94 +8,118 @@ interface CaptionTrack {
 }
 
 /**
- * Try fetching caption tracks via the ANDROID Innertube client.
+ * Fetch the YouTube watch page, extract session cookies and visitor data,
+ * then use them to make an authenticated Innertube player request.
+ * This two-step approach works from datacenter IPs where direct Innertube
+ * calls return LOGIN_REQUIRED.
  */
-async function fetchViaInnerTube(
+async function fetchCaptionTracks(
   videoId: string,
 ): Promise<CaptionTrack[] | null> {
   try {
-    const resp = await fetch(INNERTUBE_URL, {
+    // Step 1: Fetch the watch page to get session cookies and visitorData
+    const pageResp = await fetch(
+      `https://www.youtube.com/watch?v=${videoId}`,
+      {
+        headers: {
+          'user-agent': WEB_USER_AGENT,
+          'accept-language': 'en-US,en;q=0.9',
+          cookie: 'CONSENT=YES+1',
+        },
+        redirect: 'follow',
+      },
+    )
+
+    if (!pageResp.ok) return null
+
+    const html = await pageResp.text()
+
+    // Extract cookies from response
+    const setCookies = pageResp.headers.getSetCookie?.() ?? []
+    const cookieJar = setCookies
+      .map((c) => c.split(';')[0])
+      .filter(Boolean)
+      .join('; ')
+
+    // Extract visitorData from page
+    const visitorMatch = html.match(/"VISITOR_DATA":"([^"]+)"/)
+    const visitorData = visitorMatch ? visitorMatch[1] : ''
+
+    // Extract API key from page
+    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/)
+    const apiKey = apiKeyMatch ? apiKeyMatch[1] : ''
+
+    // First, try to extract captions directly from the page
+    const pageMarker = 'var ytInitialPlayerResponse = '
+    let markerStart = html.indexOf(pageMarker)
+    if (markerStart === -1) {
+      // Try without 'var ' prefix
+      const altMarker = 'ytInitialPlayerResponse = '
+      markerStart = html.indexOf(altMarker)
+      if (markerStart !== -1) {
+        markerStart += altMarker.length
+      }
+    } else {
+      markerStart += pageMarker.length
+    }
+
+    if (markerStart > 0) {
+      let depth = 0
+      for (let i = markerStart; i < html.length && i < markerStart + 500000; i++) {
+        if (html[i] === '{') depth++
+        else if (html[i] === '}') {
+          depth--
+          if (depth === 0) {
+            try {
+              const parsed = JSON.parse(html.slice(markerStart, i + 1))
+              const tracks =
+                parsed?.captions?.playerCaptionsTracklistRenderer?.captionTracks
+              if (Array.isArray(tracks) && tracks.length > 0) {
+                return tracks
+              }
+            } catch {
+              // JSON parse failed, continue to Innertube fallback
+            }
+            break
+          }
+        }
+      }
+    }
+
+    // Step 2: If page didn't have captions, try Innertube with session context
+    const innertubeUrl = apiKey
+      ? `${INNERTUBE_URL}&key=${apiKey}`
+      : INNERTUBE_URL
+
+    const innerResp = await fetch(innertubeUrl, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'user-agent': ANDROID_USER_AGENT,
-        cookie: 'CONSENT=YES+1',
+        'user-agent': WEB_USER_AGENT,
+        cookie: cookieJar ? `${cookieJar}; CONSENT=YES+1` : 'CONSENT=YES+1',
+        origin: 'https://www.youtube.com',
+        referer: `https://www.youtube.com/watch?v=${videoId}`,
+        ...(visitorData && { 'x-goog-visitor-id': visitorData }),
       },
       body: JSON.stringify({
         context: {
           client: {
-            clientName: 'ANDROID',
-            clientVersion: ANDROID_VERSION,
+            clientName: 'WEB',
+            clientVersion: '2.20241126.01.00',
+            ...(visitorData && { visitorData }),
           },
         },
         videoId,
       }),
     })
 
-    if (!resp.ok) return null
+    if (!innerResp.ok) return null
 
-    const data = await resp.json()
+    const data = await innerResp.json()
     const tracks =
       data?.captions?.playerCaptionsTracklistRenderer?.captionTracks
 
     return Array.isArray(tracks) && tracks.length > 0 ? tracks : null
-  } catch {
-    return null
-  }
-}
-
-/**
- * Fallback: scrape the YouTube watch page for caption tracks embedded
- * in ytInitialPlayerResponse.
- */
-async function fetchViaWebPage(
-  videoId: string,
-): Promise<CaptionTrack[] | null> {
-  try {
-    const resp = await fetch(
-      `https://www.youtube.com/watch?v=${videoId}&has_verified=1&bpctr=9999999999`,
-      {
-        headers: {
-          'user-agent': WEB_USER_AGENT,
-          cookie: 'CONSENT=YES+1; SOCS=CAESEwgDEgk2OTUyODcyOTQaAmVuIAEaBgiA_LyaBg',
-          'accept-language': 'en-US,en;q=0.9',
-        },
-      },
-    )
-
-    if (!resp.ok) return null
-
-    const html = await resp.text()
-
-    // The marker may or may not include 'var ' prefix
-    let marker = 'var ytInitialPlayerResponse = '
-    let start = html.indexOf(marker)
-    if (start === -1) {
-      marker = 'ytInitialPlayerResponse = '
-      start = html.indexOf(marker)
-    }
-    if (start === -1) return null
-
-    const jsonStart = start + marker.length
-    let depth = 0
-    for (let i = jsonStart; i < html.length; i++) {
-      if (html[i] === '{') depth++
-      else if (html[i] === '}') {
-        depth--
-        if (depth === 0) {
-          try {
-            const parsed = JSON.parse(html.slice(jsonStart, i + 1))
-            const tracks =
-              parsed?.captions?.playerCaptionsTracklistRenderer?.captionTracks
-            return Array.isArray(tracks) && tracks.length > 0 ? tracks : null
-          } catch {
-            return null
-          }
-        }
-      }
-    }
-
-    return null
   } catch {
     return null
   }
@@ -125,27 +146,22 @@ function decodeEntities(text: string): string {
 
 /**
  * Parse caption XML (handles both srv3 <p> format and srv1 <text> format).
- * For srv3, also handles nested <s> spans within <p> elements.
  */
 function parseTranscriptXml(xml: string): string[] {
   const segments: string[] = []
 
-  // Try srv3 format first: <p t="..." d="...">text or <s> spans</p>
+  // Try srv3 format: <p t="..." d="...">text or <s> spans</p>
   const pRegex = /<p\s+t="\d+"\s+d="\d+"[^>]*>([\s\S]*?)<\/p>/g
   let match
 
   while ((match = pRegex.exec(xml)) !== null) {
     const inner = match[1]
-
-    // Check for nested <s> spans
     const spanRegex = /<s[^>]*>([^<]*)<\/s>/g
     let spanText = ''
     let spanMatch
     while ((spanMatch = spanRegex.exec(inner)) !== null) {
       spanText += spanMatch[1]
     }
-
-    // Use span text if found, otherwise strip tags from inner content
     const raw = spanText || inner.replace(/<[^>]+>/g, '')
     const decoded = decodeEntities(raw).trim()
     if (decoded) segments.push(decoded)
@@ -178,41 +194,8 @@ export default async (req: Request) => {
     )
   }
 
-  const debug = url.searchParams.get('debug') === '1'
-
   try {
-    // Try ANDROID Innertube first, fall back to web page scraping
-    let tracks = await fetchViaInnerTube(videoId)
-    const innertubeWorked = !!tracks
-    if (!tracks) {
-      tracks = await fetchViaWebPage(videoId)
-    }
-
-    if (debug) {
-      // Make a separate test fetch to diagnose
-      const testResp = await fetch(
-        `https://www.youtube.com/watch?v=${videoId}&has_verified=1&bpctr=9999999999`,
-        {
-          headers: {
-            'user-agent': WEB_USER_AGENT,
-            cookie: 'CONSENT=YES+1; SOCS=CAESEwgDEgk2OTUyODcyOTQaAmVuIAEaBgiA_LyaBg',
-            'accept-language': 'en-US,en;q=0.9',
-          },
-        },
-      )
-      const testHtml = await testResp.text()
-      return Response.json({
-        videoId,
-        innertubeWorked,
-        webpageFallbackTrackCount: !innertubeWorked ? (tracks?.length ?? 0) : 'skipped',
-        testHtmlLength: testHtml.length,
-        testHasCaptionTracks: testHtml.includes('captionTracks'),
-        testHasPlayerResponse: testHtml.includes('ytInitialPlayerResponse'),
-        testHasConsentForm: testHtml.includes('consent'),
-        testResponseHeaders: Object.fromEntries(testResp.headers.entries()),
-        testFirst300: testHtml.slice(0, 300),
-      }, { status: 200 })
-    }
+    const tracks = await fetchCaptionTracks(videoId)
 
     if (!tracks || tracks.length === 0) {
       return Response.json(
