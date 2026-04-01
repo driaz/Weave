@@ -80,9 +80,10 @@ export default async (req: Request) => {
     const captionXml = await captionResponse.text()
 
     // Parse XML to extract plain text
-    // Caption XML format: <text start="..." dur="...">caption text</text>
+    // srv3 format uses <p t="..." d="...">text</p>
+    // srv1 format uses <text start="..." dur="...">text</text>
     const textSegments: string[] = []
-    const textRegex = /<text[^>]*>([\s\S]*?)<\/text>/g
+    const textRegex = /<(?:text|p)[^>]*>([\s\S]*?)<\/(?:text|p)>/g
     let match
     while ((match = textRegex.exec(captionXml)) !== null) {
       let text = match[1]
