@@ -61,8 +61,14 @@ async function fetchViaWebPage(
     if (!resp.ok) return null
 
     const html = await resp.text()
-    const marker = 'var ytInitialPlayerResponse = '
-    const start = html.indexOf(marker)
+
+    // The marker may or may not include 'var ' prefix
+    let marker = 'var ytInitialPlayerResponse = '
+    let start = html.indexOf(marker)
+    if (start === -1) {
+      marker = 'ytInitialPlayerResponse = '
+      start = html.indexOf(marker)
+    }
     if (start === -1) return null
 
     const jsonStart = start + marker.length
