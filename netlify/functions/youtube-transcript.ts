@@ -193,16 +193,44 @@ export default async (req: Request) => {
       const hasPlayerResponse = html.includes('ytInitialPlayerResponse')
       const hasCaptionTracks = html.includes('captionTracks')
 
+      // Also debug the raw innertube response
+      let innertubeDebug: Record<string, unknown> = {}
+      try {
+        const dbgResp = await fetch(INNERTUBE_URL, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'user-agent': ANDROID_USER_AGENT,
+          },
+          body: JSON.stringify({
+            context: {
+              client: {
+                clientName: 'ANDROID',
+                clientVersion: ANDROID_VERSION,
+              },
+            },
+            videoId,
+          }),
+        })
+        const dbgData = await dbgResp.json()
+        innertubeDebug = {
+          status: dbgResp.status,
+          playabilityStatus: dbgData?.playabilityStatus?.status,
+          hasCaptions: !!dbgData?.captions,
+          trackCount: dbgData?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length ?? 0,
+        }
+      } catch (e) {
+        innertubeDebug = { error: e instanceof Error ? e.message : 'unknown' }
+      }
+
       return Response.json({
         videoId,
         source,
-        innertubeTrackCount: innertubeResult?.length ?? 0,
-        webpageTrackCount: tracks?.length ?? 0,
+        innertubeDebug,
         webpageHtmlLength: html.length,
         webpageHasConsent: hasConsent,
         webpageHasPlayerResponse: hasPlayerResponse,
         webpageHasCaptionTracks: hasCaptionTracks,
-        webpageFirst500: html.slice(0, 500),
       }, { status: 200 })
     }
 
