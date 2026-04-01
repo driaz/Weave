@@ -18,6 +18,8 @@ export type LinkCardData = {
   embedHtml?: string
   imageBase64?: string
   imageMimeType?: string
+  transcript?: string
+  youtubeTranscript?: string
 }
 
 function SkeletonCard() {

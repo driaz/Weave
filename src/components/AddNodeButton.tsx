@@ -2,7 +2,8 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import { generateNodeId } from '../utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from '../utils/imageUtils'
-import { fetchLinkMetadata, fetchTweetImage, isUrl, extractDomain } from '../utils/linkUtils'
+import { fetchLinkMetadata, fetchTweetImage, isUrl, extractDomain, extractYouTubeUrlFromText } from '../utils/linkUtils'
+import { fetchYouTubeTranscript } from '../utils/transcriptUtils'
 import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
@@ -207,6 +208,16 @@ export function AddNodeButton() {
         }
       })
 
+      // Check if tweet text contains a YouTube URL and fetch its transcript
+      const tweetYouTubeUrl = metadata.tweetText ? extractYouTubeUrlFromText(metadata.tweetText) : null
+      if (tweetYouTubeUrl) {
+        fetchYouTubeTranscript(tweetYouTubeUrl).then((transcript) => {
+          if (transcript) {
+            updateNodeData(nodeId, { youtubeTranscript: transcript })
+          }
+        })
+      }
+
       // Delay embedding for tweets to allow image fetch to complete
       setTimeout(() => {
         const current = getNodes().find((n) => n.id === nodeId)
@@ -217,8 +228,26 @@ export function AddNodeButton() {
           })
         }
       }, 8000)
+    } else if (metadata.type === 'youtube') {
+      // Fetch transcript async — don't block the card render
+      fetchYouTubeTranscript(urlToFetch).then((transcript) => {
+        if (transcript) {
+          updateNodeData(nodeId, { transcript })
+        }
+      })
+
+      // Delay embedding for YouTube to allow transcript fetch to complete
+      setTimeout(() => {
+        const current = getNodes().find((n) => n.id === nodeId)
+        if (current) {
+          embedNodeAsync(boardId, nodeId, 'linkCard', {
+            ...current.data,
+            loading: false,
+          })
+        }
+      }, 8000)
     } else {
-      // Embed immediately for non-twitter linkCards
+      // Embed immediately for other linkCards
       embedNodeAsync(boardId, nodeId, 'linkCard', {
         ...metadata,
         loading: false,

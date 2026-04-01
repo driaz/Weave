@@ -73,7 +73,23 @@ function buildPartsForNode(
         if (tweetText) textSegments.push(tweetText)
       }
 
-      // YouTube-specific: title + description already captured above
+      // YouTube transcript
+      if (linkType === 'youtube') {
+        const transcript = data.transcript as string | undefined
+        if (transcript) {
+          const truncated = transcript.length > 3000 ? transcript.slice(0, 3000) : transcript
+          textSegments.push(truncated)
+        }
+      }
+
+      // Tweet with embedded YouTube transcript
+      if (linkType === 'twitter') {
+        const youtubeTranscript = data.youtubeTranscript as string | undefined
+        if (youtubeTranscript) {
+          const truncated = youtubeTranscript.length > 3000 ? youtubeTranscript.slice(0, 3000) : youtubeTranscript
+          textSegments.push(truncated)
+        }
+      }
 
       const combinedText = textSegments.join(' — ')
       if (!combinedText) return null

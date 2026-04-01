@@ -29,7 +29,8 @@ import type { Connection } from './api/claude'
 import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
-import { isUrl, fetchLinkMetadata, fetchTweetImage, extractDomain } from './utils/linkUtils'
+import { isUrl, fetchLinkMetadata, fetchTweetImage, extractDomain, extractYouTubeUrlFromText } from './utils/linkUtils'
+import { fetchYouTubeTranscript } from './utils/transcriptUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
@@ -421,6 +422,22 @@ export function App() {
           }
         })
 
+        // Check if tweet text contains a YouTube URL and fetch its transcript
+        const tweetYouTubeUrl = metadata.tweetText ? extractYouTubeUrlFromText(metadata.tweetText) : null
+        if (tweetYouTubeUrl) {
+          fetchYouTubeTranscript(tweetYouTubeUrl).then((transcript) => {
+            if (transcript) {
+              setNodes((prev) =>
+                prev.map((node) =>
+                  node.id === nodeId
+                    ? { ...node, data: { ...node.data, youtubeTranscript: transcript } }
+                    : node,
+                ),
+              )
+            }
+          })
+        }
+
         // Delay embedding for tweets to allow image fetch to complete
         setTimeout(() => {
           setNodes((prev) => {
@@ -434,8 +451,35 @@ export function App() {
             return prev
           })
         }, 8000)
+      } else if (metadata.type === 'youtube') {
+        // Fetch transcript async — don't block the card render
+        fetchYouTubeTranscript(text).then((transcript) => {
+          if (transcript) {
+            setNodes((prev) =>
+              prev.map((node) =>
+                node.id === nodeId
+                  ? { ...node, data: { ...node.data, transcript } }
+                  : node,
+              ),
+            )
+          }
+        })
+
+        // Delay embedding for YouTube to allow transcript fetch to complete
+        setTimeout(() => {
+          setNodes((prev) => {
+            const current = prev.find((n) => n.id === nodeId)
+            if (current) {
+              embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
+                ...current.data,
+                loading: false,
+              })
+            }
+            return prev
+          })
+        }, 8000)
       } else {
-        // Embed immediately for non-twitter linkCards
+        // Embed immediately for other linkCards
         embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
           ...metadata,
           loading: false,

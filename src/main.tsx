@@ -5,6 +5,7 @@ import { App } from './App'
 import { backfillEmbeddings } from './utils/backfillEmbeddings'
 import './utils/backfillTweetEmbeds'
 import './utils/backfillTweetImages'
+import './utils/backfillTranscripts'
 
 // Expose backfill utility on window for console access:
 //   window.backfillEmbeddings()

@@ -160,6 +160,14 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
         if (data.type === 'youtube' && data.authorName) {
           description += `Channel: ${data.authorName}\n`
         }
+        if (data.type === 'youtube' && data.transcript) {
+          const truncated = data.transcript.length > 3000 ? data.transcript.slice(0, 3000) : data.transcript
+          description += `Video transcript (spoken content): ${truncated}\n`
+        }
+        if (data.type === 'twitter' && data.youtubeTranscript) {
+          const truncated = data.youtubeTranscript.length > 3000 ? data.youtubeTranscript.slice(0, 3000) : data.youtubeTranscript
+          description += `Embedded YouTube video transcript: ${truncated}\n`
+        }
         content.push({ type: 'text', text: description })
         if (data.type === 'twitter' && data.imageBase64 && data.imageMimeType) {
           content.push({
