@@ -14,7 +14,8 @@ export default async (req: Request) => {
   }
 
   try {
-    // Hit YouTube's Innertube player endpoint to get caption track info
+    // Hit YouTube's Innertube player endpoint with ANDROID client context
+    // (WEB client returns UNPLAYABLE with no captions for most videos)
     const playerResponse = await fetch(
       'https://www.youtube.com/youtubei/v1/player',
       {
@@ -23,8 +24,8 @@ export default async (req: Request) => {
         body: JSON.stringify({
           context: {
             client: {
-              clientName: 'WEB',
-              clientVersion: '2.20240101.00.00',
+              clientName: 'ANDROID',
+              clientVersion: '20.10.38',
             },
           },
           videoId,
