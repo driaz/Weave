@@ -161,13 +161,14 @@ export default async (req: Request) => {
                   if (capResp.ok) {
                     const xml = await capResp.text()
                     const segments = parseTranscriptXml(xml)
-                    return Response.json(
-                      {
-                        transcript: segments.join(' '),
-                        language: track.languageCode || 'en',
-                      },
-                      { status: 200 },
-                    )
+                    const transcript = segments.join(' ')
+                    if (transcript) {
+                      return Response.json(
+                        { transcript, language: track.languageCode || 'en' },
+                        { status: 200 },
+                      )
+                    }
+                    // Parsing returned empty — fall through to needsClientFetch
                   }
                 }
               }
