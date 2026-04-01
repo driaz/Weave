@@ -55,12 +55,16 @@ async function fetchViaWebPage(
   videoId: string,
 ): Promise<CaptionTrack[] | null> {
   try {
-    const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: {
-        'user-agent': WEB_USER_AGENT,
-        cookie: 'CONSENT=YES+1',
+    const resp = await fetch(
+      `https://www.youtube.com/watch?v=${videoId}&has_verified=1&bpctr=9999999999`,
+      {
+        headers: {
+          'user-agent': WEB_USER_AGENT,
+          cookie: 'CONSENT=YES+1; SOCS=CAESEwgDEgk2OTUyODcyOTQaAmVuIAEaBgiA_LyaBg',
+          'accept-language': 'en-US,en;q=0.9',
+        },
       },
-    })
+    )
 
     if (!resp.ok) return null
 
@@ -174,11 +178,40 @@ export default async (req: Request) => {
     )
   }
 
+  const debug = url.searchParams.get('debug') === '1'
+
   try {
     // Try ANDROID Innertube first, fall back to web page scraping
     let tracks = await fetchViaInnerTube(videoId)
+    const innertubeWorked = !!tracks
     if (!tracks) {
       tracks = await fetchViaWebPage(videoId)
+    }
+
+    if (debug) {
+      // Make a separate test fetch to diagnose
+      const testResp = await fetch(
+        `https://www.youtube.com/watch?v=${videoId}&has_verified=1&bpctr=9999999999`,
+        {
+          headers: {
+            'user-agent': WEB_USER_AGENT,
+            cookie: 'CONSENT=YES+1; SOCS=CAESEwgDEgk2OTUyODcyOTQaAmVuIAEaBgiA_LyaBg',
+            'accept-language': 'en-US,en;q=0.9',
+          },
+        },
+      )
+      const testHtml = await testResp.text()
+      return Response.json({
+        videoId,
+        innertubeWorked,
+        webpageFallbackTrackCount: !innertubeWorked ? (tracks?.length ?? 0) : 'skipped',
+        testHtmlLength: testHtml.length,
+        testHasCaptionTracks: testHtml.includes('captionTracks'),
+        testHasPlayerResponse: testHtml.includes('ytInitialPlayerResponse'),
+        testHasConsentForm: testHtml.includes('consent'),
+        testResponseHeaders: Object.fromEntries(testResp.headers.entries()),
+        testFirst300: testHtml.slice(0, 300),
+      }, { status: 200 })
     }
 
     if (!tracks || tracks.length === 0) {
