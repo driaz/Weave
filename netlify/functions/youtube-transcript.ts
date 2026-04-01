@@ -22,6 +22,7 @@ async function fetchViaInnerTube(
       headers: {
         'content-type': 'application/json',
         'user-agent': ANDROID_USER_AGENT,
+        cookie: 'CONSENT=YES+1',
       },
       body: JSON.stringify({
         context: {
@@ -55,7 +56,10 @@ async function fetchViaWebPage(
 ): Promise<CaptionTrack[] | null> {
   try {
     const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: { 'user-agent': WEB_USER_AGENT },
+      headers: {
+        'user-agent': WEB_USER_AGENT,
+        cookie: 'CONSENT=YES+1',
+      },
     })
 
     if (!resp.ok) return null
@@ -170,68 +174,11 @@ export default async (req: Request) => {
     )
   }
 
-  const debug = url.searchParams.get('debug') === '1'
-
   try {
     // Try ANDROID Innertube first, fall back to web page scraping
-    const innertubeResult = await fetchViaInnerTube(videoId)
-    let tracks = innertubeResult
-    let source = 'innertube'
-
+    let tracks = await fetchViaInnerTube(videoId)
     if (!tracks) {
       tracks = await fetchViaWebPage(videoId)
-      source = tracks ? 'webpage' : 'none'
-    }
-
-    if (debug) {
-      // Return diagnostic info
-      const webResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-        headers: { 'user-agent': WEB_USER_AGENT },
-      })
-      const html = await webResp.text()
-      const hasConsent = html.includes('consent.youtube.com') || html.includes('consent.google.com')
-      const hasPlayerResponse = html.includes('ytInitialPlayerResponse')
-      const hasCaptionTracks = html.includes('captionTracks')
-
-      // Also debug the raw innertube response
-      let innertubeDebug: Record<string, unknown> = {}
-      try {
-        const dbgResp = await fetch(INNERTUBE_URL, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'user-agent': ANDROID_USER_AGENT,
-          },
-          body: JSON.stringify({
-            context: {
-              client: {
-                clientName: 'ANDROID',
-                clientVersion: ANDROID_VERSION,
-              },
-            },
-            videoId,
-          }),
-        })
-        const dbgData = await dbgResp.json()
-        innertubeDebug = {
-          status: dbgResp.status,
-          playabilityStatus: dbgData?.playabilityStatus?.status,
-          hasCaptions: !!dbgData?.captions,
-          trackCount: dbgData?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length ?? 0,
-        }
-      } catch (e) {
-        innertubeDebug = { error: e instanceof Error ? e.message : 'unknown' }
-      }
-
-      return Response.json({
-        videoId,
-        source,
-        innertubeDebug,
-        webpageHtmlLength: html.length,
-        webpageHasConsent: hasConsent,
-        webpageHasPlayerResponse: hasPlayerResponse,
-        webpageHasCaptionTracks: hasCaptionTracks,
-      }, { status: 200 })
     }
 
     if (!tracks || tracks.length === 0) {
