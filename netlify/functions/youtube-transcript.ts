@@ -170,11 +170,40 @@ export default async (req: Request) => {
     )
   }
 
+  const debug = url.searchParams.get('debug') === '1'
+
   try {
     // Try ANDROID Innertube first, fall back to web page scraping
-    let tracks = await fetchViaInnerTube(videoId)
+    const innertubeResult = await fetchViaInnerTube(videoId)
+    let tracks = innertubeResult
+    let source = 'innertube'
+
     if (!tracks) {
       tracks = await fetchViaWebPage(videoId)
+      source = tracks ? 'webpage' : 'none'
+    }
+
+    if (debug) {
+      // Return diagnostic info
+      const webResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+        headers: { 'user-agent': WEB_USER_AGENT },
+      })
+      const html = await webResp.text()
+      const hasConsent = html.includes('consent.youtube.com') || html.includes('consent.google.com')
+      const hasPlayerResponse = html.includes('ytInitialPlayerResponse')
+      const hasCaptionTracks = html.includes('captionTracks')
+
+      return Response.json({
+        videoId,
+        source,
+        innertubeTrackCount: innertubeResult?.length ?? 0,
+        webpageTrackCount: tracks?.length ?? 0,
+        webpageHtmlLength: html.length,
+        webpageHasConsent: hasConsent,
+        webpageHasPlayerResponse: hasPlayerResponse,
+        webpageHasCaptionTracks: hasCaptionTracks,
+        webpageFirst500: html.slice(0, 500),
+      }, { status: 200 })
     }
 
     if (!tracks || tracks.length === 0) {
