@@ -30,7 +30,7 @@ import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, fetchTweetImage, extractDomain, extractYouTubeUrlFromText } from './utils/linkUtils'
-import { fetchYouTubeTranscript } from './utils/transcriptUtils'
+import { fetchTranscript } from './utils/transcriptUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
@@ -422,21 +422,21 @@ export function App() {
           }
         })
 
-        // Check if tweet text contains a YouTube URL and fetch its transcript
+        // Fetch transcript for tweet video (native or embedded YouTube)
         const tweetYouTubeUrl = metadata.tweetText ? extractYouTubeUrlFromText(metadata.tweetText) : null
-        if (tweetYouTubeUrl) {
-          fetchYouTubeTranscript(tweetYouTubeUrl).then((transcript) => {
-            if (transcript) {
-              setNodes((prev) =>
-                prev.map((node) =>
-                  node.id === nodeId
-                    ? { ...node, data: { ...node.data, youtubeTranscript: transcript } }
-                    : node,
-                ),
-              )
-            }
-          })
-        }
+        const transcriptUrl = tweetYouTubeUrl || text
+        fetchTranscript(transcriptUrl).then((transcript) => {
+          if (transcript) {
+            const field = tweetYouTubeUrl ? 'youtubeTranscript' : 'transcript'
+            setNodes((prev) =>
+              prev.map((node) =>
+                node.id === nodeId
+                  ? { ...node, data: { ...node.data, [field]: transcript } }
+                  : node,
+              ),
+            )
+          }
+        })
 
         // Delay embedding for tweets to allow image fetch to complete
         setTimeout(() => {
@@ -453,7 +453,7 @@ export function App() {
         }, 8000)
       } else if (metadata.type === 'youtube') {
         // Fetch transcript async — don't block the card render
-        fetchYouTubeTranscript(text).then((transcript) => {
+        fetchTranscript(text).then((transcript) => {
           if (transcript) {
             setNodes((prev) =>
               prev.map((node) =>

@@ -82,6 +82,15 @@ function buildPartsForNode(
         }
       }
 
+      // Tweet video transcript (native video)
+      if (linkType === 'twitter') {
+        const transcript = data.transcript as string | undefined
+        if (transcript) {
+          const truncated = transcript.length > 3000 ? transcript.slice(0, 3000) : transcript
+          textSegments.push(truncated)
+        }
+      }
+
       // Tweet with embedded YouTube transcript
       if (linkType === 'twitter') {
         const youtubeTranscript = data.youtubeTranscript as string | undefined

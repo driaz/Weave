@@ -1,5 +1,5 @@
 import type { WeaveBoardsStore } from '../types/board'
-import { fetchYouTubeTranscript } from './transcriptUtils'
+import { fetchTranscript } from './transcriptUtils'
 import { extractYouTubeUrlFromText } from './linkUtils'
 import { embedNodeAsync } from '../services/embeddingService'
 
@@ -30,8 +30,16 @@ export async function backfillTranscripts(): Promise<void> {
         !n.data.transcript,
     )
 
+    // Find tweet linkCards missing transcript (native video)
+    const tweetVideoNodes = board.nodes.filter(
+      (n) =>
+        n.type === 'linkCard' &&
+        n.data.type === 'twitter' &&
+        !n.data.transcript,
+    )
+
     // Find tweet linkCards with YouTube URLs missing youtubeTranscript
-    const tweetNodes = board.nodes.filter(
+    const tweetYouTubeNodes = board.nodes.filter(
       (n) =>
         n.type === 'linkCard' &&
         n.data.type === 'twitter' &&
@@ -40,11 +48,11 @@ export async function backfillTranscripts(): Promise<void> {
         extractYouTubeUrlFromText(n.data.tweetText as string),
     )
 
-    const total = youtubeNodes.length + tweetNodes.length
+    const total = youtubeNodes.length + tweetVideoNodes.length + tweetYouTubeNodes.length
     if (total === 0) continue
 
     console.log(
-      `[backfill-transcripts] Board "${board.name}" (${boardId}): ${youtubeNodes.length} YouTube + ${tweetNodes.length} tweet(s) need transcripts`,
+      `[backfill-transcripts] Board "${board.name}" (${boardId}): ${youtubeNodes.length} YouTube + ${tweetVideoNodes.length} tweet video + ${tweetYouTubeNodes.length} tweet w/ YouTube need transcripts`,
     )
 
     for (const node of youtubeNodes) {
@@ -52,7 +60,7 @@ export async function backfillTranscripts(): Promise<void> {
       console.log(`[backfill-transcripts]   Fetching transcript for ${url}...`)
 
       try {
-        const transcript = await fetchYouTubeTranscript(url)
+        const transcript = await fetchTranscript(url)
 
         if (transcript) {
           node.data.transcript = transcript
@@ -75,7 +83,35 @@ export async function backfillTranscripts(): Promise<void> {
       await delay(DELAY_MS)
     }
 
-    for (const node of tweetNodes) {
+    for (const node of tweetVideoNodes) {
+      const url = node.data.url as string
+      console.log(`[backfill-transcripts]   Fetching transcript for tweet ${url}...`)
+
+      try {
+        const transcript = await fetchTranscript(url)
+
+        if (transcript) {
+          node.data.transcript = transcript
+          totalUpdated++
+
+          embedNodeAsync(boardId, node.id, 'linkCard', { ...node.data })
+
+          console.log(
+            `[backfill-transcripts]   ✓ Got tweet video transcript (${transcript.length} chars)`,
+          )
+        } else {
+          totalSkipped++
+          console.log(`[backfill-transcripts]   ✗ No video transcript (tweet may not have video)`)
+        }
+      } catch (err) {
+        totalSkipped++
+        console.warn(`[backfill-transcripts]   ✗ Failed:`, err)
+      }
+
+      await delay(DELAY_MS)
+    }
+
+    for (const node of tweetYouTubeNodes) {
       const tweetText = node.data.tweetText as string
       const youtubeUrl = extractYouTubeUrlFromText(tweetText)!
       console.log(
@@ -83,7 +119,7 @@ export async function backfillTranscripts(): Promise<void> {
       )
 
       try {
-        const transcript = await fetchYouTubeTranscript(youtubeUrl)
+        const transcript = await fetchTranscript(youtubeUrl)
 
         if (transcript) {
           node.data.youtubeTranscript = transcript

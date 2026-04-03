@@ -3,7 +3,7 @@ import { useReactFlow } from '@xyflow/react'
 import { generateNodeId } from '../utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from '../utils/imageUtils'
 import { fetchLinkMetadata, fetchTweetImage, isUrl, extractDomain, extractYouTubeUrlFromText } from '../utils/linkUtils'
-import { fetchYouTubeTranscript } from '../utils/transcriptUtils'
+import { fetchTranscript } from '../utils/transcriptUtils'
 import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
@@ -208,15 +208,15 @@ export function AddNodeButton() {
         }
       })
 
-      // Check if tweet text contains a YouTube URL and fetch its transcript
+      // Fetch transcript for tweet video (native or embedded YouTube)
       const tweetYouTubeUrl = metadata.tweetText ? extractYouTubeUrlFromText(metadata.tweetText) : null
-      if (tweetYouTubeUrl) {
-        fetchYouTubeTranscript(tweetYouTubeUrl).then((transcript) => {
-          if (transcript) {
-            updateNodeData(nodeId, { youtubeTranscript: transcript })
-          }
-        })
-      }
+      const transcriptUrl = tweetYouTubeUrl || urlToFetch
+      fetchTranscript(transcriptUrl).then((transcript) => {
+        if (transcript) {
+          const field = tweetYouTubeUrl ? 'youtubeTranscript' : 'transcript'
+          updateNodeData(nodeId, { [field]: transcript })
+        }
+      })
 
       // Delay embedding for tweets to allow image fetch to complete
       setTimeout(() => {
@@ -230,7 +230,7 @@ export function AddNodeButton() {
       }, 8000)
     } else if (metadata.type === 'youtube') {
       // Fetch transcript async — don't block the card render
-      fetchYouTubeTranscript(urlToFetch).then((transcript) => {
+      fetchTranscript(urlToFetch).then((transcript) => {
         if (transcript) {
           updateNodeData(nodeId, { transcript })
         }
