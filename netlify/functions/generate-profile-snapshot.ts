@@ -74,8 +74,12 @@ const CLUSTER_SIMILARITY_THRESHOLD = 0.55
 // To add a new engagement signal: add one entry to this table.
 // - weight is the contribution per attributed node (after normalization,
 //   the max weight in the snapshot will be 1.0)
-// - resolve returns the composite "board_id:node_id" keys this event
-//   attributes engagement to. Single-node events return [oneKey].
+// - resolve parses the prefixed target_id format and returns composite
+//   "board_id:node_id" keys this event attributes engagement to.
+//   Target IDs use colon-delimited prefixed format:
+//     node:{board_id}:{node_id}
+//     connection:{board_id}:{from_node_id}:{to_node_id}
+//   Single-node events return [oneKey].
 //   Multi-node events return [keyA, keyB, ...]
 //
 // Future events to add as the product evolves:
@@ -83,82 +87,39 @@ const CLUSTER_SIMILARITY_THRESHOLD = 0.55
 //   voice_question_asked (single or multi node, weight ~0.8)
 //   reflection_opened (no node attribution, would not go here)
 
-let unparseableConnectionEvents = 0
-
 const ENGAGEMENT_RULES: Record<string, EngagementRule> = {
   connection_label_clicked: {
     weight: 1.0,
-    resolve: (e) => resolveConnectionToBothNodes(e),
+    resolve: (e) => {
+      if (!e.target_id) return []
+      // Format: "connection:{board_id}:{from}:{to}"
+      const parts = e.target_id.split(':')
+      if (parts.length !== 4 || parts[0] !== 'connection') return []
+      const [, boardId, fromId, toId] = parts
+      return [`${boardId}:${fromId}`, `${boardId}:${toId}`]
+    },
   },
   connection_description_closed: {
     weight: 0.3,
-    resolve: (e) => resolveConnectionToBothNodes(e),
+    resolve: (e) => {
+      if (!e.target_id) return []
+      // Format: "connection:{board_id}:{from}:{to}"
+      const parts = e.target_id.split(':')
+      if (parts.length !== 4 || parts[0] !== 'connection') return []
+      const [, boardId, fromId, toId] = parts
+      return [`${boardId}:${fromId}`, `${boardId}:${toId}`]
+    },
   },
   item_added: {
     weight: 0.2,
     resolve: (e) => {
       if (!e.target_id) return []
-      // item_added target_id is already "board_id:node_id"
-      return [e.target_id]
+      // Format: "node:{board_id}:{node_id}"
+      // Return composite key without the "node:" prefix
+      const withoutPrefix = e.target_id.replace(/^node:/, '')
+      return [withoutPrefix]
     },
   },
-}
-
-// ---------------------------------------------------------------------------
-// TEMPORARY DEFENSIVE PARSER — TO BE REMOVED
-//
-// Edge IDs currently use the format "weave-{fromNodeId}-{toNodeId}",
-// which is ambiguous if node IDs ever contain hyphens. Today's node
-// IDs are simple numeric strings, so this works — but the format itself
-// is a latent bug.
-//
-// This parser is intentionally paranoid: it fails loudly (via the
-// unparseable_connection_events counter in generation_metadata) rather
-// than silently producing wrong attributions, so any future drift in
-// ID generation will be visible in snapshot metadata immediately.
-//
-// The proper fix is to change the edge ID delimiter to a character
-// node IDs cannot contain. That work will be done in a follow-up branch
-// immediately after this function ships and the first snapshots are
-// validated, BEFORE prompt 3 (theme extraction) builds on these weights.
-// When that work lands, this entire defensive block collapses to a
-// simple parse with no error handling needed.
-// ---------------------------------------------------------------------------
-
-function resolveConnectionToBothNodes(event: WeaveEvent): string[] {
-  const targetId = event.target_id
-  if (!targetId) {
-    console.warn(
-      `[Snapshot] Connection event has no target_id, skipping. event_type=${event.event_type} id=${event.id}`,
-    )
-    unparseableConnectionEvents++
-    return []
-  }
-
-  if (!targetId.startsWith('weave-')) {
-    console.warn(
-      `[Snapshot] Connection target_id missing "weave-" prefix: "${targetId}". event_type=${event.event_type} id=${event.id}`,
-    )
-    unparseableConnectionEvents++
-    return []
-  }
-
-  const remainder = targetId.slice('weave-'.length)
-  const parts = remainder.split('-')
-
-  if (parts.length !== 2) {
-    console.warn(
-      `[Snapshot] Connection target_id has unexpected format (expected 2 parts after "weave-", got ${parts.length}): "${targetId}". event_type=${event.event_type} id=${event.id}`,
-    )
-    unparseableConnectionEvents++
-    return []
-  }
-
-  const [fromNodeId, toNodeId] = parts
-  return [
-    `${event.board_id}:${fromNodeId}`,
-    `${event.board_id}:${toNodeId}`,
-  ]
 }
 
 // ---------------------------------------------------------------------------
@@ -303,9 +264,6 @@ export default async (req: Request) => {
   }
 
   const supabase = createClient(supabaseUrl, supabaseKey)
-
-  // Reset module-level counter for this invocation
-  unparseableConnectionEvents = 0
 
   try {
     // Parse request body
@@ -525,7 +483,6 @@ export default async (req: Request) => {
       total_clusters: clusters.length,
       rules_applied: [...rulesApplied],
       events_unmatched_by_type: eventsUnmatchedByType,
-      unparseable_connection_events: unparseableConnectionEvents,
     }
 
     const snapshotRow = {

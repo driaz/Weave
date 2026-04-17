@@ -61,7 +61,7 @@ export function AddNodeButton() {
       data: { text: '' },
     })
     trackEvent('item_added', {
-      targetId: `${boardId}:${nodeId}`,
+      targetId: `node:${boardId}:${nodeId}`,
       boardId,
       metadata: { node_type: 'textCard' },
     })
@@ -89,7 +89,7 @@ export function AddNodeButton() {
         data: { imageDataUrl, fileName: file.name, label: '' },
       })
       trackEvent('item_added', {
-        targetId: `${boardId}:${nodeId}`,
+        targetId: `node:${boardId}:${nodeId}`,
         boardId,
         metadata: { node_type: 'imageCard' },
       })
@@ -132,7 +132,7 @@ export function AddNodeButton() {
         },
       })
       trackEvent('item_added', {
-        targetId: `${boardId}:${nodeId}`,
+        targetId: `node:${boardId}:${nodeId}`,
         boardId,
         metadata: { node_type: 'pdfCard' },
       })
@@ -180,7 +180,7 @@ export function AddNodeButton() {
       },
     })
     trackEvent('item_added', {
-      targetId: `${boardId}:${nodeId}`,
+      targetId: `node:${boardId}:${nodeId}`,
       boardId,
       metadata: { node_type: 'linkCard' },
     })

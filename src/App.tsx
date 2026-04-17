@@ -176,9 +176,10 @@ export function App() {
     if (popupEdge && edgeOpenedAtRef.current) {
       const durationMs = Date.now() - edgeOpenedAtRef.current
       const conn = popupEdge.connection
-      const edgeId = `weave-${conn.from.replace(/^node-/, '')}-${conn.to.replace(/^node-/, '')}`
+      const from = conn.from.replace(/^node-/, '')
+      const to = conn.to.replace(/^node-/, '')
       trackEvent('connection_description_closed', {
-        targetId: edgeId,
+        targetId: `connection:${currentBoard.id}:${from}:${to}`,
         boardId: currentBoard.id,
         durationMs,
       })
@@ -211,10 +212,8 @@ export function App() {
         return { type: 'connection', connection, position }
       })
 
-      // Derive edge ID from connection fields
-      const edgeId = `weave-${from}-${to}`
       trackEvent('connection_label_clicked', {
-        targetId: edgeId,
+        targetId: `connection:${currentBoard.id}:${from}:${to}`,
         boardId: currentBoard.id,
         metadata: {
           connection_type: connection.type,
@@ -232,7 +231,7 @@ export function App() {
       saveCurrentBoard(nodes, connections)
       switchBoard(boardId)
       setActiveLayer('weave')
-      trackEvent('board_switched', { boardId })
+      trackEvent('board_switched', { targetId: `board:${boardId}`, boardId })
     },
     [nodes, connections, saveCurrentBoard, switchBoard],
   )
@@ -240,7 +239,7 @@ export function App() {
   const handleCreateBoard = useCallback(() => {
     saveCurrentBoard(nodes, connections)
     const newBoardId = createBoard()
-    trackEvent('board_created', { boardId: newBoardId })
+    trackEvent('board_created', { targetId: `board:${newBoardId}`, boardId: newBoardId })
     return newBoardId
   }, [nodes, connections, saveCurrentBoard, createBoard])
 
@@ -282,7 +281,7 @@ export function App() {
           },
         ])
         trackEvent('item_added', {
-          targetId: `${currentBoard.id}:${nodeId}`,
+          targetId: `node:${currentBoard.id}:${nodeId}`,
           boardId: currentBoard.id,
           metadata: { node_type: 'imageCard' },
         })
@@ -323,7 +322,7 @@ export function App() {
           },
         ])
         trackEvent('item_added', {
-          targetId: `${currentBoard.id}:${nodeId}`,
+          targetId: `node:${currentBoard.id}:${nodeId}`,
           boardId: currentBoard.id,
           metadata: { node_type: 'pdfCard' },
         })
@@ -385,7 +384,7 @@ export function App() {
         },
       ])
       trackEvent('item_added', {
-        targetId: `${currentBoard.id}:${nodeId}`,
+        targetId: `node:${currentBoard.id}:${nodeId}`,
         boardId: currentBoard.id,
         metadata: { node_type: 'linkCard' },
       })
