@@ -5,6 +5,9 @@
 [functions]
   directory = "netlify/functions"
 
+[functions."extract-snapshot-themes"]
+  timeout = 300
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
