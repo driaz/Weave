@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "snapshot:test": "curl -s -X POST http://localhost:8888/api/generate-profile-snapshot -H 'Content-Type: application/json' -d '{\"trigger_reason\":\"manual_test\"}' | node -e 'process.stdin.resume();let d=\"\";process.stdin.on(\"data\",c=>d+=c);process.stdin.on(\"end\",()=>console.log(JSON.stringify(JSON.parse(d),null,2)))'"
   },
   "dependencies": {
     "@google/genai": "^1.46.0",
@@ -29,6 +30,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "netlify-cli": "^24.10.0",
     "tailwindcss": "^4.2.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
