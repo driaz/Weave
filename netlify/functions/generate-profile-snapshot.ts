@@ -65,7 +65,7 @@ type EngagementRule = {
 // Constants
 // ---------------------------------------------------------------------------
 
-const CLUSTER_SIMILARITY_THRESHOLD = 0.55
+const CLUSTER_SIMILARITY_THRESHOLD = 0.72
 
 // ---------------------------------------------------------------------------
 // Engagement rules
