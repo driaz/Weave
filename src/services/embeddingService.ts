@@ -27,7 +27,7 @@ function buildPartsForNode(
       const text = data.text as string | undefined
       if (!text || text.trim().length === 0) return null
       parts.push({ text })
-      summary = text.slice(0, 100)
+      summary = text
       break
     }
 
@@ -47,7 +47,7 @@ function buildPartsForNode(
 
       const textLabel = label || fileName || 'Image'
       parts.push({ text: textLabel })
-      summary = textLabel.slice(0, 100)
+      summary = textLabel
       break
     }
 
@@ -114,7 +114,7 @@ function buildPartsForNode(
         })
       }
 
-      summary = combinedText.slice(0, 100)
+      summary = combinedText
       break
     }
 
@@ -134,7 +134,7 @@ function buildPartsForNode(
 
       const textLabel = label || fileName || 'PDF'
       parts.push({ text: textLabel })
-      summary = textLabel.slice(0, 100)
+      summary = textLabel
       break
     }
 
