@@ -312,6 +312,7 @@ export default async (req: Request) => {
       .from('weave_embeddings')
       .select('board_id, node_id, node_type, embedding, content_summary')
       .in('board_id', boardIds)
+      .is('archived_at', null)
 
     const fetchNodesTiming = tFetchNodes()
 

@@ -37,6 +37,7 @@ import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
 import { BoardIdContext } from './hooks/useBoardId'
 import { embedNodeAsync } from './services/embeddingService'
+import { supabase } from './services/supabaseClient'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -167,9 +168,63 @@ export function App() {
     }
   }, [nodes, connections, saveCurrentBoard, hydrating])
 
+  // Intentional delete: confirmation → local state cleanup → soft-delete
+  // embedding in Supabase → log event. Fire-and-forget on the network side;
+  // the node is already gone from the canvas by the time Supabase responds.
+  const deleteNode = useCallback(
+    (nodeId: string) => {
+      const confirmed = window.confirm(
+        'Delete this node? This will remove it from the canvas and archive its data.',
+      )
+      if (!confirmed) return
+
+      setNodes((prev) => prev.filter((n) => n.id !== nodeId))
+      setConnections((prev) =>
+        prev.filter((c) => c.from !== nodeId && c.to !== nodeId),
+      )
+
+      if (supabase) {
+        supabase
+          .from('weave_embeddings')
+          .update({ archived_at: new Date().toISOString() })
+          .eq('board_id', currentBoard.id)
+          .eq('node_id', nodeId)
+          .then(({ error }) => {
+            if (error) {
+              console.warn(
+                '[Weave] Failed to archive embedding for deleted node:',
+                error.message,
+              )
+            }
+          })
+      }
+
+      trackEvent('item_deleted', {
+        targetId: `node:${currentBoard.id}:${nodeId}`,
+        boardId: currentBoard.id,
+      })
+    },
+    [currentBoard.id],
+  )
+
+  // Intercept React Flow's built-in Delete/Backspace removal so it routes
+  // through the confirmation flow. Non-removal changes (position, selection)
+  // pass through untouched.
   const onNodesChange: OnNodesChange = useCallback(
-    (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
-    [],
+    (changes) => {
+      const passthrough: typeof changes = []
+      for (const change of changes) {
+        if (change.type === 'remove') {
+          deleteNode(change.id)
+        } else {
+          passthrough.push(change)
+        }
+      }
+      if (passthrough.length > 0) {
+        setNodes((nds) => applyNodeChanges(passthrough, nds))
+      }
+    },
+    [deleteNode],
   )
 
   // Track when the edge detail popup was opened (for duration_ms on close)

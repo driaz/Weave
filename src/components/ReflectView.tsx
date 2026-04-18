@@ -71,6 +71,7 @@ export function ReflectView({ onBack }: Props) {
           .from('weave_embeddings')
           .select('board_id, node_id, node_type, content_summary')
           .in('board_id', boardIds)
+          .is('archived_at', null)
 
         const lookup = new Map<string, ContentEntry>()
         for (const row of embRows ?? []) {
