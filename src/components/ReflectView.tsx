@@ -119,7 +119,7 @@ export function ReflectView({ onBack }: Props) {
       <div className="w-screen h-screen flex flex-col items-center justify-center bg-white gap-4">
         <p className="text-gray-400 text-lg">{error ?? 'Something went wrong'}</p>
         <button
-          onClick={onBack}
+          onClick={() => onBack()}
           className="text-sm text-gray-500 hover:text-gray-700 underline cursor-pointer"
         >
           Back to canvas
@@ -138,7 +138,7 @@ export function ReflectView({ onBack }: Props) {
           No reflections yet. Run the reasoning layer to generate themes.
         </p>
         <button
-          onClick={onBack}
+          onClick={() => onBack()}
           className="text-sm text-gray-500 hover:text-gray-700 underline cursor-pointer"
         >
           Back to canvas
@@ -165,7 +165,7 @@ export function ReflectView({ onBack }: Props) {
         {/* Header */}
         <div className="mb-12">
           <button
-            onClick={onBack}
+            onClick={() => onBack()}
             className="text-sm text-gray-400 hover:text-gray-600 mb-6 cursor-pointer"
           >
             &larr; Back to canvas
