@@ -23,6 +23,7 @@ import {
 } from './components/WeaveEdge'
 import { EdgeDetailPopup } from './components/EdgeDetailPopup'
 import { BoardSwitcher } from './components/BoardSwitcher'
+import { ReflectView } from './components/ReflectView'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
@@ -61,6 +62,8 @@ export function App() {
     storageError,
     dismissStorageError,
   } = useBoardStorage()
+
+  const [view, setView] = useState<'canvas' | 'reflect'>('canvas')
 
   const [nodes, setNodes] = useState<Node[]>(() =>
     currentBoard.nodes.map((n) => ({
@@ -490,6 +493,12 @@ export function App() {
     return () => document.removeEventListener('paste', handlePaste)
   }, [setNodes, currentBoard.id])
 
+  if (view === 'reflect') {
+    return (
+      <ReflectView onBack={() => setView('canvas')} />
+    )
+  }
+
   return (
     <BoardIdContext.Provider value={currentBoard.id}>
     <div className="w-screen h-screen relative">
@@ -552,6 +561,14 @@ export function App() {
             onRenameBoard={renameBoard}
             onDeleteBoard={deleteBoard}
           />
+        </Panel>
+        <Panel position="top-right">
+          <button
+            onClick={() => setView('reflect')}
+            className="px-3 py-1.5 text-xs text-gray-500 bg-white/90 border border-gray-200 rounded-md hover:text-gray-700 hover:border-gray-300 shadow-sm cursor-pointer"
+          >
+            Reflect
+          </button>
         </Panel>
         <Panel position="bottom-left">
           <AddNodeButton />
