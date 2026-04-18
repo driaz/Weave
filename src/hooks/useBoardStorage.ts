@@ -14,6 +14,8 @@ import {
   deleteBinaryDataForBoard,
   getBinaryFields,
 } from '../utils/binaryStorage'
+import { supabase } from '../services/supabaseClient'
+import { trackEvent } from '../services/eventTracker'
 
 const STORAGE_KEY = 'weave-boards'
 const CURRENT_VERSION = 1
@@ -340,6 +342,30 @@ export function useBoardStorage() {
       deleteBinaryDataForBoard(boardId).catch((e) =>
         console.warn('Failed to clean up binary data for deleted board:', e),
       )
+
+      // Soft-delete all embeddings for this board. Fire-and-forget; the
+      // board is already gone from localStorage by the time Supabase
+      // responds. Downstream (snapshot function, Reflect view) filters
+      // archived_at is null, so these rows become invisible.
+      if (supabase) {
+        supabase
+          .from('weave_embeddings')
+          .update({ archived_at: new Date().toISOString() })
+          .eq('board_id', boardId)
+          .then(({ error }) => {
+            if (error) {
+              console.warn(
+                '[Weave] Failed to archive embeddings for deleted board:',
+                error.message,
+              )
+            }
+          })
+      }
+
+      trackEvent('board_deleted', {
+        targetId: `board:${boardId}`,
+        boardId,
+      })
 
       if (store.lastActiveBoard === boardId) {
         hydratingBoardIdRef.current = null
