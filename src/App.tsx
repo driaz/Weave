@@ -495,7 +495,19 @@ export function App() {
 
   if (view === 'reflect') {
     return (
-      <ReflectView onBack={() => setView('canvas')} />
+      <ReflectView onBack={(target) => {
+        if (target) {
+          handleSwitchBoard(target.boardId)
+          setTimeout(() => {
+            reactFlowRef.current?.fitView({
+              nodes: [{ id: target.nodeId }],
+              duration: 500,
+              padding: 0.5,
+            })
+          }, 150)
+        }
+        setView('canvas')
+      }} />
     )
   }
 

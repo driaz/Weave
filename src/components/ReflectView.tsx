@@ -24,7 +24,7 @@ type ContentEntry = {
 }
 
 type Props = {
-  onBack: () => void
+  onBack: (target?: { boardId: string; nodeId: string }) => void
 }
 
 export function ReflectView({ onBack }: Props) {
@@ -216,12 +216,22 @@ export function ReflectView({ onBack }: Props) {
                       const isLong = summary !== null && summary.length > 200
                       const isNodeExpanded = expandedNodes.has(key)
 
+                      const colonIdx = key.indexOf(':')
+                      const boardId = key.slice(0, colonIdx)
+                      const nodeId = key.slice(colonIdx + 1)
+
                       return (
                         <div key={key} className="text-sm">
                           <span className="text-xs text-gray-300 mr-1">
                             {isAnchor ? '★' : ''}
                           </span>
-                          <span className="text-xs text-gray-400 mr-2">[{nodeType}]</span>
+                          <button
+                            onClick={() => onBack({ boardId, nodeId })}
+                            className="text-xs text-gray-400 hover:text-gray-600 hover:underline mr-2 cursor-pointer"
+                            title="Go to this node on the canvas"
+                          >
+                            [{nodeType}]
+                          </button>
                           {summary ? (
                             <>
                               <span className="text-gray-600">
