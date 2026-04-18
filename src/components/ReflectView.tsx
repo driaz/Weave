@@ -16,6 +16,7 @@ type Snapshot = {
   created_at: string
   node_count: number
   clusters: ClusterObj[] | null
+  narrative: string | null
 }
 
 type ContentEntry = {
@@ -45,7 +46,7 @@ export function ReflectView({ onBack }: Props) {
     async function load() {
       const { data: snap, error: snapErr } = await supabase!
         .from('weave_profile_snapshots')
-        .select('id, created_at, node_count, clusters')
+        .select('id, created_at, node_count, clusters, narrative')
         .order('created_at', { ascending: false })
         .limit(1)
         .single()
@@ -178,6 +179,24 @@ export function ReflectView({ onBack }: Props) {
             {formattedDate}
           </p>
         </div>
+
+        {/* Narrative synthesis — shown above the cluster evidence */}
+        {snapshot.narrative && snapshot.narrative.trim().length > 0 && (
+          <div className="mb-16 space-y-4">
+            {snapshot.narrative
+              .split(/\n\s*\n/)
+              .map((para) => para.trim())
+              .filter((para) => para.length > 0)
+              .map((para, i) => (
+                <p
+                  key={i}
+                  className="text-base text-gray-800 leading-relaxed"
+                >
+                  {decodeHtmlEntities(para)}
+                </p>
+              ))}
+          </div>
+        )}
 
         {/* Clusters */}
         <div className="space-y-10">
