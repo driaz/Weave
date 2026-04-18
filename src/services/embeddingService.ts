@@ -62,15 +62,17 @@ function buildPartsForNode(
 
       const textSegments: string[] = []
 
-      if (title) textSegments.push(title)
-      if (description) textSegments.push(description)
-      if (domain) textSegments.push(domain)
-
-      // Twitter-specific fields
-      if (linkType === 'twitter') {
+      // For tweets, title/description from oEmbed duplicate the tweet text.
+      // Use tweetText as the authoritative source when available.
+      if (linkType === 'twitter' && tweetText) {
         if (authorName) textSegments.push(authorName)
         if (authorHandle) textSegments.push(authorHandle)
-        if (tweetText) textSegments.push(tweetText)
+        textSegments.push(tweetText)
+        if (domain) textSegments.push(domain)
+      } else {
+        if (title) textSegments.push(title)
+        if (description) textSegments.push(description)
+        if (domain) textSegments.push(domain)
       }
 
       // YouTube transcript
