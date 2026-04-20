@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "themes:test": "bash scripts/test-themes.sh",
     "narrative:test": "bash scripts/test-narrative.sh",
     "snapshot:test": "curl -s -X POST http://localhost:8888/api/generate-profile-snapshot -H 'Content-Type: application/json' -d '{\"trigger_reason\":\"manual_test\"}' | node -e 'process.stdin.resume();let d=\"\";process.stdin.on(\"data\",c=>d+=c);process.stdin.on(\"end\",()=>console.log(JSON.stringify(JSON.parse(d),null,2)))'"
@@ -37,6 +39,7 @@
     "tailwindcss": "^4.2.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^4.1.4"
   }
 }
