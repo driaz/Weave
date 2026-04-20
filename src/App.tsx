@@ -24,6 +24,7 @@ import {
 import { EdgeDetailPopup } from './components/EdgeDetailPopup'
 import { BoardSwitcher } from './components/BoardSwitcher'
 import { ReflectView } from './components/ReflectView'
+import { UserMenu } from './components/UserMenu'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
@@ -630,12 +631,15 @@ export function App() {
           />
         </Panel>
         <Panel position="top-right">
-          <button
-            onClick={() => setView('reflect')}
-            className="px-3 py-1.5 text-xs text-gray-500 bg-white/90 border border-gray-200 rounded-md hover:text-gray-700 hover:border-gray-300 shadow-sm cursor-pointer"
-          >
-            Reflect
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setView('reflect')}
+              className="px-3 py-1.5 text-xs text-gray-500 bg-white/90 border border-gray-200 rounded-md hover:text-gray-700 hover:border-gray-300 shadow-sm cursor-pointer"
+            >
+              Reflect
+            </button>
+            <UserMenu />
+          </div>
         </Panel>
         <Panel position="bottom-left">
           <AddNodeButton />
