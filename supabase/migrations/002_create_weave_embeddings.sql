@@ -7,7 +7,7 @@ create table public.weave_embeddings (
   board_id text not null,
   node_id text not null,
   node_type text not null,
-  embedding vector(3072),
+  embedding extensions.vector(3072),
   content_summary text,
   created_at timestamptz default timezone('utc'::text, now()) not null,
   metadata jsonb,

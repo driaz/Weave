@@ -26,6 +26,7 @@ import { BoardSwitcher } from './components/BoardSwitcher'
 import { ReflectView } from './components/ReflectView'
 import { UserMenu } from './components/UserMenu'
 import { HydrationSourceIndicator } from './components/HydrationSourceIndicator'
+import { DevEnvBadge } from './components/DevEnvBadge'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
@@ -557,19 +558,22 @@ export function App() {
 
   if (view === 'reflect') {
     return (
-      <ReflectView onBack={(target) => {
-        if (target) {
-          handleSwitchBoard(target.boardId)
-          setTimeout(() => {
-            reactFlowRef.current?.fitView({
-              nodes: [{ id: target.nodeId }],
-              duration: 500,
-              padding: 0.5,
-            })
-          }, 150)
-        }
-        setView('canvas')
-      }} />
+      <>
+        <ReflectView onBack={(target) => {
+          if (target) {
+            handleSwitchBoard(target.boardId)
+            setTimeout(() => {
+              reactFlowRef.current?.fitView({
+                nodes: [{ id: target.nodeId }],
+                duration: 500,
+                padding: 0.5,
+              })
+            }, 150)
+          }
+          setView('canvas')
+        }} />
+        <DevEnvBadge />
+      </>
     )
   }
 
@@ -678,6 +682,7 @@ export function App() {
         />
       )}
       <HydrationSourceIndicator />
+      <DevEnvBadge />
     </div>
     </BoardIdContext.Provider>
   )

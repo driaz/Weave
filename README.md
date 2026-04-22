@@ -57,7 +57,7 @@ Each connection includes:
 - Anthropic Claude API (Opus 4.6 with vision)
 - localStorage + IndexedDB (board persistence)
 
-## Setup
+## Development Setup
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/Weave.git
@@ -65,17 +65,35 @@ cd Weave
 npm install
 ```
 
-Create a `.env` file in the project root:
+### Supabase projects
 
-```
-VITE_ANTHROPIC_API_KEY=your-anthropic-api-key-here
-```
+Weave runs against two separate Supabase projects so local development never touches production data:
+
+- **Weave-Dev** (project ref `bxbhjybahfyeqytwpkry`) — backs local `npm run dev`. A small `DEV` pill appears in the top-left corner of the app when you're pointed here.
+- **Weave** (project ref `wndfikmpifyqkgivmnwv`) — backs the deployed Netlify site. Environment variables live in the Netlify dashboard; never hard-coded or committed.
+
+On startup the browser console logs `[Weave] Connected to Supabase: <project-ref>` so you can confirm which environment you're talking to.
+
+### Environment variables
+
+Create a `.env` in the project root. All values come from the Weave-Dev project's dashboard (**Project Settings → API**):
+
+| Variable | Purpose |
+| -------- | ------- |
+| `VITE_SUPABASE_URL` | Base URL of the Weave-Dev project (e.g. `https://<ref>.supabase.co`). Read at runtime by the browser client. |
+| `VITE_SUPABASE_ANON_KEY` | Public anon key for Weave-Dev. Safe to expose to the browser; RLS enforces the actual authorization. |
+| `VITE_ANTHROPIC_API_KEY` | Direct-access API key for the Anthropic Messages API. Optional locally — when unset the app routes through the `/api/claude` Netlify proxy function instead. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Only needed if you run the persistence integration tests (`npm test`). The tests use the service role to create/tear-down throwaway users and leave production data alone. |
+
+A few related values (Gemini embedding key, Innertube / Supadata tokens, Netlify-only server vars like `ANTHROPIC_API_KEY` for the proxy) are set on Netlify for production and aren't required for most local development flows.
 
 Start the dev server:
 
 ```bash
 npm run dev
 ```
+
+See [`Claude.md`](Claude.md#supabase-environments) for migration promotion workflow and [`MIGRATIONS.md`](MIGRATIONS.md) for the full migration inventory.
 
 ## Board Persistence
 

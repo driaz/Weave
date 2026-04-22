@@ -81,6 +81,44 @@ npm run preview      # Preview production build locally
 - **Node:** v20+ (LTS)
 - **OS:** macOS (primary development)
 
+## Supabase Environments
+
+Weave uses two separate Supabase projects so you can iterate freely without risking production data:
+
+| Environment | Project name | Project ref | Used by |
+| ----------- | ------------ | ----------- | ------- |
+| Dev | Weave-Dev | `bxbhjybahfyeqytwpkry` | Local development (`npm run dev`) |
+| Prod | Weave | `wndfikmpifyqkgivmnwv` | Netlify deploy (production site) |
+
+- **Local `.env`** (gitignored) points at Weave-Dev. Every drag, save, board creation, RLS check, and RPC call hits dev. See README for the full variable list.
+- **Netlify environment variables** point at Weave prod. They override the local `.env` at deploy time.
+- **Supabase CLI** is linked to Weave-Dev by default. All `supabase db push` / `supabase gen types` calls from the working tree affect dev.
+- On app startup the browser logs `[Weave] Connected to Supabase: <project-ref>` so you can confirm the environment at a glance.
+- A subtle `DEV` pill appears in the top-left corner when the app is pointed at the dev project. Absent in production.
+
+### Migration promotion workflow
+
+1. Write a new migration in `supabase/migrations/NNN_short_name.sql`.
+2. Test locally: `supabase db push` (CLI is linked to dev → applied to Weave-Dev). Exercise affected flows in the running dev server.
+3. When the migration is ready for production:
+   ```bash
+   supabase link --project-ref wndfikmpifyqkgivmnwv   # link to prod
+   supabase db push                                    # apply to prod
+   supabase link --project-ref bxbhjybahfyeqytwpkry   # re-link back to dev
+   ```
+4. **Schema changes go out before the code that depends on them.** Apply the migration to prod first, confirm the prod schema is in the expected state, then merge/deploy the PR that uses it. Doing it in the opposite order creates a window where production code is talking to a stale schema.
+5. Double-check the `DEV` pill in the browser after any local re-link to make sure you're still pointing at dev.
+
+### Regenerating the TypeScript schema
+
+```bash
+npx supabase gen types typescript --linked > src/types/database.ts
+```
+
+Run this whenever a migration adds or changes tables / functions / enums so the typed `SupabaseClient<Database>` reflects reality. Commit the regenerated file.
+
+See [`MIGRATIONS.md`](MIGRATIONS.md) for the full inventory of applied migrations and their purpose.
+
 ## Future Considerations (not yet implemented)
 
 - 3D spatial layout option (Three.js or React Three Fiber)
