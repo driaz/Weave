@@ -2,9 +2,9 @@
 
 Pure CRUD wrapper around Supabase for Weave's canvas data: **boards**,
 **nodes**, **edges**, **voice sessions**, and **media**. React-agnostic
-— no hooks, no stateful caches. Designed to be consumed by
-`useBoardStorage` (Phase 1 Prompt 5) so that hook can dual-write to
-`localStorage` and Supabase.
+— no hooks, no stateful caches. Consumed by `useBoardStorage`, which
+treats Supabase as the sole source of truth and uses `cache.ts` as a
+downstream read cache for fast cold starts.
 
 The module does two things the generic Supabase client does not:
 
@@ -133,11 +133,13 @@ skips integration tests.
 
 - **No real-time subscriptions.** The canvas saves via debounced
   replace-all; live collab isn't planned for Phase 1.
-- **No offline queue.** When network writes fail, the caller's the
-  fallback (Prompt 5's dual-write keeps localStorage as the source of
-  truth during transition).
+- **No offline queue.** When a write fails, `useBoardStorage` rolls
+  React state back to the last-synced snapshot and surfaces an error
+  toast — no retry, no queue. Supabase is the sole source of truth.
 - **No optimistic local cache.** Callers (`useBoardStorage`) own the
-  UI-facing state; this module is stateless.
+  UI-facing state; this module is stateless. The cache module
+  (`cache.ts`) is a downstream read cache — writes happen AFTER a
+  successful Supabase write, never speculatively.
 - **`batchUpdate` is not atomic.** PostgREST has no bulk-update
   statement, so it fans out one HTTP request per row. Partial
   failures are surfaced as the first rejection. If you need

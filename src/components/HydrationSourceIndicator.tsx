@@ -31,9 +31,11 @@ export function HydrationSourceIndicator() {
   const tone =
     record.source === 'supabase'
       ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-      : record.source === 'localStorage'
-        ? 'bg-amber-50 border-amber-200 text-amber-800'
-        : 'bg-gray-50 border-gray-200 text-gray-600'
+      : record.source === 'cache'
+        ? 'bg-sky-50 border-sky-200 text-sky-700'
+        : record.source === 'error'
+          ? 'bg-red-50 border-red-200 text-red-700'
+          : 'bg-gray-50 border-gray-200 text-gray-600'
 
   return (
     <div
