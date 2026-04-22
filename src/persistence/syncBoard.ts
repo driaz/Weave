@@ -7,7 +7,7 @@ import { AuthError, NotFoundError, mapSupabaseError } from './errors'
 import { requireClient, requireUserId } from './session'
 import type { Connection } from '../api/claude'
 import type { SerializedBoard, SerializedNode } from '../types/board'
-import type { NewNodeInput, NewEdgeInput } from './types'
+import type { Json } from '../types/database'
 
 /**
  * Map client-side node `type` (e.g. "imageCard") to the `card_type`
@@ -44,15 +44,43 @@ function stringOrNull(value: unknown): string | null {
 }
 
 /**
- * Build a `NewNodeInput` from a client-side SerializedNode. Binary
- * fields (imageDataUrl / imageBase64) are stripped from the jsonb
- * payload — they go to Storage via `ensureNodeImageUploaded` and the
- * returned path lands on `image_url` instead.
+ * Payload shape for a single node in the `replace_board_contents`
+ * RPC. Mirrors `NewNodeInput` from `types.ts` but adds `client_id`
+ * — the RPC uses that to build the client→server id map so edges
+ * inserted in the same transaction can resolve source/target refs.
  */
-function nodeToInput(
+type RpcNodePayload = {
+  client_id: string
+  card_type: string
+  link_type: string | null
+  position_x: number
+  position_y: number
+  title: string | null
+  description: string | null
+  url: string | null
+  source: string | null
+  text_content: string | null
+  image_url: string | null
+  data: Record<string, unknown>
+}
+
+type RpcEdgePayload = {
+  client_source_id: string
+  client_target_id: string
+  relationship_label: string | null
+  data: Record<string, unknown>
+}
+
+/**
+ * Build the node payload for the RPC. Strips binary fields out of
+ * the jsonb blob (they live in Storage / IndexedDB), stashes the
+ * client-side id + type so hydration can round-trip the client's
+ * view of the node without needing a mapping table.
+ */
+function nodeToRpcPayload(
   node: SerializedNode,
   imagePath: string | null,
-): NewNodeInput {
+): RpcNodePayload {
   const { data, type } = node
   const card_type = toCardType(type)
 
@@ -62,10 +90,9 @@ function nodeToInput(
   const source = stringOrNull(data.source ?? data.domain)
   const text_content = stringOrNull(data.text ?? data.text_content)
 
-  // Preferred `image_url` source, in order: the Storage path returned
-  // by this save's `ensureNodeImageUploaded`, the path stashed on the
-  // node during hydrate (means the image was already uploaded before),
-  // or — for linkCards only — the external web URL the client rendered.
+  // Preferred `image_url` source, in order: fresh upload this cycle,
+  // path stashed on the node during hydrate, or — for linkCards —
+  // the external web URL the client rendered.
   const stashedPath = data[IMAGE_STORAGE_PATH_KEY]
   let image_url: string | null = null
   if (imagePath) {
@@ -76,10 +103,8 @@ function nodeToInput(
     image_url = stringOrNull(data.imageUrl)
   }
 
-  // Strip binary fields and the client-only storage-path marker out
-  // of the data blob before it hits the DB — large base64 strings
-  // don't belong in Postgres, and the marker is redundant with
-  // `image_url` on the row.
+  // Strip binary fields and the client-only storage-path marker
+  // before the blob goes over the wire.
   const cleaned: Record<string, unknown> = { ...data }
   delete cleaned.imageDataUrl
   delete cleaned.imageBase64
@@ -87,12 +112,14 @@ function nodeToInput(
   delete cleaned.thumbnailDataUrl
   delete cleaned[IMAGE_STORAGE_PATH_KEY]
 
-  // Preserve the client-side node id so embeddings keep matching.
+  // Preserve the client-side node id so hydration + embeddings keep
+  // matching across the replace-all cycle.
   cleaned._clientNodeId = node.id
   cleaned._clientNodeType = type
   cleaned.position = node.position
 
   return {
+    client_id: node.id,
     card_type,
     link_type: type === 'linkCard' ? toLinkType(data.type) : null,
     position_x: node.position.x,
@@ -103,37 +130,25 @@ function nodeToInput(
     source,
     text_content,
     image_url,
-    data: cleaned as NewNodeInput['data'],
+    data: cleaned,
   }
 }
 
-function connectionToEdgeInput(
-  connection: Connection,
-  localToServer: Map<string, string>,
-): NewEdgeInput | null {
-  // Strip any `node-` prefix Claude may have emitted before looking
-  // up the server UUID. `localToServer` is keyed by the bare node id
-  // (e.g. "4"), so a prefixed lookup ("node-4") would miss every time
-  // and the edge would be silently dropped — the exact bug that wiped
-  // Cutover Test 6's edges during soak.
+/**
+ * Build the edge payload for the RPC. Strips any `node-` prefix
+ * Claude may have emitted — the RPC's id_map is keyed on whatever
+ * the client_id on the node payload is, which is always the bare
+ * SerializedNode.id. Ingest in App.tsx should already have
+ * normalised these; belt-and-suspenders here so a slip-through
+ * doesn't silently drop the edge.
+ */
+function connectionToRpcPayload(connection: Connection): RpcEdgePayload {
   const fromId = connection.from.replace(/^node-/, '')
   const toId = connection.to.replace(/^node-/, '')
 
-  const sourceServerId = localToServer.get(fromId)
-  const targetServerId = localToServer.get(toId)
-  if (!sourceServerId || !targetServerId) {
-    console.warn(
-      '[Weave sync] edge dropped — no local→server mapping for',
-      `${connection.from} → ${connection.to}`,
-      '(resolved:',
-      `${fromId} → ${toId})`,
-    )
-    return null
-  }
-
   return {
-    source_node_id: sourceServerId,
-    target_node_id: targetServerId,
+    client_source_id: fromId,
+    client_target_id: toId,
     relationship_label: connection.label ?? null,
     data: {
       explanation: connection.explanation,
@@ -143,7 +158,24 @@ function connectionToEdgeInput(
       mode: connection.mode ?? null,
       from: fromId,
       to: toId,
-    } as NewEdgeInput['data'],
+    },
+  }
+}
+
+/**
+ * Wrap each await with a step label so post-mortem `supabase failure`
+ * logs tell us *which* step of the replace-all died.
+ */
+async function step<T>(label: string, op: () => Promise<T>): Promise<T> {
+  try {
+    return await op()
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err)
+    const wrapped = new Error(`${label}: ${cause}`, {
+      cause: err as Error,
+    })
+    if (err instanceof Error) wrapped.name = err.name
+    throw wrapped
   }
 }
 
@@ -152,12 +184,10 @@ function connectionToEdgeInput(
  * so the local board id (used everywhere in client state, localStorage,
  * and eventTracker) matches the DB primary key.
  *
- * Uses `upsert({ ignoreDuplicates: true })` rather than a plain insert
- * because concurrent saves (and reruns of a single save) would
- * otherwise race: both read `boards.get(id) === null` before either
- * insert commits, one succeeds, the other 409s on `boards_pkey`.
- * The upsert form is idempotent; the rename case is handled by the
- * explicit `.update` call in `syncBoardToSupabase`.
+ * The `replace_board_contents` RPC does not create the board row —
+ * it requires the board to already exist so its ownership check can
+ * run. First-save-of-a-new-board uses this upsert to make sure the
+ * row is there before the RPC call.
  */
 async function upsertBoardRow(id: string, name: string): Promise<void> {
   const client = requireClient()
@@ -173,58 +203,45 @@ async function upsertBoardRow(id: string, name: string): Promise<void> {
 }
 
 /**
- * Delete every node on a board in one statement. There's no top-level
- * `persistence.nodes.deleteByBoard` because until now the module
- * hasn't needed it; this is the first "replace all" caller.
+ * Single-statement atomic replace of a board's nodes + edges.
+ * Delegates to the `replace_board_contents` PL/pgSQL function so
+ * the DELETE and both INSERTs live inside one transaction — a
+ * failure anywhere inside rolls back all three, leaving the prior
+ * state untouched. Prior client-orchestrated sequence could strand
+ * a board at 0/0 if the node INSERT failed after the DELETE
+ * committed.
+ *
+ * The RPC also advances `boards.updated_at`, which fixes the
+ * stale-sidebar-ordering issue from before — the client code no
+ * longer needs to touch the boards row for activity tracking.
  */
-async function deleteNodesByBoard(boardId: string): Promise<void> {
+async function callReplaceBoardContents(
+  boardId: string,
+  nodes: RpcNodePayload[],
+  edges: RpcEdgePayload[],
+): Promise<void> {
   const client = requireClient()
   await requireUserId()
 
-  const { error } = await client.from('nodes').delete().eq('board_id', boardId)
+  const { error } = await client.rpc('replace_board_contents', {
+    p_board_id: boardId,
+    p_nodes: nodes as unknown as Json,
+    p_edges: edges as unknown as Json,
+  })
   if (error)
-    throw mapSupabaseError(error, `syncBoard.deleteNodesByBoard(${boardId})`)
-}
-
-/**
- * Wrap each await with a step label so post-mortem `supabase failure`
- * logs tell us *which* step of the replace-all died instead of just
- * echoing the raw Supabase error text.
- */
-async function step<T>(label: string, op: () => Promise<T>): Promise<T> {
-  try {
-    return await op()
-  } catch (err) {
-    const cause = err instanceof Error ? err.message : String(err)
-    const wrapped = new Error(`${label}: ${cause}`, {
-      cause: err as Error,
-    })
-    // Preserve the original class (AuthError, ValidationError, etc.)
-    // so downstream `instanceof` branches still work.
-    if (err instanceof Error) wrapped.name = err.name
-    throw wrapped
-  }
+    throw mapSupabaseError(error, `syncBoard.replaceBoardContents(${boardId})`)
 }
 
 /**
  * Replace-all sync of a single board to Supabase.
  *
- * 1. Upsert the board row (create on first sight, update otherwise).
- * 2. Upload any new base64 images to Storage (memoized — repeat saves
- *    don't re-upload).
- * 3. Delete every node for this board, then `batchCreate` a fresh set.
- *    Each inserted row gets a server-generated UUID that we thread
- *    into edges below. Edges are cascade-deleted by the FK when the
- *    nodes go away (see migration 008), so there's no separate
- *    `edges.deleteByBoard` round trip.
- * 4. Insert fresh edges using the client-id → server-id map.
- *
- * **Destructive window:** step 3's DELETE commits before step 3's
- * INSERT runs. If the INSERT fails (network, constraint, etc.) the
- * board is left at 0 nodes / 0 edges until the next save. Fix C
- * (transactional RPC) is the proper closure; Fix A + Fix B in the
- * caller (useBoardStorage) narrow the window by eliminating spurious
- * saves and serializing concurrent ones.
+ * 1. Ensure the board row exists (first-save creates, rename
+ *    updates; unchanged name is a no-op).
+ * 2. Upload any new base64 images to Storage (memoized — repeat
+ *    saves don't re-upload).
+ * 3. Single RPC call: DELETE existing nodes (cascade-deletes edges),
+ *    INSERT new nodes, INSERT new edges, advance boards.updated_at.
+ *    Atomic — any failure rolls the whole function back.
  */
 export async function syncBoardToSupabase(
   userId: string,
@@ -273,34 +290,13 @@ export async function syncBoardToSupabase(
     }),
   )
 
-  // 3. Replace all nodes. Edges cascade-delete via FK on delete.
-  await step('step:delete-nodes', () => deleteNodesByBoard(board.id))
-
-  const inputs = board.nodes.map((node) =>
-    nodeToInput(node, imagePaths.get(node.id) ?? null),
+  // 3. Atomic replace-all via RPC.
+  const nodePayload = board.nodes.map((node) =>
+    nodeToRpcPayload(node, imagePaths.get(node.id) ?? null),
   )
-  const created = inputs.length
-    ? await step('step:insert-nodes', () =>
-        persistence.nodes.batchCreate(board.id, inputs),
-      )
-    : []
+  const edgePayload = board.connections.map(connectionToRpcPayload)
 
-  // batchCreate returns rows in the order they were sent — zip them
-  // against the client nodes to build the id translation map.
-  const localToServer = new Map<string, string>()
-  for (let i = 0; i < board.nodes.length; i++) {
-    const serverNode = created[i]
-    if (serverNode) localToServer.set(board.nodes[i].id, serverNode.id)
-  }
-
-  // 4. Insert fresh edges. No explicit delete — step 3 already
-  // cascaded them.
-  const edgeInputs = board.connections
-    .map((c) => connectionToEdgeInput(c, localToServer))
-    .filter((input): input is NewEdgeInput => input !== null)
-  if (edgeInputs.length > 0) {
-    await step('step:insert-edges', () =>
-      persistence.edges.batchCreate(board.id, edgeInputs),
-    )
-  }
+  await step('step:rpc-replace-all', () =>
+    callReplaceBoardContents(board.id, nodePayload, edgePayload),
+  )
 }
