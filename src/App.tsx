@@ -25,6 +25,7 @@ import { EdgeDetailPopup } from './components/EdgeDetailPopup'
 import { BoardSwitcher } from './components/BoardSwitcher'
 import { ReflectView } from './components/ReflectView'
 import { UserMenu } from './components/UserMenu'
+import { HydrationSourceIndicator } from './components/HydrationSourceIndicator'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
@@ -61,6 +62,7 @@ export function App() {
     renameBoard,
     deleteBoard,
     saveCurrentBoard,
+    markBoardClean,
     storageError,
     dismissStorageError,
   } = useBoardStorage()
@@ -116,15 +118,19 @@ export function App() {
       prevHydratingRef.current && !hydrating
 
     if (boardChanged || hydrationJustFinished) {
-      setNodes(
-        currentBoard.nodes.map((n) => ({
-          id: n.id,
-          type: n.type,
-          position: n.position,
-          data: n.data,
-        })),
-      )
+      const freshNodes = currentBoard.nodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        position: n.position,
+        data: n.data,
+      }))
+      setNodes(freshNodes)
       setConnections(currentBoard.connections)
+      // Tell `useBoardStorage` the state we just pushed into React
+      // IS the clean baseline for this board — the follow-up tick of
+      // the debounced save effect will then short-circuit instead of
+      // firing a redundant replace-all.
+      markBoardClean(currentBoard.id, freshNodes, currentBoard.connections)
       if (boardChanged) {
         setHighlightState(null)
         setPopupEdge(null)
@@ -132,7 +138,7 @@ export function App() {
       prevBoardIdRef.current = currentBoard.id
     }
     prevHydratingRef.current = hydrating
-  }, [currentBoard.id, currentBoard.nodes, currentBoard.connections, hydrating])
+  }, [currentBoard.id, currentBoard.nodes, currentBoard.connections, hydrating, markBoardClean])
 
   // Track session lifecycle
   useEffect(() => {
@@ -609,7 +615,17 @@ export function App() {
             onLayerChange={setActiveLayer}
             onResult={(result, mode) => {
               clearHighlight()
-              setConnections((prev) => [...prev, ...result.connections])
+              // Normalise ids at ingest: Claude sometimes emits
+              // `node-N` (self-propagating once it lands in the
+              // existing-connection context). Strip the prefix so
+              // state, localStorage, edge jsonb, and context loopback
+              // are all uniformly bare. Breaks the format lottery.
+              const normalised = result.connections.map((c) => ({
+                ...c,
+                from: c.from.replace(/^node-/, ''),
+                to: c.to.replace(/^node-/, ''),
+              }))
+              setConnections((prev) => [...prev, ...normalised])
               setActiveLayer(mode)
             }}
             onClear={() => {
@@ -661,6 +677,7 @@ export function App() {
           onClose={closeEdgeDetail}
         />
       )}
+      <HydrationSourceIndicator />
     </div>
     </BoardIdContext.Provider>
   )
