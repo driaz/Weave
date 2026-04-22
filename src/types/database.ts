@@ -375,7 +375,14 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      replace_board_contents: {
+        Args: {
+          p_board_id: string
+          p_nodes: Json
+          p_edges: Json
+        }
+        Returns: undefined
+      }
     }
     Enums: {
       [_ in never]: never
