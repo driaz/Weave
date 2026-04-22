@@ -1,27 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { downloadCanvasExport } from '../utils/exportCanvases'
 
 export function UserMenu() {
   const { user, signOut } = useAuth()
   const [open, setOpen] = useState(false)
-  const [exporting, setExporting] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
 
   const closeMenu = useCallback(() => setOpen(false), [])
-
-  const handleExport = useCallback(async () => {
-    setExporting(true)
-    try {
-      await downloadCanvasExport()
-      closeMenu()
-    } catch (err) {
-      console.error('[Weave] Export failed', err)
-      alert('Export failed — check the console for details.')
-    } finally {
-      setExporting(false)
-    }
-  }, [closeMenu])
 
   useEffect(() => {
     if (!open) return
@@ -86,16 +71,6 @@ export function UserMenu() {
             <div className="px-3 py-1.5 text-xs text-gray-400 border-b border-gray-100">
               {user.email || 'GitHub account'}
             </div>
-            <button
-              onClick={handleExport}
-              disabled={exporting}
-              className="w-full text-left px-3 py-1.5 text-sm text-gray-600
-                hover:bg-gray-50 hover:text-gray-800 transition-colors duration-150 cursor-pointer
-                disabled:opacity-50 disabled:cursor-wait"
-              role="menuitem"
-            >
-              {exporting ? 'Exporting…' : 'Export all canvases'}
-            </button>
             <button
               onClick={() => {
                 closeMenu()

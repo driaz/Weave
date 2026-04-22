@@ -27,6 +27,8 @@ import { ReflectView } from './components/ReflectView'
 import { UserMenu } from './components/UserMenu'
 import { HydrationSourceIndicator } from './components/HydrationSourceIndicator'
 import { DevEnvBadge } from './components/DevEnvBadge'
+import { CanvasSkeleton } from './components/CanvasSkeleton'
+import { SaveErrorToast } from './components/SaveErrorToast'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
@@ -58,14 +60,18 @@ export function App() {
     currentBoard,
     allBoards,
     hydrating,
+    hydrationError,
     createBoard,
     switchBoard,
     renameBoard,
     deleteBoard,
     saveCurrentBoard,
     markBoardClean,
-    storageError,
-    dismissStorageError,
+    queueSideEffect,
+    saveError,
+    dismissSaveError,
+    rollbackSignal,
+    hydrationRevision,
   } = useBoardStorage()
 
   const [view, setView] = useState<'canvas' | 'reflect'>('canvas')
@@ -110,15 +116,23 @@ export function App() {
     setPopupEdge(null)
   }, [])
 
-  // Sync state when switching boards or when hydration completes
+  // Sync state when switching boards, when hydration completes, after a
+  // save rollback (Supabase write failed → revert React state to the
+  // last-synced snapshot the hook still has in `currentBoard`), or when
+  // background revalidation produces a different store than the cache
+  // seeded (e.g. image nodes the cache couldn't fit under quota).
   const prevBoardIdRef = useRef(currentBoard.id)
   const prevHydratingRef = useRef(hydrating)
+  const prevRollbackRef = useRef(rollbackSignal)
+  const prevHydrationRevRef = useRef(hydrationRevision)
   useEffect(() => {
     const boardChanged = currentBoard.id !== prevBoardIdRef.current
     const hydrationJustFinished =
       prevHydratingRef.current && !hydrating
+    const rolledBack = rollbackSignal !== prevRollbackRef.current
+    const revalidated = hydrationRevision !== prevHydrationRevRef.current
 
-    if (boardChanged || hydrationJustFinished) {
+    if (boardChanged || hydrationJustFinished || rolledBack || revalidated) {
       const freshNodes = currentBoard.nodes.map((n) => ({
         id: n.id,
         type: n.type,
@@ -127,10 +141,6 @@ export function App() {
       }))
       setNodes(freshNodes)
       setConnections(currentBoard.connections)
-      // Tell `useBoardStorage` the state we just pushed into React
-      // IS the clean baseline for this board — the follow-up tick of
-      // the debounced save effect will then short-circuit instead of
-      // firing a redundant replace-all.
       markBoardClean(currentBoard.id, freshNodes, currentBoard.connections)
       if (boardChanged) {
         setHighlightState(null)
@@ -139,7 +149,17 @@ export function App() {
       prevBoardIdRef.current = currentBoard.id
     }
     prevHydratingRef.current = hydrating
-  }, [currentBoard.id, currentBoard.nodes, currentBoard.connections, hydrating, markBoardClean])
+    prevRollbackRef.current = rollbackSignal
+    prevHydrationRevRef.current = hydrationRevision
+  }, [
+    currentBoard.id,
+    currentBoard.nodes,
+    currentBoard.connections,
+    hydrating,
+    rollbackSignal,
+    hydrationRevision,
+    markBoardClean,
+  ])
 
   // Track session lifecycle
   useEffect(() => {
@@ -176,9 +196,10 @@ export function App() {
     }
   }, [nodes, connections, saveCurrentBoard, hydrating])
 
-  // Intentional delete: confirmation → local state cleanup → soft-delete
-  // embedding in Supabase → log event. Fire-and-forget on the network side;
-  // the node is already gone from the canvas by the time Supabase responds.
+  // Intentional delete: confirmation → local state cleanup → queue an
+  // embedding archive to fire AFTER the next successful Supabase save
+  // for this board. If the save rolls back (node reappears on canvas),
+  // the archive side-effect is dropped and the embedding stays active.
   const deleteNode = useCallback(
     (nodeId: string) => {
       const confirmed = window.confirm(
@@ -191,28 +212,28 @@ export function App() {
         prev.filter((c) => c.from !== nodeId && c.to !== nodeId),
       )
 
-      if (supabase) {
-        supabase
+      const boardId = currentBoard.id
+      queueSideEffect(boardId, async () => {
+        if (!supabase) return
+        const { error } = await supabase
           .from('weave_embeddings')
           .update({ archived_at: new Date().toISOString() })
-          .eq('board_id', currentBoard.id)
+          .eq('board_id', boardId)
           .eq('node_id', nodeId)
-          .then(({ error }) => {
-            if (error) {
-              console.warn(
-                '[Weave] Failed to archive embedding for deleted node:',
-                error.message,
-              )
-            }
-          })
-      }
+        if (error) {
+          console.warn(
+            '[Weave] Failed to archive embedding for deleted node:',
+            error.message,
+          )
+        }
+      })
 
       trackEvent('item_deleted', {
-        targetId: `node:${currentBoard.id}:${nodeId}`,
-        boardId: currentBoard.id,
+        targetId: `node:${boardId}:${nodeId}`,
+        boardId,
       })
     },
-    [currentBoard.id],
+    [currentBoard.id, queueSideEffect],
   )
 
   // Intercept React Flow's built-in Delete/Backspace removal so it routes
@@ -577,21 +598,37 @@ export function App() {
     )
   }
 
+  if (hydrationError) {
+    return (
+      <div className="w-screen h-screen flex items-center justify-center bg-gray-50">
+        <div className="max-w-md text-center flex flex-col items-center gap-4">
+          <h2 className="text-lg text-gray-700">Can't load your canvas</h2>
+          <p className="text-sm text-gray-500">{hydrationError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-3 py-1.5 text-sm text-gray-600 bg-white border border-gray-200
+              rounded-md hover:text-gray-800 hover:border-gray-300 shadow-sm cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
+        <DevEnvBadge />
+      </div>
+    )
+  }
+
+  if (hydrating) {
+    return (
+      <>
+        <CanvasSkeleton />
+        <DevEnvBadge />
+      </>
+    )
+  }
+
   return (
     <BoardIdContext.Provider value={currentBoard.id}>
     <div className="w-screen h-screen relative">
-      {storageError && (
-        <div className="absolute top-0 left-0 right-0 z-50 bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm text-amber-800 flex items-center justify-between">
-          <span>{storageError}</span>
-          <button
-            onClick={dismissStorageError}
-            className="text-amber-600 hover:text-amber-800 ml-4 text-xs cursor-pointer"
-            aria-label="Dismiss warning"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
       <HighlightContext.Provider value={highlightState}>
       <EdgeLabelClickContext.Provider value={onLabelClick}>
       <ReactFlow
@@ -683,6 +720,9 @@ export function App() {
       )}
       <HydrationSourceIndicator />
       <DevEnvBadge />
+      {saveError && (
+        <SaveErrorToast message={saveError} onDismiss={dismissSaveError} />
+      )}
     </div>
     </BoardIdContext.Provider>
   )

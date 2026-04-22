@@ -2,6 +2,14 @@ import { persistence } from './index'
 import { AuthError } from './errors'
 import { logHydrationSource } from './syncLogger'
 import { IMAGE_STORAGE_PATH_KEY } from './imageUpload'
+import {
+  getBoardCache,
+  getBoardListCache,
+  getLastActiveBoard,
+  putBoardCache,
+  putBoardListCache,
+  putLastActiveBoard,
+} from './cache'
 import type {
   BoardId,
   SerializedBoard,
@@ -11,43 +19,10 @@ import type {
 import type { Connection } from '../api/claude'
 import type { Board, Node as DbNode, Edge as DbEdge } from './types'
 
-const STORAGE_KEY = 'weave-boards'
 const CURRENT_VERSION = 1
 // Signed URLs survive a working session without round-tripping the
 // auth layer; renewal on next hydrate is fine.
 const SIGNED_URL_EXPIRY_SECONDS = 60 * 60 * 24 // 24 hours
-
-function isValidStore(data: unknown): data is WeaveBoardsStore {
-  if (!data || typeof data !== 'object') return false
-  const obj = data as Record<string, unknown>
-  if (typeof obj.version !== 'number') return false
-  if (typeof obj.lastActiveBoard !== 'string') return false
-  if (!obj.boards || typeof obj.boards !== 'object') return false
-  return Object.keys(obj.boards as object).length > 0
-}
-
-export function loadFromLocalStorage(): WeaveBoardsStore | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    if (!isValidStore(parsed)) return null
-    if (!parsed.boards[parsed.lastActiveBoard]) {
-      parsed.lastActiveBoard = Object.keys(parsed.boards)[0]
-    }
-    return parsed
-  } catch {
-    return null
-  }
-}
-
-export function saveToLocalStorage(store: WeaveBoardsStore): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
-  } catch {
-    // QuotaExceeded etc. — surfaced separately by the hook on save
-  }
-}
 
 export function emptyStore(): WeaveBoardsStore {
   const id = crypto.randomUUID()
@@ -68,7 +43,7 @@ export function emptyStore(): WeaveBoardsStore {
   }
 }
 
-export function storeFromSingleBoard(board: Board): WeaveBoardsStore {
+function storeFromSingleBoard(board: Board): WeaveBoardsStore {
   const serialized: SerializedBoard = {
     id: board.id,
     name: board.name,
@@ -107,10 +82,6 @@ function reverseLinkType(linkType: string | null): string | null {
   return null
 }
 
-function hasBoards(store: WeaveBoardsStore): boolean {
-  return Object.keys(store.boards).length > 0
-}
-
 /**
  * Convert a Supabase node row back into the SerializedNode shape the
  * canvas consumes. Binary image fields are reconstructed from a
@@ -121,9 +92,6 @@ async function nodeFromSupabase(dbNode: DbNode): Promise<SerializedNode> {
   const clientType = reverseCardType(dbNode.card_type)
   const dataBlob = (dbNode.data ?? {}) as Record<string, unknown>
 
-  // Client-side id persisted in the data blob when we synced. Fallback
-  // to the server UUID so we can still render if the row predates the
-  // cutover (shouldn't happen for this user, but cheap insurance).
   const clientId =
     typeof dataBlob._clientNodeId === 'string'
       ? (dataBlob._clientNodeId as string)
@@ -133,8 +101,6 @@ async function nodeFromSupabase(dbNode: DbNode): Promise<SerializedNode> {
   delete data._clientNodeId
   delete data._clientNodeType
 
-  // Position can live on the DB columns or inside the data blob; the
-  // columns are authoritative.
   const position =
     typeof data.position === 'object' && data.position !== null
       ? (data.position as { x: number; y: number })
@@ -147,12 +113,8 @@ async function nodeFromSupabase(dbNode: DbNode): Promise<SerializedNode> {
     if (dbNode.title) data.title = dbNode.title
     if (dbNode.description) data.description = dbNode.description
     if (dbNode.source) data.domain = dbNode.source
-    // For linkCards the image column typically holds the external URL;
-    // only convert to a signed URL if it looks like a storage path.
     if (dbNode.image_url) {
       if (looksLikeStoragePath(dbNode.image_url)) {
-        // Record the Storage path so subsequent saves know this image
-        // is already uploaded and skip the re-upload step.
         data[IMAGE_STORAGE_PATH_KEY] = dbNode.image_url
         try {
           data.imageUrl = await persistence.media.getSignedUrl(
@@ -195,8 +157,6 @@ async function nodeFromSupabase(dbNode: DbNode): Promise<SerializedNode> {
 }
 
 function looksLikeStoragePath(value: string): boolean {
-  // Storage paths start with `${userId}/` (a UUID) and don't include a
-  // protocol scheme. External URLs always include `://`.
   return !value.includes('://')
 }
 
@@ -230,9 +190,6 @@ function connectionFromEdge(
 }
 
 function computeNodeIdCounter(nodes: SerializedNode[]): number {
-  // Client ids that look like plain integers feed generateNodeId; use
-  // the max we see to avoid collisions. UUID-shaped ids coexist fine
-  // and don't influence the counter.
   let max = 1
   for (const n of nodes) {
     const asNumber = Number(n.id)
@@ -266,14 +223,9 @@ async function boardFromSupabase(
   }
 }
 
-/**
- * Fetch boards + nodes + edges from Supabase and assemble a complete
- * WeaveBoardsStore. Preserves whatever `lastActiveBoard` is in
- * localStorage (if it points at a known board) so we don't lose the
- * user's open board across refreshes.
- */
-export async function loadFullStateFromSupabase(
+async function loadFullStateFromSupabase(
   supabaseBoards: Board[],
+  preferredActiveId: string | null,
 ): Promise<WeaveBoardsStore> {
   const assembled = await Promise.all(
     supabaseBoards.map(async (board) => {
@@ -289,10 +241,9 @@ export async function loadFullStateFromSupabase(
   const boards: Record<BoardId, SerializedBoard> = {}
   for (const [id, board] of assembled) boards[id] = board
 
-  const previousLocal = loadFromLocalStorage()
   const lastActiveBoard =
-    previousLocal && boards[previousLocal.lastActiveBoard]
-      ? previousLocal.lastActiveBoard
+    preferredActiveId && boards[preferredActiveId]
+      ? preferredActiveId
       : supabaseBoards[0].id
 
   return {
@@ -302,81 +253,108 @@ export async function loadFullStateFromSupabase(
   }
 }
 
-export type HydrationResult = {
-  store: WeaveBoardsStore
-  /** Did this load touch Supabase? (Controls whether dual-write is safe.) */
-  fromSupabase: boolean
-}
-
 /**
- * Single entry point called by useBoardStorage at mount time.
+ * Build a WeaveBoardsStore synchronously from cached data. Returns
+ * null if the cache doesn't have enough to render the canvas (no
+ * last-active board, or no per-board entry for that board).
  *
- * Auth + network errors are swallowed into a localStorage fallback
- * because the canvas must always render *something*; the hook logs
- * the chosen source loudly so regressions surface during bake.
+ * Nodes for boards we don't have per-board cache for are rendered as
+ * empty — the background Supabase fetch will fill them in. This
+ * matches the cold-start contract: instant render from cache, reconcile
+ * silently.
  */
-export async function hydrateBoardStore(
-  authedUserId: string | null,
-): Promise<HydrationResult> {
-  if (authedUserId) {
-    try {
-      const supabaseBoards = await persistence.boards.list()
+export function buildStoreFromCache(): WeaveBoardsStore | null {
+  const list = getBoardListCache()
+  const lastActive = getLastActiveBoard()
+  if (!list || list.length === 0 || !lastActive) return null
+  if (!list.some((b) => b.id === lastActive)) return null
 
-      if (supabaseBoards.length > 0) {
-        const store = await loadFullStateFromSupabase(supabaseBoards)
-        saveToLocalStorage(store)
-        logHydrationSource('supabase', 'success')
-        return { store, fromSupabase: true }
-      }
+  const activeBoardCache = getBoardCache(lastActive)
+  if (!activeBoardCache) return null
 
-      const local = loadFromLocalStorage()
-      if (local && hasBoards(local)) {
-        logHydrationSource(
-          'localStorage',
-          'supabase empty, localStorage has data (awaiting migration)',
-        )
-        return { store: local, fromSupabase: false }
-      }
-
-      // Brand-new user — no localStorage, no Supabase.
-      const newBoard = await persistence.boards.create({ name: 'Untitled' })
-      const store = storeFromSingleBoard(newBoard)
-      saveToLocalStorage(store)
-      logHydrationSource('supabase', 'new user, auto-created first board')
-      return { store, fromSupabase: true }
-    } catch (err) {
-      if (err instanceof AuthError) {
-        // Kick it up — <ProtectedRoute> will bounce to /login on next render.
-        throw err
-      }
-      console.warn(
-        '[Weave hydration] Supabase unreachable, falling back to localStorage',
-        err,
-      )
-      const local = loadFromLocalStorage()
-      if (local && hasBoards(local)) {
-        logHydrationSource('localStorage', 'supabase unreachable')
-        return { store: local, fromSupabase: false }
-      }
-      const fallback = emptyStore()
-      saveToLocalStorage(fallback)
-      logHydrationSource(
-        'empty',
-        'no data available — created empty local board',
-      )
-      return { store: fallback, fromSupabase: false }
+  const boards: Record<BoardId, SerializedBoard> = {}
+  const now = new Date().toISOString()
+  for (const meta of list) {
+    const perBoard = meta.id === lastActive ? activeBoardCache : getBoardCache(meta.id)
+    const nodes = perBoard?.nodes ?? []
+    const connections = perBoard?.connections ?? []
+    boards[meta.id] = {
+      id: meta.id,
+      name: meta.name,
+      nodes,
+      connections,
+      nodeIdCounter: computeNodeIdCounter(nodes),
+      createdAt: now,
+      updatedAt: perBoard?.updatedAt ?? meta.updatedAt,
     }
   }
 
-  // No authed user — shouldn't happen because App is behind
-  // ProtectedRoute, but we still need to render something if auth is
-  // mid-flight.
-  const local = loadFromLocalStorage()
-  if (local && hasBoards(local)) {
-    logHydrationSource('localStorage', 'no auth session')
-    return { store: local, fromSupabase: false }
+  return {
+    version: CURRENT_VERSION,
+    lastActiveBoard: lastActive,
+    boards,
   }
-  const fallback = emptyStore()
-  logHydrationSource('empty', 'no auth session and no local data')
-  return { store: fallback, fromSupabase: false }
+}
+
+/**
+ * Mirror the full store (or a single board) into cache. Called AFTER
+ * a successful Supabase read/write — never speculatively.
+ */
+export function writeStoreToCache(store: WeaveBoardsStore): void {
+  const list = Object.values(store.boards)
+    .map((b) => ({ id: b.id, name: b.name, updatedAt: b.updatedAt }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  putBoardListCache(list)
+  putLastActiveBoard(store.lastActiveBoard)
+  for (const board of Object.values(store.boards)) {
+    putBoardCache(board.id, {
+      nodes: board.nodes,
+      connections: board.connections,
+      updatedAt: board.updatedAt,
+    })
+  }
+}
+
+export type HydrationOutcome =
+  | { kind: 'success'; store: WeaveBoardsStore; source: 'supabase' }
+  | { kind: 'network-error'; reason: string }
+
+/**
+ * Fetch the authoritative store from Supabase. Auto-creates an
+ * Untitled board for first-time users so the canvas never renders
+ * blank against an empty account.
+ *
+ * Auth errors are rethrown (ProtectedRoute bounces to /login on the
+ * next render). Everything else is surfaced as a network-error
+ * outcome so the caller can decide between "show the cache" and
+ * "show the error state".
+ */
+export async function fetchFromSupabase(
+  preferredActiveId: string | null,
+): Promise<HydrationOutcome> {
+  try {
+    const supabaseBoards = await persistence.boards.list()
+
+    if (supabaseBoards.length > 0) {
+      const store = await loadFullStateFromSupabase(
+        supabaseBoards,
+        preferredActiveId,
+      )
+      writeStoreToCache(store)
+      logHydrationSource('supabase', 'fetched from Supabase')
+      return { kind: 'success', store, source: 'supabase' }
+    }
+
+    // Brand-new account: auto-create the first board so the canvas
+    // has something to render.
+    const newBoard = await persistence.boards.create({ name: 'Untitled' })
+    const store = storeFromSingleBoard(newBoard)
+    writeStoreToCache(store)
+    logHydrationSource('supabase', 'new user, auto-created first board')
+    return { kind: 'success', store, source: 'supabase' }
+  } catch (err) {
+    if (err instanceof AuthError) throw err
+    const reason = err instanceof Error ? err.message : String(err)
+    return { kind: 'network-error', reason }
+  }
 }

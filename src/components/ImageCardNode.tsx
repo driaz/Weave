@@ -90,13 +90,17 @@ export function ImageCardNode({ id, data }: NodeProps) {
       <div
         className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden${isConnected ? ' node-highlight' : ''}${isSelected ? ' selected-node-highlight' : ''}`}
       >
-        <img
-          src={imageDataUrl}
-          alt={label || defaultLabel}
-          draggable={false}
-          onDoubleClick={openLightbox}
-          className="w-[250px] h-[200px] object-cover cursor-pointer"
-        />
+        {imageDataUrl ? (
+          <img
+            src={imageDataUrl}
+            alt={label || defaultLabel}
+            draggable={false}
+            onDoubleClick={openLightbox}
+            className="w-[250px] h-[200px] object-cover cursor-pointer"
+          />
+        ) : (
+          <div className="shimmer w-[250px] h-[200px]" />
+        )}
         <div className="px-3 py-2">
           {editingLabel ? (
             <input

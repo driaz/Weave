@@ -1,19 +1,19 @@
 /**
- * Tiny logging helpers for the persistence cutover.
+ * Tiny logging helpers for persistence outcomes.
  *
  * `logSyncOutcome` is called once per save target per debounced save.
- * `logHydrationSource` is called once per app load. Both are one
- * console line so devs can tail output during bake without noise.
+ * `logHydrationSource` is called once per hydration event. Both are
+ * one console line so devs can tail output during bake without noise.
  *
  * In dev, the last hydration source is also exposed on
  * `window.__weaveHydrationSource` so the dev indicator can read it
  * without prop-drilling or a React context.
  */
 
-export type SyncTarget = 'localStorage' | 'supabase'
+export type SyncTarget = 'cache' | 'supabase'
 export type SyncOutcome = 'success' | 'failure' | 'skipped'
 
-export type HydrationSource = 'supabase' | 'localStorage' | 'empty'
+export type HydrationSource = 'cache' | 'supabase' | 'empty' | 'error'
 
 export type HydrationSourceRecord = {
   source: HydrationSource
