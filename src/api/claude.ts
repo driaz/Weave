@@ -87,6 +87,52 @@ function parseDataUrl(dataUrl: string): {
   return { mediaType: match[1], data: match[2] }
 }
 
+/**
+ * Resolve an image source — either an inline `data:<mime>;base64,…`
+ * URL or an `http(s)://` URL (typically a Supabase Storage signed URL
+ * dropped onto the node by hydration) — into the base64-encoded bytes
+ * Anthropic's messages API expects.
+ *
+ * Added for the persistence cutover: post-hydrate, `imageDataUrl` /
+ * `imageUrl` contain signed URLs rather than base64, which the old
+ * `compressBase64Image` → `parseDataUrl` pipeline silently passed
+ * through as an invalid "base64" payload → 400 from the API.
+ *
+ * Fetched bytes are routed back through `compressBase64Image` so
+ * oversize images still hit the 1500 px / JPEG-0.8 compression path.
+ */
+async function loadImageAsBase64(
+  urlOrDataUrl: string,
+): Promise<{ mediaType: string; base64: string }> {
+  if (urlOrDataUrl.startsWith('data:')) {
+    const compressed = await compressBase64Image(urlOrDataUrl)
+    const { mediaType, data } = parseDataUrl(compressed)
+    return { mediaType, base64: data }
+  }
+
+  const response = await fetch(urlOrDataUrl)
+  if (!response.ok) {
+    throw new Error(`fetch ${response.status} ${response.statusText}`)
+  }
+  const blob = await response.blob()
+  const mediaType = blob.type || 'image/png'
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      const commaIdx = result.indexOf(',')
+      resolve(commaIdx === -1 ? result : result.slice(commaIdx + 1))
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'))
+    reader.readAsDataURL(blob)
+  })
+  const compressed = await compressBase64Image(
+    `data:${mediaType};base64,${base64}`,
+  )
+  const parsed = parseDataUrl(compressed)
+  return { mediaType: parsed.mediaType, base64: parsed.data }
+}
+
 const PLACEHOLDER_TEXT =
   'Drag me around the canvas. Zoom and pan to explore.'
 
@@ -139,12 +185,22 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
           type: 'text',
           text: `[Node ${node.id} — Image Card] (label: "${label}"):\n`,
         })
-        const compressed = await compressBase64Image(data.imageDataUrl)
-        const { mediaType, data: base64 } = parseDataUrl(compressed)
-        content.push({
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data: base64 },
-        })
+        if (data.imageDataUrl) {
+          try {
+            const { mediaType, base64 } = await loadImageAsBase64(
+              data.imageDataUrl,
+            )
+            content.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: base64 },
+            })
+          } catch (err) {
+            console.warn(
+              `[analyzeCanvas] image fetch failed for node ${node.id}:`,
+              err instanceof Error ? err.message : err,
+            )
+          }
+        }
         break
       }
 
@@ -173,15 +229,37 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
           description += `Embedded YouTube video transcript: ${truncated}\n`
         }
         content.push({ type: 'text', text: description })
-        if (data.type === 'twitter' && data.imageBase64 && data.imageMimeType) {
-          content.push({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: data.imageMimeType,
-              data: data.imageBase64,
-            },
-          })
+        if (data.type === 'twitter') {
+          // Pre-cutover: tweet avatars lived in `data.imageBase64`.
+          // Post-cutover: hydration drops them in `data.imageUrl` as a
+          // Supabase Storage signed URL. Accept either — broaden the
+          // gate so hydrated boards don't silently lose their image
+          // context.
+          const imageSource =
+            (typeof data.imageBase64 === 'string' && data.imageBase64) ||
+            (typeof data.imageUrl === 'string' && data.imageUrl) ||
+            null
+          if (imageSource) {
+            try {
+              // `imageBase64` is a bare payload (no data: prefix); wrap
+              // it into a data URL so `loadImageAsBase64` recognises
+              // the inline path and skips the network fetch.
+              const input =
+                imageSource === data.imageBase64
+                  ? `data:${data.imageMimeType || 'image/png'};base64,${imageSource}`
+                  : imageSource
+              const { mediaType, base64 } = await loadImageAsBase64(input)
+              content.push({
+                type: 'image',
+                source: { type: 'base64', media_type: mediaType, data: base64 },
+              })
+            } catch (err) {
+              console.warn(
+                `[analyzeCanvas] image fetch failed for node ${node.id}:`,
+                err instanceof Error ? err.message : err,
+              )
+            }
+          }
         }
         break
       }
@@ -194,12 +272,20 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
           text: `[Node ${node.id} — PDF Card] (label: "${label}", ${data.pageCount} ${data.pageCount === 1 ? 'page' : 'pages'}):\n`,
         })
         if (data.thumbnailDataUrl) {
-          const compressed = await compressBase64Image(data.thumbnailDataUrl)
-          const { mediaType, data: base64 } = parseDataUrl(compressed)
-          content.push({
-            type: 'image',
-            source: { type: 'base64', media_type: mediaType, data: base64 },
-          })
+          try {
+            const { mediaType, base64 } = await loadImageAsBase64(
+              data.thumbnailDataUrl,
+            )
+            content.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: base64 },
+            })
+          } catch (err) {
+            console.warn(
+              `[analyzeCanvas] image fetch failed for node ${node.id}:`,
+              err instanceof Error ? err.message : err,
+            )
+          }
         }
         break
       }
@@ -223,8 +309,15 @@ function getSystemPrompt(mode: WeaveMode): string {
 function serializeExistingConnections(connections: Connection[]): string {
   if (connections.length === 0) return ''
 
+  // Strip any `node-` prefix before echoing ids back to the model.
+  // Ingest in App.tsx already normalises new connections, but older
+  // state or imported data could still carry prefixes. Keeping this
+  // independent of the ingest strip means context loopback stays bare
+  // even if something upstream slips. Defence-in-depth.
+  const stripPrefix = (id: string) => id.replace(/^node-/, '')
   const lines = connections.map(
-    (c) => `  - [${c.from}] <-> [${c.to}]: ${c.label} — ${c.explanation}`,
+    (c) =>
+      `  - [${stripPrefix(c.from)}] <-> [${stripPrefix(c.to)}]: ${c.label} — ${c.explanation}`,
   )
   return `\n\nThese connections already exist. Only return NEW connections where at least one of the two nodes has ZERO existing connections in the current graph. Focus specifically on integrating completely unconnected nodes:\n${lines.join('\n')}\n`
 }
