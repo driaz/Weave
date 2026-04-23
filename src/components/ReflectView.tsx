@@ -52,7 +52,19 @@ export function ReflectView({ onBack }: Props) {
         .single()
 
       if (snapErr || !snap) {
-        setError('No snapshots found')
+        if (snapErr) {
+          console.warn(
+            '[Weave reflect] snapshot query failed',
+            snapErr.code ?? '',
+            snapErr.message ?? '',
+            snapErr,
+          )
+        }
+        setError(
+          snapErr?.code
+            ? `No snapshots found (${snapErr.code})`
+            : 'No snapshots found',
+        )
         setLoading(false)
         return
       }
