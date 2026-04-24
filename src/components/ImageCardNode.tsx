@@ -2,6 +2,9 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
 import { useNodeHighlightStatus } from '../hooks/useSelectedNode'
 import { createPortal } from 'react-dom'
+import { trackEvent } from '../services/eventTracker'
+import { useBoardId } from '../hooks/useBoardId'
+import { useCancelNodeSelect } from '../hooks/useCancelNodeSelect'
 
 export type ImageCardData = {
   imageDataUrl: string
@@ -34,7 +37,10 @@ function ImageLightbox({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
-      onClick={onClose}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClose()
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={`Full view of ${fileName}`}
@@ -57,11 +63,37 @@ export function ImageCardNode({ id, data }: NodeProps) {
   const [editingLabel, setEditingLabel] = useState(!label)
   const [labelValue, setLabelValue] = useState(label || defaultLabel)
   const inputRef = useRef<HTMLInputElement>(null)
+  const lightboxOpenedAtRef = useRef<number | null>(null)
   const { updateNodeData } = useReactFlow()
   const { isSelected, isConnected } = useNodeHighlightStatus(id)
+  const boardId = useBoardId()
+  const cancelPendingNodeSelect = useCancelNodeSelect()
 
-  const openLightbox = useCallback(() => setShowLightbox(true), [])
-  const closeLightbox = useCallback(() => setShowLightbox(false), [])
+  const openLightbox = useCallback(() => {
+    cancelPendingNodeSelect()
+    setShowLightbox(true)
+    lightboxOpenedAtRef.current = performance.now()
+    if (boardId) {
+      trackEvent('lightbox_opened', {
+        targetId: `node:${boardId}:${id}`,
+        boardId,
+        metadata: { node_type: 'imageCard' },
+      })
+    }
+  }, [boardId, id, cancelPendingNodeSelect])
+  const closeLightbox = useCallback(() => {
+    setShowLightbox(false)
+    const openedAt = lightboxOpenedAtRef.current
+    lightboxOpenedAtRef.current = null
+    if (boardId && openedAt !== null) {
+      trackEvent('lightbox_closed', {
+        targetId: `node:${boardId}:${id}`,
+        boardId,
+        durationMs: Math.round(performance.now() - openedAt),
+        metadata: { node_type: 'imageCard' },
+      })
+    }
+  }, [boardId, id])
 
   useEffect(() => {
     if (editingLabel && inputRef.current) {

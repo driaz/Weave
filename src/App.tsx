@@ -41,6 +41,7 @@ import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
 import { BoardIdContext } from './hooks/useBoardId'
+import { CancelNodeSelectContext } from './hooks/useCancelNodeSelect'
 import { embedNodeAsync } from './services/embeddingService'
 import { supabase } from './services/supabaseClient'
 
@@ -100,6 +101,18 @@ export function App() {
   > | null>(null)
   const edges = useStaggeredEdges(connections, activeLayer, highlightState)
 
+  // Defer node_selected emission so double-clicks (which fire two
+  // single clicks before dblclick) can cancel it when a lightbox
+  // opens. Lightbox open handlers call cancelPendingNodeSelect.
+  const nodeSelectTimeoutRef = useRef<number | null>(null)
+
+  const cancelPendingNodeSelect = useCallback(() => {
+    if (nodeSelectTimeoutRef.current !== null) {
+      window.clearTimeout(nodeSelectTimeoutRef.current)
+      nodeSelectTimeoutRef.current = null
+    }
+  }, [])
+
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
       setHighlightState((prev) =>
@@ -107,9 +120,27 @@ export function App() {
           ? null
           : { type: 'node', nodeId: node.id },
       )
+      cancelPendingNodeSelect()
+      const boardId = currentBoard.id
+      const nodeId = node.id
+      nodeSelectTimeoutRef.current = window.setTimeout(() => {
+        nodeSelectTimeoutRef.current = null
+        trackEvent('node_selected', {
+          targetId: `node:${boardId}:${nodeId}`,
+          boardId,
+        })
+      }, 500)
     },
-    [],
+    [currentBoard.id, cancelPendingNodeSelect],
   )
+
+  useEffect(() => {
+    return () => {
+      if (nodeSelectTimeoutRef.current !== null) {
+        window.clearTimeout(nodeSelectTimeoutRef.current)
+      }
+    }
+  }, [])
 
   const clearHighlight = useCallback(() => {
     setHighlightState(null)
@@ -628,6 +659,7 @@ export function App() {
 
   return (
     <BoardIdContext.Provider value={currentBoard.id}>
+    <CancelNodeSelectContext.Provider value={cancelPendingNodeSelect}>
     <div className="w-screen h-screen relative">
       <HighlightContext.Provider value={highlightState}>
       <EdgeLabelClickContext.Provider value={onLabelClick}>
@@ -724,6 +756,7 @@ export function App() {
         <SaveErrorToast message={saveError} onDismiss={dismissSaveError} />
       )}
     </div>
+    </CancelNodeSelectContext.Provider>
     </BoardIdContext.Provider>
   )
 }
