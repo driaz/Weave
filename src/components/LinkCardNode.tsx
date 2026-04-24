@@ -3,6 +3,9 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { useNodeHighlightStatus } from '../hooks/useSelectedNode'
 import { createPortal } from 'react-dom'
 import { extractYouTubeVideoId, extractYouTubeUrlFromText } from '../utils/linkUtils'
+import { trackEvent } from '../services/eventTracker'
+import { useBoardId } from '../hooks/useBoardId'
+import { useCancelNodeSelect } from '../hooks/useCancelNodeSelect'
 
 export type LinkCardData = {
   url: string
@@ -116,7 +119,10 @@ function TweetLightbox({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
-      onClick={onClose}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClose()
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={`Tweet by ${authorName}`}
@@ -193,7 +199,10 @@ function YouTubeLightbox({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
-      onClick={onClose}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClose()
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={`Video: ${title}`}
@@ -355,17 +364,41 @@ export function LinkCardNode({ id, data }: NodeProps) {
   } = data as LinkCardData
   const { isSelected, isConnected } = useNodeHighlightStatus(id)
   const [showLightbox, setShowLightbox] = useState(false)
+  const lightboxOpenedAtRef = useRef<number | null>(null)
+  const boardId = useBoardId()
+  const cancelPendingNodeSelect = useCancelNodeSelect()
 
-  const closeLightbox = useCallback(() => setShowLightbox(false), [])
+  const closeLightbox = useCallback(() => {
+    setShowLightbox(false)
+    const openedAt = lightboxOpenedAtRef.current
+    lightboxOpenedAtRef.current = null
+    if (boardId && openedAt !== null) {
+      trackEvent('lightbox_closed', {
+        targetId: `node:${boardId}:${id}`,
+        boardId,
+        durationMs: Math.round(performance.now() - openedAt),
+        metadata: { node_type: 'linkCard', link_type: type || 'generic' },
+      })
+    }
+  }, [boardId, id, type])
 
   const handleDoubleClick = useCallback(() => {
     const cardType = type || 'generic'
+    cancelPendingNodeSelect()
     if (cardType === 'twitter' || cardType === 'youtube') {
       setShowLightbox(true)
+      lightboxOpenedAtRef.current = performance.now()
+      if (boardId) {
+        trackEvent('lightbox_opened', {
+          targetId: `node:${boardId}:${id}`,
+          boardId,
+          metadata: { node_type: 'linkCard', link_type: cardType },
+        })
+      }
     } else {
       window.open(url, '_blank', 'noopener,noreferrer')
     }
-  }, [type, url])
+  }, [type, url, boardId, id, cancelPendingNodeSelect])
 
   if (loading) {
     return <SkeletonCard />

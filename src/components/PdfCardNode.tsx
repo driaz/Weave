@@ -3,6 +3,9 @@ import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
 import { useNodeHighlightStatus } from '../hooks/useSelectedNode'
 import { createPortal } from 'react-dom'
 import { renderPdfPage } from '../utils/pdfUtils'
+import { trackEvent } from '../services/eventTracker'
+import { useBoardId } from '../hooks/useBoardId'
+import { useCancelNodeSelect } from '../hooks/useCancelNodeSelect'
 
 export type PdfCardData = {
   pdfDataUrl: string
@@ -66,7 +69,10 @@ function PdfLightbox({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/70"
-      onClick={onClose}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClose()
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={`PDF preview: ${fileName}`}
@@ -126,11 +132,37 @@ export function PdfCardNode({ id, data }: NodeProps) {
   const [labelValue, setLabelValue] = useState(label || defaultLabel)
   const [showLightbox, setShowLightbox] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const lightboxOpenedAtRef = useRef<number | null>(null)
   const { updateNodeData } = useReactFlow()
   const { isSelected, isConnected } = useNodeHighlightStatus(id)
+  const boardId = useBoardId()
+  const cancelPendingNodeSelect = useCancelNodeSelect()
 
-  const openLightbox = useCallback(() => setShowLightbox(true), [])
-  const closeLightbox = useCallback(() => setShowLightbox(false), [])
+  const openLightbox = useCallback(() => {
+    cancelPendingNodeSelect()
+    setShowLightbox(true)
+    lightboxOpenedAtRef.current = performance.now()
+    if (boardId) {
+      trackEvent('lightbox_opened', {
+        targetId: `node:${boardId}:${id}`,
+        boardId,
+        metadata: { node_type: 'pdfCard' },
+      })
+    }
+  }, [boardId, id, cancelPendingNodeSelect])
+  const closeLightbox = useCallback(() => {
+    setShowLightbox(false)
+    const openedAt = lightboxOpenedAtRef.current
+    lightboxOpenedAtRef.current = null
+    if (boardId && openedAt !== null) {
+      trackEvent('lightbox_closed', {
+        targetId: `node:${boardId}:${id}`,
+        boardId,
+        durationMs: Math.round(performance.now() - openedAt),
+        metadata: { node_type: 'pdfCard' },
+      })
+    }
+  }, [boardId, id])
 
   useEffect(() => {
     if (editingLabel && inputRef.current) {

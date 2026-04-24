@@ -56,8 +56,12 @@ type EventResolver = (event: WeaveEvent) => string[]
 // Returns the list of composite "board_id:node_id" keys that this
 // event attributes engagement to. May return 1, 2, or N keys.
 
+type WeightFn = (event: WeaveEvent) => number
+
 type EngagementRule = {
-  weight: number
+  // Flat weight applied to every attributed node, or a function that
+  // computes per-event weight from the event row (e.g. duration-scaled).
+  weight: number | WeightFn
   resolve: EventResolver
 }
 
@@ -66,6 +70,23 @@ type EngagementRule = {
 // ---------------------------------------------------------------------------
 
 const CLUSTER_SIMILARITY_THRESHOLD = 0.72
+
+// Lightbox dwell time saturates at 45s — longer opens don't accrue
+// additional weight. log2(46) ≈ 5.524; duration=45s yields 1.0.
+const LIGHTBOX_DWELL_CAP_S = 45
+const LIGHTBOX_DWELL_LOG_DIVISOR = Math.log2(LIGHTBOX_DWELL_CAP_S + 1)
+const LIGHTBOX_CLOSED_BASE_WEIGHT = 1.5
+
+function lightboxClosedWeight(event: WeaveEvent): number {
+  const ms = event.duration_ms
+  if (!ms || ms <= 0) return 0
+  const seconds = ms / 1000
+  const scale = Math.min(
+    Math.log2(seconds + 1) / LIGHTBOX_DWELL_LOG_DIVISOR,
+    1.0,
+  )
+  return LIGHTBOX_CLOSED_BASE_WEIGHT * scale
+}
 
 // ---------------------------------------------------------------------------
 // Engagement rules
@@ -112,14 +133,28 @@ const ENGAGEMENT_RULES: Record<string, EngagementRule> = {
   },
   item_added: {
     weight: 0.2,
-    resolve: (e) => {
-      if (!e.target_id) return []
-      // Format: "node:{board_id}:{node_id}"
-      // Return composite key without the "node:" prefix
-      const withoutPrefix = e.target_id.replace(/^node:/, '')
-      return [withoutPrefix]
-    },
+    resolve: resolveNodeTarget,
   },
+  lightbox_opened: {
+    weight: 0.1,
+    resolve: resolveNodeTarget,
+  },
+  lightbox_closed: {
+    weight: lightboxClosedWeight,
+    resolve: resolveNodeTarget,
+  },
+  node_selected: {
+    weight: 0.1,
+    resolve: resolveNodeTarget,
+  },
+}
+
+function resolveNodeTarget(event: WeaveEvent): string[] {
+  if (!event.target_id) return []
+  // Format: "node:{board_id}:{node_id}"
+  // Only accept the prefixed form; reject connection and legacy formats.
+  if (!event.target_id.startsWith('node:')) return []
+  return [event.target_id.slice('node:'.length)]
 }
 
 // ---------------------------------------------------------------------------
@@ -386,10 +421,14 @@ export default async (req: Request) => {
       const attributedKeys = rule.resolve(event)
       if (attributedKeys.length === 0) continue
 
+      const perEventWeight =
+        typeof rule.weight === 'function' ? rule.weight(event) : rule.weight
+      if (perEventWeight <= 0) continue
+
       let contributed = false
       for (const key of attributedKeys) {
         if (key in weightMap) {
-          weightMap[key] += rule.weight
+          weightMap[key] += perEventWeight
           contributed = true
         }
         // If key not in weightMap, the node had no embedding — already excluded
