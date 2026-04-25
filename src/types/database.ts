@@ -1,3 +1,5 @@
+npm warn exec The following package was not found and will be installed: supabase@2.95.3
+Initialising login role...
 export type Json =
   | string
   | number
@@ -10,7 +12,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.4"
+    PostgrestVersion: "14.5"
   }
   graphql_public: {
     Tables: {
@@ -52,7 +54,7 @@ export type Database = {
           id?: string
           name: string
           updated_at?: string
-          user_id: string
+          user_id?: string
         }
         Update: {
           created_at?: string
@@ -84,7 +86,7 @@ export type Database = {
           source_node_id: string
           target_node_id: string
           updated_at?: string
-          user_id: string
+          user_id?: string
         }
         Update: {
           board_id?: string
@@ -156,7 +158,7 @@ export type Database = {
           title?: string | null
           updated_at?: string
           url?: string | null
-          user_id: string
+          user_id?: string
         }
         Update: {
           board_id?: string
@@ -310,16 +312,19 @@ export type Database = {
           cluster_id: string
           embedding: string
           snapshot_id: string
+          user_id: string | null
         }
         Insert: {
           cluster_id: string
           embedding: string
           snapshot_id: string
+          user_id?: string | null
         }
         Update: {
           cluster_id?: string
           embedding?: string
           snapshot_id?: string
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -343,6 +348,7 @@ export type Database = {
           narrative: string | null
           node_count: number
           trigger_reason: string
+          user_id: string | null
         }
         Insert: {
           board_ids: string[]
@@ -355,6 +361,7 @@ export type Database = {
           narrative?: string | null
           node_count: number
           trigger_reason?: string
+          user_id?: string | null
         }
         Update: {
           board_ids?: string[]
@@ -367,6 +374,7 @@ export type Database = {
           narrative?: string | null
           node_count?: number
           trigger_reason?: string
+          user_id?: string | null
         }
         Relationships: []
       }
@@ -376,11 +384,7 @@ export type Database = {
     }
     Functions: {
       replace_board_contents: {
-        Args: {
-          p_board_id: string
-          p_nodes: Json
-          p_edges: Json
-        }
+        Args: { p_board_id: string; p_edges: Json; p_nodes: Json }
         Returns: undefined
       }
     }
