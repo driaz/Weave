@@ -20,11 +20,12 @@ When bootstrapping a new Supabase project, apply these in order. The pgvector ex
 | 010 | `010_create_storage_bucket.sql` | `weave-media` Storage bucket for images/PDFs/audio. Private (signed-URL access). Path convention `{user_id}/...` enforced by RLS on `storage.objects`. |
 | 011 | `011_default_user_id_on_legacy_tables.sql` | Default `user_id` on `weave_embeddings` and `weave_events` to the single existing user's UUID. Bridges the 009 NOT NULL constraint with the pre-auth anon-key writer so inserts don't fail silently. Dropped once all writes are authenticated. |
 | 012 | `012_board_replace_all_rpc.sql` | `replace_board_contents(p_board_id, p_nodes, p_edges)` PL/pgSQL function — atomic replace-all for a board's nodes and edges in one transaction. Touches `boards.updated_at` so sidebar ordering reflects activity. Called from the client via `client.rpc(...)` instead of separate DELETE/INSERT round trips. |
+| 013 | `013_allow_authenticated_read_snapshots.sql` | Mirrors the anon snapshot-read policy for the `authenticated` role so signed-in users on prod can render the Reflect view. Superseded by 014, which scopes reads to `auth.uid() = user_id`. |
+| 014 | `014_auth_rls_cutover.sql` | Phase 1 auth lockdown — adds `user_id` (default `auth.uid()`, FK→`auth.users` ON DELETE CASCADE) to `weave_profile_snapshots` and `weave_profile_cluster_embeddings`; flips hardcoded UUID defaults on `boards`/`nodes`/`edges`/`weave_events`/`weave_embeddings` to `auth.uid()`; drops every permissive / anon-scoped policy; replaces them with explicit `TO authenticated` SELECT/INSERT/UPDATE/DELETE policies on all seven tables (28 new policies). Service-role writes via Netlify functions still bypass RLS as before. |
 
 ## Deferred cutovers tracked in migration comments
 
-- **Strict RLS on legacy tables.** `weave_embeddings` and `weave_events` still have anon-permissive policies from the pre-auth era. 009's comment block plans the flip to `auth.uid() = user_id` once the persistence layer is fully authenticated.
-- **`auth.uid()`-scoped policies on snapshots.** 006's anon-read is a demo-era shortcut; to be narrowed with the auth pass.
+_All previously deferred cutovers were resolved by migration 014._
 
 ## Regenerating TypeScript types
 
