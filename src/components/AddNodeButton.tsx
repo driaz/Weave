@@ -65,8 +65,6 @@ export function AddNodeButton() {
       boardId,
       metadata: { node_type: 'textCard' },
     })
-    // Text is empty at creation — embedNode will skip gracefully
-    embedNodeAsync(boardId, nodeId, 'textCard', { text: '' })
     setMenuOpen(false)
   }, [addNodes, getCenterPosition, boardId])
 
