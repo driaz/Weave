@@ -47,6 +47,9 @@ environment" is useful. "The cinematography is moody" is not.
 Even for longer videos, capture the overall arc in 4-6 sentences.
 Don't describe scene by scene. Dense, precise, no filler.
 
+Do not use any markdown formatting — no bold, no headers, no bullet
+points. Write as plain prose.
+
 This metadata will be read by a reasoning system, not displayed
 to the user directly.`
 
@@ -74,8 +77,13 @@ Describe mechanics with enough interpretation to be useful.
 establishing an instructional tone" is useful. "The speaker sounds
 thoughtful" is not.
 
-3-5 sentences. Dense, precise, no filler. This metadata will be
-read by a reasoning system, not displayed to the user directly.`
+3-5 sentences. Dense, precise, no filler.
+
+Do not use any markdown formatting — no bold, no headers, no bullet
+points. Write as plain prose.
+
+This metadata will be read by a reasoning system, not displayed to the
+user directly.`
 
 export interface AnalyzeMediaInput {
   /** Path to the source video. Sent in full when present (under-10-min tier). */
@@ -117,9 +125,43 @@ export async function analyzeMedia(input: AnalyzeMediaInput): Promise<string> {
         thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
       },
     })
-    return res.text?.trim() ?? ''
+    return stripMarkdown(res.text?.trim() ?? '')
   } catch (err) {
     console.warn('[analyze] media analysis failed:', err)
     return ''
   }
+}
+
+/**
+ * Belt-and-suspenders strip of common markdown — the prompts ask for plain
+ * prose, this catches the cases where the model ignores the instruction.
+ * Conservative on purpose: keeps the inner text of every construct so even
+ * a false positive doesn't lose content.
+ */
+function stripMarkdown(s: string): string {
+  return s
+    // Code fences (``` ... ```) — drop entirely; analysis prose shouldn't have them.
+    .replace(/```[\s\S]*?```/g, '')
+    // ATX headers (start of line)
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+    // Blockquotes
+    .replace(/^[ \t]*>[ \t]?/gm, '')
+    // Bullets (-, *, +) and numbered lists
+    .replace(/^[ \t]*[-*+][ \t]+/gm, '')
+    .replace(/^[ \t]*\d+\.[ \t]+/gm, '')
+    // Horizontal rules (---, ***, ___)
+    .replace(/^[ \t]*([-*_])[ \t]*\1[ \t]*\1[-*_ \t]*$/gm, '')
+    // Bold / italic / strikethrough — keep the inner text.
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/(^|[\s(])_([^_\n]+)_(?=[\s.,;:!?)\]]|$)/g, '$1$2')
+    .replace(/~~([^~]+)~~/g, '$1')
+    // Inline code
+    .replace(/`([^`\n]+)`/g, '$1')
+    // Links: [text](url) → text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Collapse runs of blank lines left behind by deletions.
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
