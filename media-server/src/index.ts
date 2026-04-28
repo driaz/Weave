@@ -6,13 +6,29 @@ import 'dotenv/config'
 
 import Fastify from 'fastify'
 import sensible from '@fastify/sensible'
+import cors from '@fastify/cors'
 import { verifyUserToken } from './auth.js'
 import { processMedia } from './process.js'
 
 const PORT = Number(process.env.PORT ?? 3000)
 
+// Browsers send a CORS preflight (OPTIONS) for cross-origin POSTs that
+// carry Authorization + Content-Type: application/json — which every
+// /process call does. Without an allow-list registered, Fastify 404s the
+// preflight and the browser logs it as a failed POST. Allowed origins
+// come from env (comma-separated); local dev defaults to Vite's port.
+const allowedOrigins = (process.env.WEAVE_ALLOWED_ORIGINS ?? 'http://localhost:5173')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
 const app = Fastify({ logger: true })
 await app.register(sensible)
+await app.register(cors, {
+  origin: allowedOrigins,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+})
 
 app.get('/health', async () => ({ status: 'ok' }))
 
