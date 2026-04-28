@@ -2,12 +2,12 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import { generateNodeId } from '../utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from '../utils/imageUtils'
-import { fetchLinkMetadata, fetchTweetImage, isUrl, extractDomain, extractYouTubeUrlFromText } from '../utils/linkUtils'
-import { fetchTranscript } from '../utils/transcriptUtils'
+import { fetchLinkMetadata, isUrl, extractDomain } from '../utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
 import { embedNodeAsync } from '../services/embeddingService'
+import { enrichLinkNode } from '../services/linkEnrichment'
 
 export function AddNodeButton() {
   const { addNodes, screenToFlowPosition, updateNodeData, getNodes } = useReactFlow()
@@ -195,62 +195,17 @@ export function AddNodeButton() {
       loading: false,
     })
 
-    if (metadata.type === 'twitter') {
-      // Fetch tweet image async — don't block the card render
-      fetchTweetImage(urlToFetch).then((tweetImage) => {
-        if (tweetImage.imageBase64 && tweetImage.imageMimeType) {
-          updateNodeData(nodeId, {
-            imageBase64: tweetImage.imageBase64,
-            imageMimeType: tweetImage.imageMimeType,
-          })
-        }
-      })
-
-      // Fetch transcript for tweet video (native or embedded YouTube)
-      const tweetYouTubeUrl = metadata.tweetText ? extractYouTubeUrlFromText(metadata.tweetText) : null
-      const transcriptUrl = tweetYouTubeUrl || urlToFetch
-      fetchTranscript(transcriptUrl).then((transcript) => {
-        if (transcript) {
-          const field = tweetYouTubeUrl ? 'youtubeTranscript' : 'transcript'
-          updateNodeData(nodeId, { [field]: transcript })
-        }
-      })
-
-      // Delay embedding for tweets to allow image fetch to complete
-      setTimeout(() => {
-        const current = getNodes().find((n) => n.id === nodeId)
-        if (current) {
-          embedNodeAsync(boardId, nodeId, 'linkCard', {
-            ...current.data,
-            loading: false,
-          })
-        }
-      }, 8000)
-    } else if (metadata.type === 'youtube') {
-      // Fetch transcript async — don't block the card render
-      fetchTranscript(urlToFetch).then((transcript) => {
-        if (transcript) {
-          updateNodeData(nodeId, { transcript })
-        }
-      })
-
-      // Delay embedding for YouTube to allow transcript fetch to complete
-      setTimeout(() => {
-        const current = getNodes().find((n) => n.id === nodeId)
-        if (current) {
-          embedNodeAsync(boardId, nodeId, 'linkCard', {
-            ...current.data,
-            loading: false,
-          })
-        }
-      }, 8000)
-    } else {
-      // Embed immediately for other linkCards
-      embedNodeAsync(boardId, nodeId, 'linkCard', {
-        ...metadata,
-        loading: false,
-      })
-    }
+    enrichLinkNode({
+      boardId,
+      nodeId,
+      url: urlToFetch,
+      metadata,
+      patchNodeData: (patch) => updateNodeData(nodeId, patch),
+      getCurrentNodeData: () =>
+        getNodes().find((n) => n.id === nodeId)?.data as
+          | Record<string, unknown>
+          | undefined,
+    })
 
     setFetchingLink(false)
   }, [linkUrl, fetchingLink, addNodes, getCenterPosition, updateNodeData, getNodes, boardId])

@@ -35,14 +35,14 @@ import type { Connection } from './api/claude'
 import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
-import { isUrl, fetchLinkMetadata, fetchTweetImage, extractDomain, extractYouTubeUrlFromText } from './utils/linkUtils'
-import { fetchTranscript } from './utils/transcriptUtils'
+import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
 import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
 import { BoardIdContext } from './hooks/useBoardId'
 import { CancelNodeSelectContext } from './hooks/useCancelNodeSelect'
 import { embedNodeAsync } from './services/embeddingService'
+import { enrichLinkNode } from './services/linkEnrichment'
 import { supabase } from './services/supabaseClient'
 
 const nodeTypes = {
@@ -518,90 +518,25 @@ export function App() {
         ),
       )
 
-      if (metadata.type === 'twitter') {
-        // Fetch tweet image async — don't block the card render
-        fetchTweetImage(text).then((tweetImage) => {
-          if (tweetImage.imageBase64 && tweetImage.imageMimeType) {
-            setNodes((prev) =>
-              prev.map((node) =>
-                node.id === nodeId
-                  ? {
-                      ...node,
-                      data: {
-                        ...node.data,
-                        imageBase64: tweetImage.imageBase64,
-                        imageMimeType: tweetImage.imageMimeType,
-                      },
-                    }
-                  : node,
-              ),
-            )
-          }
-        })
-
-        // Fetch transcript for tweet video (native or embedded YouTube)
-        const tweetYouTubeUrl = metadata.tweetText ? extractYouTubeUrlFromText(metadata.tweetText) : null
-        const transcriptUrl = tweetYouTubeUrl || text
-        fetchTranscript(transcriptUrl).then((transcript) => {
-          if (transcript) {
-            const field = tweetYouTubeUrl ? 'youtubeTranscript' : 'transcript'
-            setNodes((prev) =>
-              prev.map((node) =>
-                node.id === nodeId
-                  ? { ...node, data: { ...node.data, [field]: transcript } }
-                  : node,
-              ),
-            )
-          }
-        })
-
-        // Delay embedding for tweets to allow image fetch to complete
-        setTimeout(() => {
-          setNodes((prev) => {
-            const current = prev.find((n) => n.id === nodeId)
-            if (current) {
-              embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
-                ...current.data,
-                loading: false,
-              })
-            }
-            return prev
-          })
-        }, 8000)
-      } else if (metadata.type === 'youtube') {
-        // Fetch transcript async — don't block the card render
-        fetchTranscript(text).then((transcript) => {
-          if (transcript) {
-            setNodes((prev) =>
-              prev.map((node) =>
-                node.id === nodeId
-                  ? { ...node, data: { ...node.data, transcript } }
-                  : node,
-              ),
-            )
-          }
-        })
-
-        // Delay embedding for YouTube to allow transcript fetch to complete
-        setTimeout(() => {
-          setNodes((prev) => {
-            const current = prev.find((n) => n.id === nodeId)
-            if (current) {
-              embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
-                ...current.data,
-                loading: false,
-              })
-            }
-            return prev
-          })
-        }, 8000)
-      } else {
-        // Embed immediately for other linkCards
-        embedNodeAsync(currentBoard.id, nodeId, 'linkCard', {
-          ...metadata,
-          loading: false,
-        })
-      }
+      enrichLinkNode({
+        boardId: currentBoard.id,
+        nodeId,
+        url: text,
+        metadata,
+        patchNodeData: (patch) => {
+          setNodes((prev) =>
+            prev.map((node) =>
+              node.id === nodeId
+                ? { ...node, data: { ...node.data, ...patch } }
+                : node,
+            ),
+          )
+        },
+        getCurrentNodeData: () =>
+          reactFlowRef.current?.getNodes().find((n) => n.id === nodeId)?.data as
+            | Record<string, unknown>
+            | undefined,
+      })
     }
 
     document.addEventListener('paste', handlePaste)
