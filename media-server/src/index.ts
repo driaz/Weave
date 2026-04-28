@@ -1,3 +1,9 @@
+// Side-effect import — must come before any module that reads process.env at
+// load time (auth.ts, supabase.ts, analyze.ts, embed.ts all throw on missing
+// vars). On Fly the env comes from `fly secrets`, so .env is absent and
+// dotenv silently no-ops; locally it loads media-server/.env from cwd.
+import 'dotenv/config'
+
 import Fastify from 'fastify'
 import sensible from '@fastify/sensible'
 import { verifyUserToken } from './auth.js'
