@@ -98,7 +98,7 @@ curl http://localhost:3000/health
 fly deploy             # uses Dockerfile + fly.toml
 fly secrets set SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
                 GEMINI_API_KEY=... SUPADATA_API_KEY=... \
-                SUPABASE_JWT_SECRET=...
+                WEAVE_ALLOWED_ORIGINS=https://your-netlify-site.netlify.app
 ```
 
 `fly.toml` sets `auto_stop_machines = true` and `min_machines_running = 0` —
