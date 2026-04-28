@@ -1,4 +1,4 @@
-npm warn exec The following package was not found and will be installed: supabase@2.95.3
+npm warn exec The following package was not found and will be installed: supabase@2.95.5
 Initialising login role...
 export type Json =
   | string
@@ -383,6 +383,15 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      patch_node_data: {
+        Args: {
+          p_board_id: string
+          p_client_id: string
+          p_patch: Json
+          p_user_id: string
+        }
+        Returns: undefined
+      }
       replace_board_contents: {
         Args: { p_board_id: string; p_edges: Json; p_nodes: Json }
         Returns: undefined
