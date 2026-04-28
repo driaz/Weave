@@ -64,6 +64,7 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
     await upsertEmbedding({
       boardId: opts.boardId,
       nodeId: opts.nodeId,
+      userId: opts.userId,
       embedding,
       contentSummary: summary,
       hasVideo: !isLongForm,

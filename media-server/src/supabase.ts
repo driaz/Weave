@@ -35,15 +35,20 @@ export async function patchNodeData(opts: {
 export async function upsertEmbedding(opts: {
   boardId: string
   nodeId: string
+  userId: string
   embedding: number[]
   contentSummary: string
   hasVideo: boolean
   durationSeconds: number
 }): Promise<void> {
+  // user_id must be set explicitly — service role bypasses RLS, so the
+  // auth.uid() default on weave_embeddings.user_id (migration 014) returns
+  // null and trips the NOT NULL constraint from migration 009.
   const { error } = await admin.from('weave_embeddings').upsert(
     {
       board_id: opts.boardId,
       node_id: opts.nodeId,
+      user_id: opts.userId,
       node_type: 'linkCard',
       embedding: JSON.stringify(opts.embedding),
       content_summary: opts.contentSummary,
