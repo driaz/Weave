@@ -1,5 +1,6 @@
 import { GoogleGenAI, type Part } from '@google/genai'
 import { readFile } from 'node:fs/promises'
+import { retryOn503 } from './retry.js'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required')
@@ -40,11 +41,13 @@ export async function embedMultimodal(input: MultimodalEmbedInput): Promise<numb
 
   if (parts.length === 0) throw new Error('embedMultimodal: no parts to embed')
 
-  const res = await ai.models.embedContent({
-    model: MODEL,
-    contents: { parts },
-    config: { taskType: 'SEMANTIC_SIMILARITY' },
-  })
+  const res = await retryOn503('embed', () =>
+    ai.models.embedContent({
+      model: MODEL,
+      contents: { parts },
+      config: { taskType: 'SEMANTIC_SIMILARITY' },
+    }),
+  )
   const vec = res.embeddings?.[0]?.values
   if (!vec) throw new Error('embedMultimodal: no embedding returned')
   return vec

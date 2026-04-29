@@ -1,5 +1,6 @@
 import { GoogleGenAI, ThinkingLevel, type Part } from '@google/genai'
 import { readFile } from 'node:fs/promises'
+import { retryOn503 } from './retry.js'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required')
@@ -118,13 +119,15 @@ export async function analyzeMedia(input: AnalyzeMediaInput): Promise<string> {
   }
 
   try {
-    const res = await ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: 'user', parts }],
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-      },
-    })
+    const res = await retryOn503('analyze', () =>
+      ai.models.generateContent({
+        model: MODEL,
+        contents: [{ role: 'user', parts }],
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+        },
+      }),
+    )
     return stripMarkdown(res.text?.trim() ?? '')
   } catch (err) {
     console.warn('[analyze] media analysis failed:', err)
