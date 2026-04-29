@@ -58,15 +58,18 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
       })
     }
 
-    const transcript = await transcriptPromise
-    const summary = [transcript, mediaAnalysis].filter(Boolean).join('\n\n').slice(0, 500)
-
+    // upsertEmbedding builds content_summary from the node's title (looked
+    // up via _clientNodeId) plus the media analysis. transcriptPromise has
+    // already been consumed inside the tier helpers for the embedding
+    // payload — no second await needed here.
     await upsertEmbedding({
       boardId: opts.boardId,
       nodeId: opts.nodeId,
       userId: opts.userId,
+      nodeType: opts.nodeType,
+      fallbackUrl: opts.url,
+      mediaAnalysis,
       embedding,
-      contentSummary: summary,
       hasVideo: !isLongForm,
       durationSeconds,
     })
