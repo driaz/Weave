@@ -105,3 +105,26 @@ fly secrets set SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
 the machine scales to zero when idle. Cold start is ~10-15s with yt-dlp +
 ffmpeg in the image. Acceptable for a background pipeline triggered by node
 creation.
+
+## Scaling considerations
+
+Levers to revisit when load grows past one user dropping the occasional video.
+Documented here rather than in `CLAUDE.md` because none of these need
+attention until they actually bite.
+
+- **Worst-case latency.** Both Gemini calls retry up to 3× on 503 with
+  5/10/20s waits (`src/retry.ts`). A fully-exhausted retry on both adds
+  ~70s on top of the normal 30-90s pipeline. If Gemini is down for
+  minutes, queued nodes pile that up. No request-shed today.
+
+- **Retry jitter.** The schedule is fixed. Three concurrent pipeline runs
+  all retry at exactly +5s / +15s / +35s, hammering Gemini in lockstep
+  right when it's already overloaded. If recurring 503 bursts show up,
+  add ±20% jitter to the delays in `retryOn503`.
+
+- **Request budgeting.** Every POST to `/process` spawns a fire-and-forget
+  `processMedia` — no concurrency cap, no queue. A Fly machine can
+  probably absorb 3-5 concurrent runs (yt-dlp + ffmpeg are I/O-bound,
+  Gemini is the actual bottleneck). Past that, expect OOM or yt-dlp
+  timeouts. Add a Fastify-side semaphore for a quick cap, or move to
+  BullMQ + Redis when sustained traffic warrants the operational cost.
