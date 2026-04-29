@@ -108,6 +108,11 @@ function triggerMediaPipeline(opts: {
   nodeType: 'youtube' | 'twitter'
 }): void {
   if (!WEAVE_MEDIA_URL) return
+  // supabaseClient.ts exports `SupabaseClient | null` — null when env vars
+  // aren't configured. Without this guard the runtime throws a TypeError
+  // (caught by the inner try, silently no-ops) AND Netlify's strict
+  // typecheck refuses to build (TS18047).
+  if (!supabase) return
 
   void (async () => {
     try {
