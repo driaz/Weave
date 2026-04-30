@@ -1,6 +1,7 @@
 import type { Part } from '@google/genai'
 import { ai } from './geminiClient'
 import { supabase } from './supabaseClient'
+import type { NodeLogger } from '../utils/logger'
 
 /**
  * Parse a data URL into its mime type and raw base64 string.
@@ -158,13 +159,39 @@ export async function embedNode(
   nodeId: string,
   nodeType: string,
   nodeData: Record<string, unknown>,
+  logger?: NodeLogger,
 ): Promise<void> {
   if (!ai || !supabase) return
 
+  const startedAt = Date.now()
   const result = buildPartsForNode(nodeType, nodeData)
-  if (!result) return
+  if (!result) {
+    logger?.debug('embed.client', 'skipped', { reason: 'no-content', nodeType })
+    return
+  }
 
   const { parts, summary } = result
+  logger?.debug('embed.client.start', 'success', { nodeType, partsCount: parts.length, summaryLen: summary.length })
+
+  // Don't downgrade a server-written multimodal embedding with a client text-only one.
+  // The Fly media server stamps metadata.processing = 'server'; the client never sets it.
+  // Checked before the Gemini call so we don't pay for an embedding we'd discard.
+  const { data: existing, error: fetchError } = await supabase
+    .from('weave_embeddings')
+    .select('metadata')
+    .eq('board_id', boardId)
+    .eq('node_id', nodeId)
+    .maybeSingle()
+
+  if (fetchError) {
+    logger?.warn('embed.client.precheck', 'failed', { error: fetchError.message })
+  }
+
+  const existingProcessing = (existing?.metadata as { processing?: string } | null)?.processing
+  if (existingProcessing === 'server') {
+    logger?.persist('embed.client', 'skipped', { reason: 'server-embedding-exists' })
+    return
+  }
 
   const response = await ai.models.embedContent({
     model: 'gemini-embedding-2-preview',
@@ -178,7 +205,7 @@ export async function embedNode(
 
   const embedding = response.embeddings?.[0]?.values
   if (!embedding) {
-    console.warn('[Weave Embeddings] No embedding returned for node', nodeId)
+    logger?.warn('embed.client', 'failed', { reason: 'no-embedding-returned' }, Date.now() - startedAt)
     return
   }
 
@@ -195,8 +222,21 @@ export async function embedNode(
   )
 
   if (error) {
-    console.warn('[Weave Embeddings] Failed to store embedding:', error.message)
+    logger?.persist(
+      'embed.client',
+      'failed',
+      { error: error.message, embeddingDims: embedding.length, contentLen: summary.length },
+      Date.now() - startedAt,
+    )
+    return
   }
+
+  logger?.persist(
+    'embed.client',
+    'success',
+    { embeddingDims: embedding.length, contentLen: summary.length, partsCount: parts.length },
+    Date.now() - startedAt,
+  )
 }
 
 /**
@@ -208,8 +248,13 @@ export function embedNodeAsync(
   nodeId: string,
   nodeType: string,
   nodeData: Record<string, unknown>,
+  logger?: NodeLogger,
 ): void {
-  embedNode(boardId, nodeId, nodeType, nodeData).catch((err) => {
-    console.warn('[Weave Embeddings] Embedding failed:', err)
+  embedNode(boardId, nodeId, nodeType, nodeData, logger).catch((err) => {
+    if (logger) {
+      logger.error('embed.client', 'failed', { error: String(err) })
+    } else {
+      console.warn('[Weave Embeddings] Embedding failed:', err)
+    }
   })
 }

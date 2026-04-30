@@ -8,9 +8,10 @@ import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
 import { embedNodeAsync } from '../services/embeddingService'
 import { enrichLinkNode } from '../services/linkEnrichment'
+import { buildProcessingLogAppender, createNodeLogger } from '../utils/logger'
 
 export function AddNodeButton() {
-  const { addNodes, screenToFlowPosition, updateNodeData, getNodes } = useReactFlow()
+  const { addNodes, screenToFlowPosition, updateNodeData, getNodes, setNodes } = useReactFlow()
   const boardId = useBoardId()
   const [menuOpen, setMenuOpen] = useState(false)
   const [linkInputMode, setLinkInputMode] = useState(false)
@@ -91,15 +92,26 @@ export function AddNodeButton() {
         boardId,
         metadata: { node_type: 'imageCard' },
       })
-      embedNodeAsync(boardId, nodeId, 'imageCard', {
-        imageDataUrl,
-        fileName: file.name,
-        label: '',
-      })
+      const imageLogger = createNodeLogger(
+        nodeId,
+        boardId,
+        buildProcessingLogAppender(nodeId, setNodes),
+      )
+      embedNodeAsync(
+        boardId,
+        nodeId,
+        'imageCard',
+        {
+          imageDataUrl,
+          fileName: file.name,
+          label: '',
+        },
+        imageLogger,
+      )
 
       e.target.value = ''
     },
-    [addNodes, getCenterPosition, boardId],
+    [addNodes, getCenterPosition, boardId, setNodes],
   )
 
   const handleAddPdf = useCallback(() => {
@@ -134,16 +146,27 @@ export function AddNodeButton() {
         boardId,
         metadata: { node_type: 'pdfCard' },
       })
-      embedNodeAsync(boardId, nodeId, 'pdfCard', {
-        thumbnailDataUrl,
-        fileName: file.name,
-        label: '',
-        pageCount,
-      })
+      const pdfLogger = createNodeLogger(
+        nodeId,
+        boardId,
+        buildProcessingLogAppender(nodeId, setNodes),
+      )
+      embedNodeAsync(
+        boardId,
+        nodeId,
+        'pdfCard',
+        {
+          thumbnailDataUrl,
+          fileName: file.name,
+          label: '',
+          pageCount,
+        },
+        pdfLogger,
+      )
 
       e.target.value = ''
     },
-    [addNodes, getCenterPosition, boardId],
+    [addNodes, getCenterPosition, boardId, setNodes],
   )
 
   const handleLinkSubmit = useCallback(async () => {
@@ -195,6 +218,11 @@ export function AddNodeButton() {
       loading: false,
     })
 
+    const linkLogger = createNodeLogger(
+      nodeId,
+      boardId,
+      buildProcessingLogAppender(nodeId, setNodes),
+    )
     enrichLinkNode({
       boardId,
       nodeId,
@@ -205,10 +233,11 @@ export function AddNodeButton() {
         getNodes().find((n) => n.id === nodeId)?.data as
           | Record<string, unknown>
           | undefined,
+      logger: linkLogger,
     })
 
     setFetchingLink(false)
-  }, [linkUrl, fetchingLink, addNodes, getCenterPosition, updateNodeData, getNodes, boardId])
+  }, [linkUrl, fetchingLink, addNodes, getCenterPosition, updateNodeData, getNodes, setNodes, boardId])
 
   const handleLinkKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

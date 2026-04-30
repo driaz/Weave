@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
 import { useNodeHighlightStatus } from '../hooks/useSelectedNode'
 import { useBoardId } from '../hooks/useBoardId'
 import { embedNodeAsync } from '../services/embeddingService'
+import { buildProcessingLogAppender, createNodeLogger } from '../utils/logger'
 
 export type TextCardData = {
   text: string
@@ -18,7 +19,7 @@ export function TextCardNode({ id, data }: NodeProps) {
   const [editing, setEditing] = useState(!text)
   const [value, setValue] = useState(text)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const { updateNodeData } = useReactFlow()
+  const { updateNodeData, setNodes } = useReactFlow()
   const boardId = useBoardId()
   const { isSelected, isConnected } = useNodeHighlightStatus(id)
 
@@ -39,9 +40,10 @@ export function TextCardNode({ id, data }: NodeProps) {
     setEditing(false)
     updateNodeData(id, { text: value })
     if (value !== text && value.trim().length > 0 && boardId) {
-      embedNodeAsync(boardId, id, 'textCard', { text: value })
+      const logger = createNodeLogger(id, boardId, buildProcessingLogAppender(id, setNodes))
+      embedNodeAsync(boardId, id, 'textCard', { text: value }, logger)
     }
-  }, [id, value, text, boardId, updateNodeData])
+  }, [id, value, text, boardId, updateNodeData, setNodes])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

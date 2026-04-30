@@ -2,6 +2,7 @@ import { embedNodeAsync } from './embeddingService'
 import { fetchTweetImage, extractYouTubeUrlFromText, type LinkMetadata } from '../utils/linkUtils'
 import { fetchTranscript } from '../utils/transcriptUtils'
 import { supabase } from './supabaseClient'
+import type { NodeLogger } from '../utils/logger'
 
 const ENRICHMENT_EMBED_DELAY_MS = 8000
 const WEAVE_MEDIA_URL = import.meta.env.VITE_WEAVE_MEDIA_URL as string | undefined
@@ -13,6 +14,7 @@ export interface EnrichLinkNodeOptions {
   metadata: LinkMetadata
   patchNodeData: (patch: Record<string, unknown>) => void
   getCurrentNodeData: () => Record<string, unknown> | undefined
+  logger?: NodeLogger
 }
 
 /**
@@ -31,15 +33,27 @@ export interface EnrichLinkNodeOptions {
  * Fire-and-forget — never throws.
  */
 export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
-  const { boardId, nodeId, url, metadata, patchNodeData, getCurrentNodeData } = opts
+  const { boardId, nodeId, url, metadata, patchNodeData, getCurrentNodeData, logger } = opts
+  const startedAt = Date.now()
 
   if (metadata.type === 'twitter') {
+    let tweetImageLanded = false
+    let transcriptLanded = false
+    let transcriptLen = 0
+    let transcriptField: 'transcript' | 'youtubeTranscript' = 'transcript'
+
+    logger?.debug('enrich.twitter.start', 'success', { url })
+
     fetchTweetImage(url).then((tweetImage) => {
       if (tweetImage.imageBase64 && tweetImage.imageMimeType) {
+        tweetImageLanded = true
         patchNodeData({
           imageBase64: tweetImage.imageBase64,
           imageMimeType: tweetImage.imageMimeType,
         })
+        logger?.debug('enrich.tweet-image', 'success', { mimeType: tweetImage.imageMimeType })
+      } else {
+        logger?.debug('enrich.tweet-image', 'skipped', { reason: 'no-image' })
       }
     })
 
@@ -47,10 +61,15 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
       ? extractYouTubeUrlFromText(metadata.tweetText)
       : null
     const transcriptUrl = tweetYouTubeUrl || url
+    transcriptField = tweetYouTubeUrl ? 'youtubeTranscript' : 'transcript'
     fetchTranscript(transcriptUrl).then((transcript) => {
       if (transcript) {
-        const field = tweetYouTubeUrl ? 'youtubeTranscript' : 'transcript'
-        patchNodeData({ [field]: transcript })
+        transcriptLanded = true
+        transcriptLen = transcript.length
+        patchNodeData({ [transcriptField]: transcript })
+        logger?.debug('enrich.transcript', 'success', { field: transcriptField, len: transcript.length })
+      } else {
+        logger?.debug('enrich.transcript', 'degraded', { field: transcriptField, reason: 'empty' })
       }
     })
 
@@ -59,39 +78,80 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
     // grabs native video; on text-only tweets it fast-fails server-side. We
     // accept those wasted invocations rather than building a separate
     // client-side video-detection path.
-    triggerMediaPipeline({
+    const mediaTriggered = triggerMediaPipeline({
       boardId,
       nodeId,
       url: tweetYouTubeUrl ?? url,
       nodeType: tweetYouTubeUrl ? 'youtube' : 'twitter',
+      logger,
     })
 
     setTimeout(() => {
       const current = getCurrentNodeData()
+      const elapsed = Date.now() - startedAt
+      const detail = {
+        kind: 'twitter',
+        hasTranscript: transcriptLanded,
+        transcriptLen,
+        transcriptField,
+        hasTweetImage: tweetImageLanded,
+        mediaTriggered,
+      }
+      const outcome = transcriptLanded || tweetImageLanded ? 'success' : 'degraded'
+      logger?.persist('enrich.complete', outcome, detail, elapsed)
       if (current) {
-        embedNodeAsync(boardId, nodeId, 'linkCard', { ...current, loading: false })
+        embedNodeAsync(boardId, nodeId, 'linkCard', { ...current, loading: false }, logger)
       }
     }, ENRICHMENT_EMBED_DELAY_MS)
     return
   }
 
   if (metadata.type === 'youtube') {
+    let transcriptLanded = false
+    let transcriptLen = 0
+
+    logger?.debug('enrich.youtube.start', 'success', { url })
+
     fetchTranscript(url).then((transcript) => {
-      if (transcript) patchNodeData({ transcript })
+      if (transcript) {
+        transcriptLanded = true
+        transcriptLen = transcript.length
+        patchNodeData({ transcript })
+        logger?.debug('enrich.transcript', 'success', { field: 'transcript', len: transcript.length })
+      } else {
+        logger?.debug('enrich.transcript', 'degraded', { field: 'transcript', reason: 'empty' })
+      }
     })
 
-    triggerMediaPipeline({ boardId, nodeId, url, nodeType: 'youtube' })
+    const mediaTriggered = triggerMediaPipeline({ boardId, nodeId, url, nodeType: 'youtube', logger })
 
     setTimeout(() => {
       const current = getCurrentNodeData()
+      const elapsed = Date.now() - startedAt
+      const detail = {
+        kind: 'youtube',
+        hasTranscript: transcriptLanded,
+        transcriptLen,
+        hasTweetImage: false,
+        mediaTriggered,
+      }
+      const outcome = transcriptLanded || mediaTriggered ? 'success' : 'degraded'
+      logger?.persist('enrich.complete', outcome, detail, elapsed)
       if (current) {
-        embedNodeAsync(boardId, nodeId, 'linkCard', { ...current, loading: false })
+        embedNodeAsync(boardId, nodeId, 'linkCard', { ...current, loading: false }, logger)
       }
     }, ENRICHMENT_EMBED_DELAY_MS)
     return
   }
 
-  embedNodeAsync(boardId, nodeId, 'linkCard', { ...metadata, loading: false })
+  // Generic link — nothing to enrich, embed immediately.
+  logger?.persist(
+    'enrich.complete',
+    'success',
+    { kind: 'generic', hasTranscript: false, transcriptLen: 0, hasTweetImage: false, mediaTriggered: false },
+    Date.now() - startedAt,
+  )
+  embedNodeAsync(boardId, nodeId, 'linkCard', { ...metadata, loading: false }, logger)
 }
 
 /**
@@ -100,27 +160,42 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
  * preview deploys), no JWT is available, or the network call fails, we
  * silently skip — the client-side text embedding still lands at the 8s
  * mark and the node is functional.
+ *
+ * Returns true if a request was actually attempted (env + supabase + token
+ * all available); false if we no-opped early. Network errors after the
+ * fetch is sent still return true — the request was fired even if it
+ * later failed.
  */
 function triggerMediaPipeline(opts: {
   boardId: string
   nodeId: string
   url: string
   nodeType: 'youtube' | 'twitter'
-}): void {
-  if (!WEAVE_MEDIA_URL) return
+  logger?: NodeLogger
+}): boolean {
+  if (!WEAVE_MEDIA_URL) {
+    opts.logger?.debug('media.trigger', 'skipped', { reason: 'no-media-url' })
+    return false
+  }
   // supabaseClient.ts exports `SupabaseClient | null` — null when env vars
   // aren't configured. Without this guard the runtime throws a TypeError
   // (caught by the inner try, silently no-ops) AND Netlify's strict
   // typecheck refuses to build (TS18047).
-  if (!supabase) return
+  if (!supabase) {
+    opts.logger?.debug('media.trigger', 'skipped', { reason: 'no-supabase-client' })
+    return false
+  }
 
   void (async () => {
     try {
-      const { data } = await supabase.auth.getSession()
+      const { data } = await supabase!.auth.getSession()
       const token = data.session?.access_token
-      if (!token) return
+      if (!token) {
+        opts.logger?.debug('media.trigger', 'skipped', { reason: 'no-token' })
+        return
+      }
 
-      await fetch(`${WEAVE_MEDIA_URL.replace(/\/$/, '')}/process`, {
+      await fetch(`${WEAVE_MEDIA_URL!.replace(/\/$/, '')}/process`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -134,8 +209,10 @@ function triggerMediaPipeline(opts: {
         }),
         keepalive: true,
       })
+      opts.logger?.debug('media.trigger', 'success', { nodeType: opts.nodeType })
     } catch (err) {
-      console.warn('[linkEnrichment] media pipeline trigger failed:', err)
+      opts.logger?.warn('media.trigger', 'failed', { error: String(err) })
     }
   })()
+  return true
 }

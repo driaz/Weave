@@ -44,6 +44,7 @@ import { CancelNodeSelectContext } from './hooks/useCancelNodeSelect'
 import { embedNodeAsync } from './services/embeddingService'
 import { enrichLinkNode } from './services/linkEnrichment'
 import { supabase } from './services/supabaseClient'
+import { buildProcessingLogAppender, createNodeLogger } from './utils/logger'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -403,11 +404,22 @@ export function App() {
           boardId: currentBoard.id,
           metadata: { node_type: 'imageCard' },
         })
-        embedNodeAsync(currentBoard.id, nodeId, 'imageCard', {
-          imageDataUrl,
-          fileName: file.name,
-          label: '',
-        })
+        const imageLogger = createNodeLogger(
+          nodeId,
+          currentBoard.id,
+          buildProcessingLogAppender(nodeId, setNodes),
+        )
+        embedNodeAsync(
+          currentBoard.id,
+          nodeId,
+          'imageCard',
+          {
+            imageDataUrl,
+            fileName: file.name,
+            label: '',
+          },
+          imageLogger,
+        )
         offset++
       }
 
@@ -444,12 +456,23 @@ export function App() {
           boardId: currentBoard.id,
           metadata: { node_type: 'pdfCard' },
         })
-        embedNodeAsync(currentBoard.id, nodeId, 'pdfCard', {
-          thumbnailDataUrl,
-          fileName: file.name,
-          label: '',
-          pageCount,
-        })
+        const pdfLogger = createNodeLogger(
+          nodeId,
+          currentBoard.id,
+          buildProcessingLogAppender(nodeId, setNodes),
+        )
+        embedNodeAsync(
+          currentBoard.id,
+          nodeId,
+          'pdfCard',
+          {
+            thumbnailDataUrl,
+            fileName: file.name,
+            label: '',
+            pageCount,
+          },
+          pdfLogger,
+        )
         offset++
       }
     },
@@ -518,6 +541,11 @@ export function App() {
         ),
       )
 
+      const linkLogger = createNodeLogger(
+        nodeId,
+        currentBoard.id,
+        buildProcessingLogAppender(nodeId, setNodes),
+      )
       enrichLinkNode({
         boardId: currentBoard.id,
         nodeId,
@@ -536,6 +564,7 @@ export function App() {
           reactFlowRef.current?.getNodes().find((n) => n.id === nodeId)?.data as
             | Record<string, unknown>
             | undefined,
+        logger: linkLogger,
       })
     }
 
