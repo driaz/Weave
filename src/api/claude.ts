@@ -65,8 +65,28 @@ export type Connection = {
   mode?: WeaveMode
 }
 
+export type WeaveDiagnostics = {
+  /** Content nodes actually sent to Claude (after empty-node filter). */
+  nodeCount: number
+  /** Same-mode existing connections passed back as dedup-guidance context. */
+  contextConnectionsSent: number
+  /** Wall-clock ms for the API round-trip. 0 if no API call was made. */
+  apiLatencyMs: number
+  /** Anthropic input_tokens, if surfaced by the response. */
+  promptTokens: number | null
+  /** Anthropic output_tokens, if surfaced by the response. */
+  completionTokens: number | null
+  /** Echoed model name from the response. */
+  model: string | null
+  /** Stop reason from the response (e.g. end_turn, max_tokens). */
+  stopReason: string | null
+  /** True when analyzeCanvas short-circuited without calling the API. */
+  skippedApiCall: boolean
+}
+
 export type WeaveResult = {
   connections: Connection[]
+  diagnostics: WeaveDiagnostics
 }
 
 type ContentBlock =
@@ -338,7 +358,19 @@ export async function analyzeCanvas(
   )
 
   if (contentNodes.length < 2) {
-    return { connections: [] }
+    return {
+      connections: [],
+      diagnostics: {
+        nodeCount: contentNodes.length,
+        contextConnectionsSent: 0,
+        apiLatencyMs: 0,
+        promptTokens: null,
+        completionTokens: null,
+        model: null,
+        stopReason: null,
+        skippedApiCall: true,
+      },
+    }
   }
 
   const content = await serializeNodes(contentNodes)
@@ -371,6 +403,7 @@ export async function analyzeCanvas(
     messages: [{ role: 'user', content }],
   })
 
+  const apiStart = Date.now()
   const response = useProxy
     ? await fetch('/api/claude', {
         method: 'POST',
@@ -394,6 +427,7 @@ export async function analyzeCanvas(
   }
 
   const json = await response.json()
+  const apiLatencyMs = Date.now() - apiStart
 
   const textBlock = json.content?.find(
     (block: { type: string }) => block.type === 'text',
@@ -422,6 +456,22 @@ export async function analyzeCanvas(
 
   // Tag each connection with the mode
   parsed.connections = parsed.connections.map((c) => ({ ...c, mode }))
+
+  const usage = json.usage as
+    | { input_tokens?: number; output_tokens?: number }
+    | undefined
+
+  parsed.diagnostics = {
+    nodeCount: contentNodes.length,
+    contextConnectionsSent: contextConnections.length,
+    apiLatencyMs,
+    promptTokens: typeof usage?.input_tokens === 'number' ? usage.input_tokens : null,
+    completionTokens:
+      typeof usage?.output_tokens === 'number' ? usage.output_tokens : null,
+    model: typeof json.model === 'string' ? json.model : null,
+    stopReason: typeof json.stop_reason === 'string' ? json.stop_reason : null,
+    skippedApiCall: false,
+  }
 
   return parsed
 }

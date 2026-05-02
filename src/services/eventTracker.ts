@@ -8,6 +8,13 @@ type TrackEventOptions = {
   boardId: string
   durationMs?: number
   metadata?: Record<string, unknown>
+  /**
+   * Override the event timestamp. Use when the event represents user
+   * intent at a moment earlier than the write — e.g. a weave_triggered
+   * row written after the API round-trip should still carry the time
+   * the user clicked the button.
+   */
+  timestamp?: string
 }
 
 /**
@@ -20,7 +27,7 @@ export function trackEvent(
 ): void {
   if (!supabase) return
 
-  const row = {
+  const row: Record<string, unknown> = {
     event_type: eventType,
     target_id: options.targetId ?? null,
     board_id: options.boardId,
@@ -28,6 +35,7 @@ export function trackEvent(
     duration_ms: options.durationMs ?? null,
     metadata: options.metadata ?? null,
   }
+  if (options.timestamp) row.timestamp = options.timestamp
 
   supabase
     .from('weave_events')

@@ -58,10 +58,23 @@ export function WeaveButton({
       setState('loading')
       setLoadingMode(mode)
 
-      trackEvent('weave_triggered', {
-        boardId,
-        metadata: { mode },
-      })
+      // Capture click time at the top so the event row reflects user
+      // intent, not the moment we finally finish analyzing and write.
+      // apiLatencyMs + duration_ms cover the gap between the two.
+      const clickedAt = Date.now()
+      const clickedAtIso = new Date(clickedAt).toISOString()
+
+      let nodeCount = 0
+      let contextConnectionsSent = 0
+      let connectionsReturned = 0
+      let connectionsAfterDedup = 0
+      let apiLatencyMs = 0
+      let promptTokens: number | null = null
+      let completionTokens: number | null = null
+      let model: string | null = null
+      let stopReason: string | null = null
+      let skipped = false
+      let errorMessage: string | null = null
 
       try {
         const nodes = getNodes()
@@ -70,6 +83,7 @@ export function WeaveButton({
         // Only count connections for THIS specific mode — other modes are irrelevant
         const modeConns = connections.filter((c) => c.mode === mode)
         const isFirstRun = modeConns.length === 0
+        contextConnectionsSent = modeConns.length
 
         // Build set of nodes already connected for THIS mode only
         const connectedNodes = new Set<string>()
@@ -107,6 +121,14 @@ export function WeaveButton({
             console.log(
               `[Weave Debug] All ${contentNodeIds.length} content nodes already connected for mode="${mode}", skipping API call`,
             )
+            nodeCount = contentNodeIds.length
+            skipped = true
+            // Pre-API short-circuit. contextConnectionsSent is the count
+            // we *would have* sent had we called the API; nothing was
+            // actually transmitted on this click. The skipped flag is
+            // the disambiguator.
+            contextConnectionsSent = 0
+            errorMessage = 'all_nodes_connected'
             setState('no-new')
             setTimeout(() => setState('idle'), 2000)
             return
@@ -118,6 +140,22 @@ export function WeaveButton({
         )
 
         const result = await analyzeCanvas(nodes, mode, connections)
+
+        // Harvest diagnostics from analyzeCanvas — these are authoritative
+        // about what was actually sent and received (token counts, model,
+        // latency). Falls back to local guesses only if absent.
+        nodeCount = result.diagnostics.nodeCount
+        contextConnectionsSent = result.diagnostics.contextConnectionsSent
+        apiLatencyMs = result.diagnostics.apiLatencyMs
+        promptTokens = result.diagnostics.promptTokens
+        completionTokens = result.diagnostics.completionTokens
+        model = result.diagnostics.model
+        stopReason = result.diagnostics.stopReason
+        if (result.diagnostics.skippedApiCall) {
+          skipped = true
+          errorMessage = 'insufficient_content_nodes'
+        }
+        connectionsReturned = result.connections.length
 
         console.log(
           `[Weave Debug] Claude returned ${result.connections.length} connections:`,
@@ -149,19 +187,48 @@ export function WeaveButton({
           )
         }
 
+        connectionsAfterDedup = newConnections.length
+
         if (newConnections.length === 0) {
           setState('no-new')
           setTimeout(() => setState('idle'), 2000)
         } else {
-          onResult({ connections: newConnections }, mode)
+          onResult({ connections: newConnections, diagnostics: result.diagnostics }, mode)
           setState('idle')
         }
       } catch (error) {
         console.error('Weave error:', error)
+        errorMessage = error instanceof Error ? error.message : String(error)
         setState('error')
         setTimeout(() => setState('idle'), 2000)
       } finally {
         setLoadingMode(null)
+
+        const duplicatesFiltered = Math.max(
+          0,
+          connectionsReturned - connectionsAfterDedup,
+        )
+
+        trackEvent('weave_triggered', {
+          boardId,
+          timestamp: clickedAtIso,
+          durationMs: Date.now() - clickedAt,
+          metadata: {
+            mode,
+            nodeCount,
+            contextConnectionsSent,
+            connectionsReturned,
+            connectionsAfterDedup,
+            duplicatesFiltered,
+            apiLatencyMs,
+            promptTokens,
+            completionTokens,
+            model,
+            stopReason,
+            skipped,
+            error: errorMessage,
+          },
+        })
       }
     },
     [state, getNodes, connections, onResult, boardId],
