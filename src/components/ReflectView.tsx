@@ -1,312 +1,476 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '../services/supabaseClient'
+import type { WeaveMode } from '../types/board'
 
-type ClusterObj = {
+type SnapshotCluster = {
   cluster_id: string
-  member_node_ids: string[]
-  anchor_node_ids: string[]
-  theme_description: string
-  engagement_weight: number
   size: number
-  boards_touched: string[]
+  theme_description: string | null
 }
 
 type Snapshot = {
   id: string
   created_at: string
   node_count: number
-  clusters: ClusterObj[] | null
+  clusters: SnapshotCluster[] | null
   narrative: string | null
 }
 
-type ContentEntry = {
-  nodeType: string
-  summary: string | null
+type Reflection = {
+  id: string
+  title: string
+  /** Pre-formatted, e.g. "APRIL 17". */
+  shortDate: string
+  /** Pre-formatted, e.g. "APRIL 17, 2026 · 10:52 PM". */
+  longDate: string
+  /** Body paragraphs in reading order. */
+  paragraphs: string[]
+  themes: string[]
+  threadCount: number
+  pieceCount: number
+  /** Mode tint for the spine border + scope dot. */
+  mode: WeaveMode
 }
 
-type Props = {
-  onBack: (target?: { boardId: string; nodeId: string }) => void
+const HARDCODED_REFLECTION: Reflection = {
+  id: 'seed-clarity-as-cost',
+  title: 'Clarity as cost, not reward',
+  shortDate: 'APRIL 17',
+  longDate: 'APRIL 17, 2026 · 10:52 PM',
+  threadCount: 11,
+  pieceCount: 37,
+  mode: 'weave',
+  paragraphs: [
+    'There is a recurring figure across this entire collection: someone who sees through the machinery and is worse off for it. It appears in the venture capital threads, where stripping away mythology leaves you holding an emptier thing than you started with. It appears in the life-script cluster, where understanding that the goalposts dissolved doesn’t give you new goalposts. It appears in the Norm Macdonald clip, where the person stating the universal truth watches it fail to land on the person standing right there. And it appears most explicitly in the largest thread, the one that asks whether heightened understanding separates you from ease rather than delivering you to it. The collection keeps arriving at the same structure from wildly different directions: clarity as cost, not reward. That this pattern spans VC critique, parenting disillusionment, comedy, and personal philosophy suggests it isn’t a position being argued so much as a gravitational tendency—a way of encountering the world that precedes any particular subject.',
+    'But set against this is something that cuts against resignation. The pieces about connection-as-subtraction, the scenes where a character stops performing and speaks a simple emotional truth, the twice-saved clip where someone converts damage into purpose—these are moments of arrival, not withdrawal. They don’t celebrate understanding; they celebrate the instant someone drops their understanding and says the plain thing. The curator is drawn to both modes almost equally: the lucidity that isolates and the vulnerability that connects. The tension isn’t hidden. The largest thread names it outright—the suspicion that meaning-seeking might itself be avoidance of simple presence. What’s striking is that the collection doesn’t resolve this suspicion. It holds court, gathering evidence on both sides, as if the act of curation itself is the deliberation.',
+    'There’s a second tension worth naming. Several threads are fascinated by moments where someone’s mask slips involuntarily—the public figure whose scripture indicts their own worship, the self-justifying monologue that’s half confession. But the threads about bold visual posts and about declarative emotional scenes are drawn to the opposite: moments where someone drops the mask on purpose, with full intention, and that act of deliberate exposure is what gives the moment its weight. The collection seems to be working out whether truth emerges despite people or because of them—whether the meaningful reveal is the one the speaker didn’t mean to make, or the one they chose to make at great cost. Both are collected with the same intensity, which suggests the curator isn’t sure either, and finds the question itself worth sitting inside.',
+    'What runs beneath all of it is an attention to the moment a shared script fails. The life scripts that collapsed. The VC mythology that dissolves under scrutiny. The hierarchies people impose that prevent the connection they claim to want. The political critique that crosses tribal lines precisely because the old lines stopped holding. Even the comedy and image-posting thread carries this: a fascination with people who declare something into a void where no shared framework guarantees it will land. The collection maps a landscape where the old agreements—about careers, about institutions, about how to be in relationships, about what intelligence or success even means—have quietly expired, and the people inside them are only now noticing. The curator isn’t mourning those agreements exactly, but they’re not celebrating the absence either. They’re watching, very carefully, for what happens in the gap.',
+  ],
+  themes: [
+    'clarity as burden',
+    'involuntary confession',
+    'connection through subtraction',
+    'scripts that expired',
+    'vulnerability as arrival',
+    'meaning-seeking as avoidance',
+    'institutional mythology',
+    'comedy as failed truth-delivery',
+    'deliberate exposure',
+    'the gap after agreement',
+    'presence vs. understanding',
+  ],
 }
 
-export function ReflectView({ onBack }: Props) {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
-  const [contentLookup, setContentLookup] = useState<Map<string, ContentEntry>>(new Map())
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set())
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
+const MODE_ACCENT: Record<WeaveMode, string> = {
+  weave: 'var(--w-standard-accent)',
+  deeper: 'var(--w-deeper-accent)',
+  tensions: 'var(--w-tensions-accent)',
+}
 
+function formatLongDate(iso: string): string {
+  const d = new Date(iso)
+  const month = d
+    .toLocaleString('en-US', { month: 'long' })
+    .toUpperCase()
+  const day = d.getDate()
+  const year = d.getFullYear()
+  let hour = d.getHours()
+  const ampm = hour >= 12 ? 'PM' : 'AM'
+  hour = hour % 12 || 12
+  const minute = d.getMinutes().toString().padStart(2, '0')
+  return `${month} ${day}, ${year} · ${hour}:${minute} ${ampm}`
+}
+
+function formatShortDate(iso: string): string {
+  const d = new Date(iso)
+  const month = d
+    .toLocaleString('en-US', { month: 'long' })
+    .toUpperCase()
+  return `${month} ${d.getDate()}`
+}
+
+function reflectionFromSnapshot(snap: Snapshot): Reflection | null {
+  const narrative = snap.narrative?.trim()
+  if (!narrative) return null
+  const paragraphs = narrative
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+  if (paragraphs.length === 0) return null
+
+  const clusters = (snap.clusters ?? []).filter(
+    (c): c is SnapshotCluster => !!c,
+  )
+  const themes = clusters
+    .map((c) => c.theme_description?.trim())
+    .filter((t): t is string => !!t && t.length > 0)
+  const pieceCount = clusters.reduce((sum, c) => sum + (c.size ?? 0), 0)
+
+  // Title comes from the first sentence of paragraph one if no explicit title
+  // is stored on the snapshot row yet. Cap to ~60 chars for the headline.
+  const firstSentence = paragraphs[0].split(/(?<=[.!?])\s/)[0] ?? paragraphs[0]
+  const title =
+    firstSentence.length > 64
+      ? firstSentence.slice(0, 61).trimEnd() + '…'
+      : firstSentence
+
+  return {
+    id: snap.id,
+    title,
+    shortDate: formatShortDate(snap.created_at),
+    longDate: formatLongDate(snap.created_at),
+    paragraphs,
+    themes,
+    threadCount: clusters.length || HARDCODED_REFLECTION.threadCount,
+    pieceCount: pieceCount || HARDCODED_REFLECTION.pieceCount,
+    mode: 'weave',
+  }
+}
+
+type ReflectViewProps = {
+  onBack: () => void
+  boardName: string
+}
+
+export function ReflectView({ onBack, boardName }: ReflectViewProps) {
+  const [reflection, setReflection] = useState<Reflection>(HARDCODED_REFLECTION)
+  const [activeId, setActiveId] = useState<string>(HARDCODED_REFLECTION.id)
+
+  // Try to fetch the latest real snapshot; if narrative is present, swap in.
+  // If not, the hardcoded seed remains.
   useEffect(() => {
-    if (!supabase) {
-      setError('Supabase not configured')
-      setLoading(false)
-      return
-    }
-
+    if (!supabase) return
+    let cancelled = false
     async function load() {
-      const { data: snap, error: snapErr } = await supabase!
+      const { data, error } = await supabase!
         .from('weave_profile_snapshots')
         .select('id, created_at, node_count, clusters, narrative')
         .order('created_at', { ascending: false })
         .limit(1)
-        .single()
-
-      if (snapErr || !snap) {
-        if (snapErr) {
-          console.warn(
-            '[Weave reflect] snapshot query failed',
-            snapErr.code ?? '',
-            snapErr.message ?? '',
-            snapErr,
-          )
-        }
-        setError(
-          snapErr?.code
-            ? `No snapshots found (${snapErr.code})`
-            : 'No snapshots found',
-        )
-        setLoading(false)
-        return
+        .maybeSingle()
+      if (cancelled || error || !data) return
+      const real = reflectionFromSnapshot(data as Snapshot)
+      if (real) {
+        setReflection(real)
+        setActiveId(real.id)
       }
-
-      setSnapshot(snap as Snapshot)
-
-      // Fetch content summaries for all member nodes
-      const clusters = (snap.clusters ?? []) as ClusterObj[]
-      const allKeys = new Set<string>()
-      for (const c of clusters) {
-        for (const key of c.member_node_ids) allKeys.add(key)
-      }
-
-      const boardIds = [...new Set([...allKeys].map((k) => k.slice(0, k.indexOf(':'))))]
-      if (boardIds.length > 0) {
-        const { data: embRows } = await supabase!
-          .from('weave_embeddings')
-          .select('board_id, node_id, node_type, content_summary')
-          .in('board_id', boardIds)
-          .is('archived_at', null)
-
-        const lookup = new Map<string, ContentEntry>()
-        for (const row of embRows ?? []) {
-          lookup.set(`${row.board_id}:${row.node_id}`, {
-            nodeType: row.node_type,
-            summary: row.content_summary,
-          })
-        }
-        setContentLookup(lookup)
-      }
-
-      setLoading(false)
     }
-
-    load()
+    void load()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const toggleCluster = useCallback((clusterId: string) => {
-    setExpandedClusters((prev) => {
-      const next = new Set(prev)
-      if (next.has(clusterId)) next.delete(clusterId)
-      else next.add(clusterId)
-      return next
-    })
-  }, [])
+  const accent = MODE_ACCENT[reflection.mode]
+  const reflections: Reflection[] = useMemo(() => [reflection], [reflection])
 
-  const toggleNode = useCallback((nodeKey: string) => {
-    setExpandedNodes((prev) => {
-      const next = new Set(prev)
-      if (next.has(nodeKey)) next.delete(nodeKey)
-      else next.add(nodeKey)
-      return next
-    })
-  }, [])
-
-  if (loading) {
-    return (
-      <div className="w-screen h-screen flex items-center justify-center bg-white">
-        <p className="text-gray-400 text-lg">Loading...</p>
-      </div>
-    )
-  }
-
-  if (error || !snapshot) {
-    return (
-      <div className="w-screen h-screen flex flex-col items-center justify-center bg-white gap-4">
-        <p className="text-gray-400 text-lg">{error ?? 'Something went wrong'}</p>
-        <button
-          onClick={() => onBack()}
-          className="text-sm text-gray-500 hover:text-gray-700 underline cursor-pointer"
-        >
-          Back to canvas
-        </button>
-      </div>
-    )
-  }
-
-  const clusters = (snapshot.clusters ?? []) as ClusterObj[]
-  const hasThemes = clusters.some((c) => c.theme_description && c.theme_description.length > 0)
-
-  if (clusters.length === 0 || !hasThemes) {
-    return (
-      <div className="w-screen h-screen flex flex-col items-center justify-center bg-white gap-4">
-        <p className="text-gray-400 text-lg">
-          No reflections yet. Run the reasoning layer to generate themes.
-        </p>
-        <button
-          onClick={() => onBack()}
-          className="text-sm text-gray-500 hover:text-gray-700 underline cursor-pointer"
-        >
-          Back to canvas
-        </button>
-      </div>
-    )
-  }
-
-  // Sort by size descending
-  const sorted = [...clusters].sort((a, b) => b.size - a.size)
-  const totalPieces = sorted.reduce((sum, c) => sum + c.size, 0)
-  const snapshotDate = new Date(snapshot.created_at)
-  const formattedDate = snapshotDate.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  const [firstChar, ...firstRest] = reflection.paragraphs[0] ?? ['']
+  const firstParagraphRest = firstRest.join('')
 
   return (
-    <div className="w-screen h-screen bg-white overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-6 py-12">
-        {/* Header */}
-        <div className="mb-12">
-          <button
-            onClick={() => onBack()}
-            className="text-sm text-gray-400 hover:text-gray-600 mb-6 cursor-pointer"
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        background: 'var(--w-paper)',
+        color: 'var(--w-ink)',
+        fontFamily: 'var(--w-font-sans)',
+        overflow: 'hidden',
+      }}
+    >
+      {/* Subtle warm wash */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          background:
+            'radial-gradient(ellipse at 50% 0%, var(--w-standard-bg-soft) 0%, transparent 55%)',
+          opacity: 0.66,
+        }}
+      />
+
+      {/* Local context bar — sits directly under BrandChrome (52px) */}
+      <div
+        className="flex items-center justify-between"
+        style={{
+          position: 'absolute',
+          top: 52,
+          left: 0,
+          right: 0,
+          height: 56,
+          padding: '0 28px',
+          zIndex: 10,
+        }}
+      >
+        <button
+          type="button"
+          onClick={onBack}
+          className="cursor-pointer"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'transparent',
+            border: 'none',
+            padding: 0,
+            fontFamily: 'var(--w-font-sans)',
+            fontSize: 13,
+            color: 'var(--w-ink-soft)',
+          }}
+        >
+          <span>{'← Back to canvas'}</span>
+          <span
+            style={{
+              fontFamily: 'var(--w-font-display)',
+              fontStyle: 'italic',
+              color: 'var(--w-ink-faint)',
+            }}
           >
-            &larr; Back to canvas
-          </button>
-          <h1 className="text-2xl font-light text-gray-900 mb-2">Reflect</h1>
-          <p className="text-sm text-gray-400">
-            {sorted.length} threads found across {totalPieces} pieces
-            <span className="mx-2">&middot;</span>
-            {formattedDate}
-          </p>
-        </div>
+            {boardName}
+          </span>
+        </button>
+        <span
+          style={{
+            fontFamily: 'var(--w-font-mono)',
+            fontSize: 10,
+            letterSpacing: 0.8,
+            color: 'var(--w-ink-faint)',
+            textTransform: 'uppercase',
+          }}
+        >
+          Reflect
+        </span>
+      </div>
 
-        {/* Narrative synthesis — shown above the cluster evidence */}
-        {snapshot.narrative && snapshot.narrative.trim().length > 0 && (
-          <div className="mb-16 space-y-4">
-            {snapshot.narrative
-              .split(/\n\s*\n/)
-              .map((para) => para.trim())
-              .filter((para) => para.length > 0)
-              .map((para, i) => (
-                <p
-                  key={i}
-                  className="text-base text-gray-800 leading-relaxed"
-                >
-                  {decodeHtmlEntities(para)}
-                </p>
-              ))}
-          </div>
-        )}
-
-        {/* Clusters */}
-        <div className="space-y-10">
-          {sorted.map((cluster) => {
-            const isExpanded = expandedClusters.has(cluster.cluster_id)
-            const anchorSet = new Set(cluster.anchor_node_ids)
-
+      {/* Left spine — snapshot history */}
+      <aside
+        style={{
+          position: 'absolute',
+          left: 28,
+          top: 52 + 90,
+          bottom: 40,
+          width: 140,
+          zIndex: 1,
+        }}
+      >
+        <h2
+          style={{
+            margin: 0,
+            marginBottom: 14,
+            fontFamily: 'var(--w-font-mono)',
+            fontSize: 10,
+            letterSpacing: 0.8,
+            color: 'var(--w-ink-faint)',
+            textTransform: 'uppercase',
+            fontWeight: 500,
+          }}
+        >
+          Reflections
+        </h2>
+        <nav className="flex flex-col">
+          {reflections.map((r) => {
+            const isActive = r.id === activeId
             return (
-              <div key={cluster.cluster_id} className="border-t border-gray-100 pt-8">
-                {/* Theme description */}
-                <p className="text-base text-gray-800 leading-relaxed mb-3">
-                  {decodeHtmlEntities(cluster.theme_description)}
-                </p>
-
-                {/* Metadata line */}
-                <p className="text-xs text-gray-400 mb-2">
-                  {cluster.size} pieces across{' '}
-                  {cluster.boards_touched.length} board{cluster.boards_touched.length !== 1 ? 's' : ''}
-                </p>
-
-                {/* Expand/collapse toggle */}
-                <button
-                  onClick={() => toggleCluster(cluster.cluster_id)}
-                  className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer"
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => setActiveId(r.id)}
+                className="text-left cursor-pointer"
+                style={{
+                  display: 'block',
+                  padding: '10px 0 10px 14px',
+                  background: 'transparent',
+                  border: 'none',
+                  borderLeft: `2px solid ${
+                    isActive ? MODE_ACCENT[r.mode] : 'var(--w-line)'
+                  }`,
+                  opacity: isActive ? 1 : 0.55,
+                  transition: 'opacity 200ms ease, border-color 200ms ease',
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: 'var(--w-font-display)',
+                    fontStyle: 'italic',
+                    fontSize: 13,
+                    color: 'var(--w-ink)',
+                    lineHeight: 1.25,
+                    marginBottom: 4,
+                  }}
                 >
-                  {isExpanded ? 'Hide pieces' : 'Show pieces'}
-                </button>
-
-                {/* Member nodes (collapsed by default) */}
-                {isExpanded && (
-                  <div className="mt-4 space-y-3 pl-3 border-l border-gray-100">
-                    {cluster.member_node_ids.map((key) => {
-                      const entry = contentLookup.get(key)
-                      const isAnchor = anchorSet.has(key)
-                      const summary = entry?.summary ?? null
-                      const nodeType = entry?.nodeType ?? 'unknown'
-                      const isLong = summary !== null && summary.length > 200
-                      const isNodeExpanded = expandedNodes.has(key)
-
-                      const colonIdx = key.indexOf(':')
-                      const boardId = key.slice(0, colonIdx)
-                      const nodeId = key.slice(colonIdx + 1)
-
-                      return (
-                        <div key={key} className="text-sm">
-                          <span className="text-xs text-gray-300 mr-1">
-                            {isAnchor ? '★' : ''}
-                          </span>
-                          <button
-                            onClick={() => onBack({ boardId, nodeId })}
-                            className="text-xs text-gray-400 hover:text-gray-600 hover:underline mr-2 cursor-pointer"
-                            title="Go to this node on the canvas"
-                          >
-                            [{nodeType}]
-                          </button>
-                          {summary ? (
-                            <>
-                              <span className="text-gray-600">
-                                {isLong && !isNodeExpanded
-                                  ? decodeHtmlEntities(summary.slice(0, 200)) + '...'
-                                  : decodeHtmlEntities(summary)}
-                              </span>
-                              {isLong && (
-                                <button
-                                  onClick={() => toggleNode(key)}
-                                  className="text-xs text-gray-400 hover:text-gray-600 ml-1 cursor-pointer"
-                                >
-                                  {isNodeExpanded ? 'show less' : 'show more'}
-                                </button>
-                              )}
-                            </>
-                          ) : (
-                            <span className="text-gray-400 italic">
-                              visual content — no text description
-                            </span>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
+                  {r.title}
+                </div>
+                <div
+                  style={{
+                    fontFamily: 'var(--w-font-mono)',
+                    fontSize: 9.5,
+                    color: 'var(--w-ink-faint)',
+                    letterSpacing: 0.4,
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {r.shortDate}
+                </div>
+              </button>
             )
           })}
+        </nav>
+      </aside>
+
+      {/* Reading column */}
+      <article
+        style={{
+          position: 'absolute',
+          left: 220,
+          right: 220,
+          top: 52 + 90,
+          bottom: 40,
+          overflowY: 'auto',
+          zIndex: 1,
+        }}
+      >
+        <div
+          className="flex items-center"
+          style={{
+            gap: 20,
+            marginBottom: 18,
+            fontFamily: 'var(--w-font-mono)',
+            fontSize: 10.5,
+            letterSpacing: 0.8,
+            color: 'var(--w-ink-faint)',
+            textTransform: 'uppercase',
+          }}
+        >
+          <span>{reflection.longDate}</span>
+          <span style={{ color: accent }}>
+            {`● ${reflection.threadCount} THREADS · ${reflection.pieceCount} PIECES`}
+          </span>
         </div>
 
-        {/* Footer spacer */}
-        <div className="h-24" />
-      </div>
+        <h1
+          style={{
+            margin: 0,
+            marginBottom: 32,
+            fontFamily: 'var(--w-font-display)',
+            fontSize: 38,
+            fontWeight: 400,
+            letterSpacing: '-0.5px',
+            lineHeight: 1.1,
+            color: 'var(--w-ink)',
+          }}
+        >
+          {reflection.title}
+        </h1>
+
+        {reflection.paragraphs.map((para, i) => {
+          if (i === 0) {
+            return (
+              <p
+                key={i}
+                style={{
+                  margin: 0,
+                  marginBottom: 22,
+                  fontFamily: 'var(--w-font-display)',
+                  fontSize: 17.5,
+                  lineHeight: 1.65,
+                  color: 'var(--w-ink)',
+                }}
+              >
+                <span
+                  style={{
+                    float: 'left',
+                    fontFamily: 'var(--w-font-display)',
+                    fontSize: 64,
+                    fontWeight: 500,
+                    lineHeight: 0.9,
+                    color: 'var(--w-standard-accent)',
+                    marginRight: 10,
+                    marginTop: 6,
+                    marginBottom: -6,
+                    letterSpacing: '-2px',
+                  }}
+                >
+                  {firstChar}
+                </span>
+                {firstParagraphRest}
+              </p>
+            )
+          }
+          return (
+            <p
+              key={i}
+              style={{
+                margin: 0,
+                marginBottom: 22,
+                fontFamily: 'var(--w-font-display)',
+                fontSize: 17.5,
+                lineHeight: 1.65,
+                color: 'var(--w-ink)',
+              }}
+            >
+              {para}
+            </p>
+          )
+        })}
+
+        <div
+          className="flex items-center"
+          style={{ marginTop: 24, gap: 10 }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 24,
+              height: 1,
+              background: 'var(--w-line)',
+            }}
+          />
+          <span
+            style={{
+              fontFamily: 'var(--w-font-mono)',
+              fontSize: 11,
+              color: 'var(--w-ink-faint)',
+              letterSpacing: 0.5,
+            }}
+          >
+            woven from {reflection.threadCount} themes
+          </span>
+        </div>
+
+        <div
+          className="flex flex-wrap"
+          style={{ marginTop: 14, columnGap: 14, rowGap: 6 }}
+        >
+          {reflection.themes.map((theme, i) => (
+            <span
+              key={`${theme}-${i}`}
+              style={{
+                fontFamily: 'var(--w-font-display)',
+                fontStyle: 'italic',
+                fontSize: 13.5,
+                color: 'var(--w-ink-soft)',
+              }}
+            >
+              {theme}
+              {i < reflection.themes.length - 1 && (
+                <span
+                  aria-hidden="true"
+                  style={{
+                    color: 'var(--w-ink-faint)',
+                    marginLeft: 14,
+                  }}
+                >
+                  {'·'}
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+
+        <div style={{ height: 60 }} />
+      </article>
     </div>
   )
-}
-
-/**
- * Decode common HTML entities that appear in tweet text and web content.
- */
-function decodeHtmlEntities(text: string): string {
-  const textarea = document.createElement('textarea')
-  textarea.innerHTML = text
-  return textarea.value
 }

@@ -573,27 +573,6 @@ export function App() {
     return () => document.removeEventListener('paste', handlePaste)
   }, [setNodes, currentBoard.id])
 
-  if (view === 'reflect') {
-    return (
-      <>
-        <ReflectView onBack={(target) => {
-          if (target) {
-            handleSwitchBoard(target.boardId)
-            setTimeout(() => {
-              reactFlowRef.current?.fitView({
-                nodes: [{ id: target.nodeId }],
-                duration: 500,
-                padding: 0.5,
-              })
-            }, 150)
-          }
-          setView('canvas')
-        }} />
-        <DevEnvBadge />
-      </>
-    )
-  }
-
   if (hydrationError) {
     return (
       <div className="w-screen h-screen flex items-center justify-center bg-gray-50">
@@ -629,31 +608,77 @@ export function App() {
     <div className="w-screen h-screen relative">
       <HighlightContext.Provider value={highlightState}>
       <EdgeLabelClickContext.Provider value={onLabelClick}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
-        onInit={(instance) => {
-          reactFlowRef.current = instance
-        }}
-        onDrop={onDrop}
-        onDragOver={onDragOver}
-        onNodeClick={handleNodeClick}
-        onPaneClick={clearHighlight}
-        fitView
-        proOptions={{ hideAttribution: true }}
-      >
-        <Controls position="bottom-right" />
-        {nodes.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <p className="text-gray-400 text-lg font-light select-none">
-              Drop content or click + to begin
-            </p>
-          </div>
-        )}
-      </ReactFlow>
+      {view === 'canvas' && (
+        <>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            onNodesChange={onNodesChange}
+            onInit={(instance) => {
+              reactFlowRef.current = instance
+            }}
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            onNodeClick={handleNodeClick}
+            onPaneClick={clearHighlight}
+            fitView
+            proOptions={{ hideAttribution: true }}
+          >
+            <Controls position="bottom-right" />
+            {nodes.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <p className="text-gray-400 text-lg font-light select-none">
+                  Drop content or click + to begin
+                </p>
+              </div>
+            )}
+          </ReactFlow>
+          <BrandDropRail>
+            <AddNodeButton />
+          </BrandDropRail>
+          <WeaveButton
+            connections={connections}
+            activeLayer={activeLayer}
+            onLayerChange={setActiveLayer}
+            onResult={(result, mode) => {
+              clearHighlight()
+              // Normalise ids at ingest: Claude sometimes emits
+              // `node-N` (self-propagating once it lands in the
+              // existing-connection context). Strip the prefix so
+              // state, localStorage, edge jsonb, and context loopback
+              // are all uniformly bare. Breaks the format lottery.
+              const normalised = result.connections.map((c) => ({
+                ...c,
+                from: c.from.replace(/^node-/, ''),
+                to: c.to.replace(/^node-/, ''),
+              }))
+              setConnections((prev) => [...prev, ...normalised])
+              setActiveLayer(mode)
+            }}
+            onClear={() => {
+              clearHighlight()
+              setConnections([])
+              setActiveLayer('weave')
+            }}
+          />
+          {popupEdge && (
+            <EdgeDetailPopup
+              connection={popupEdge.connection}
+              position={popupEdge.position}
+              connectionNumber={connections.indexOf(popupEdge.connection) + 1}
+              onClose={closeEdgeDetail}
+            />
+          )}
+        </>
+      )}
+      {view === 'reflect' && (
+        <ReflectView
+          onBack={() => setView('canvas')}
+          boardName={currentBoard.name}
+        />
+      )}
       </EdgeLabelClickContext.Provider>
       </HighlightContext.Provider>
       <BrandChrome
@@ -674,42 +699,6 @@ export function App() {
         }
         userMenu={<UserMenu />}
       />
-      <BrandDropRail>
-        <AddNodeButton />
-      </BrandDropRail>
-      <WeaveButton
-        connections={connections}
-        activeLayer={activeLayer}
-        onLayerChange={setActiveLayer}
-        onResult={(result, mode) => {
-          clearHighlight()
-          // Normalise ids at ingest: Claude sometimes emits
-          // `node-N` (self-propagating once it lands in the
-          // existing-connection context). Strip the prefix so
-          // state, localStorage, edge jsonb, and context loopback
-          // are all uniformly bare. Breaks the format lottery.
-          const normalised = result.connections.map((c) => ({
-            ...c,
-            from: c.from.replace(/^node-/, ''),
-            to: c.to.replace(/^node-/, ''),
-          }))
-          setConnections((prev) => [...prev, ...normalised])
-          setActiveLayer(mode)
-        }}
-        onClear={() => {
-          clearHighlight()
-          setConnections([])
-          setActiveLayer('weave')
-        }}
-      />
-      {popupEdge && (
-        <EdgeDetailPopup
-          connection={popupEdge.connection}
-          position={popupEdge.position}
-          connectionNumber={connections.indexOf(popupEdge.connection) + 1}
-          onClose={closeEdgeDetail}
-        />
-      )}
       <HydrationSourceIndicator />
       <DevEnvBadge />
       {saveError && (
