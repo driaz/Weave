@@ -1,9 +1,26 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import type { BoardSummary } from '../hooks/useBoardStorage'
 
+const MODE_DOT_COLORS = [
+  'var(--w-standard-accent)',
+  'var(--w-deeper-accent)',
+  'var(--w-tensions-accent)',
+] as const
+
+function dotColorForBoard(boardId: string, index: number): string {
+  // Stable color rotation: prefer index, but fall back to a cheap hash of
+  // the id so a board's dot color survives reordering.
+  const seed =
+    index >= 0
+      ? index
+      : Array.from(boardId).reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
+  return MODE_DOT_COLORS[seed % MODE_DOT_COLORS.length]
+}
+
 type BoardSwitcherProps = {
   currentBoardId: string
   currentBoardName: string
+  currentNodeCount: number
   allBoards: BoardSummary[]
   onCreateBoard: () => string
   onSwitchBoard: (boardId: string) => void
@@ -14,6 +31,7 @@ type BoardSwitcherProps = {
 export function BoardSwitcher({
   currentBoardId,
   currentBoardName,
+  currentNodeCount,
   allBoards,
   onCreateBoard,
   onSwitchBoard,
@@ -27,7 +45,6 @@ export function BoardSwitcher({
   const [pendingRenameId, setPendingRenameId] = useState<string | null>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
 
-  // Escape to close
   useEffect(() => {
     if (!open) return
     const handleEscape = (e: KeyboardEvent) => {
@@ -47,7 +64,6 @@ export function BoardSwitcher({
     setConfirmDeleteId(null)
   }, [])
 
-  // Focus rename input when entering rename mode
   useEffect(() => {
     if (renamingId && renameInputRef.current) {
       renameInputRef.current.focus()
@@ -55,7 +71,6 @@ export function BoardSwitcher({
     }
   }, [renamingId])
 
-  // Enter rename mode when a newly created board appears in the list
   useEffect(() => {
     if (!pendingRenameId) return
     const board = allBoards.find((b) => b.id === pendingRenameId)
@@ -66,7 +81,6 @@ export function BoardSwitcher({
     }
   }, [pendingRenameId, allBoards])
 
-  // Reset confirm delete after timeout
   useEffect(() => {
     if (!confirmDeleteId) return
     const timer = setTimeout(() => setConfirmDeleteId(null), 3000)
@@ -112,99 +126,237 @@ export function BoardSwitcher({
     <div className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200
-          rounded-lg shadow-sm hover:shadow-md transition-shadow duration-150
-          text-sm text-gray-700 cursor-pointer select-none"
+        className="flex items-center select-none cursor-pointer transition-colors duration-150"
+        style={{
+          gap: 10,
+          padding: '7px 12px 7px 14px',
+          borderRadius: 8,
+          background: open ? 'var(--w-paper-dim)' : 'transparent',
+          border: 'none',
+        }}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="max-w-[160px] truncate">{currentBoardName}</span>
-        <svg
-          className={`w-3 h-3 text-gray-400 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
+        <span
+          className="truncate"
+          style={{
+            fontFamily: 'var(--w-font-display)',
+            fontSize: 15,
+            fontWeight: 600,
+            letterSpacing: '-0.2px',
+            color: 'var(--w-ink)',
+            maxWidth: 180,
+          }}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          {currentBoardName}
+        </span>
+        <span
+          style={{
+            fontFamily: 'var(--w-font-mono)',
+            fontSize: 10,
+            color: 'var(--w-ink-faint)',
+            padding: '2px 6px',
+            borderRadius: 4,
+            background: 'var(--w-paper-dim)',
+          }}
+        >
+          {currentNodeCount}
+        </span>
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          fill="none"
+          style={{
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform 150ms ease',
+          }}
+        >
+          <path
+            d="M 2 4 L 5 7 L 8 4"
+            stroke="var(--w-ink-soft)"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+          />
         </svg>
       </button>
 
       {open && (
         <>
-        <div
-          className="fixed inset-0 z-40"
-          onClick={closeMenu}
-          aria-hidden="true"
-        />
-        <div
-          className="absolute top-full left-0 mt-1 bg-white border border-gray-200
-            rounded-lg shadow-md py-1 min-w-[220px] z-50"
-          role="listbox"
-        >
-          {allBoards.map((board) => (
-            <div
-              key={board.id}
-              className={`group flex items-center gap-1 px-3 py-1.5 cursor-pointer
-                ${board.id === currentBoardId ? 'bg-gray-50' : 'hover:bg-gray-50'}`}
-              role="option"
-              aria-selected={board.id === currentBoardId}
-              onClick={() => {
-                if (renamingId || board.id === currentBoardId) return
-                onSwitchBoard(board.id)
-                setOpen(false)
-              }}
-              onDoubleClick={() => handleRenameStart(board.id, board.name)}
-            >
-              {renamingId === board.id ? (
-                <input
-                  ref={renameInputRef}
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onBlur={handleRenameConfirm}
-                  onKeyDown={handleRenameKeyDown}
-                  className="flex-1 text-sm text-gray-700 bg-white border border-blue-300
-                    rounded px-1 py-0 outline-none min-w-0"
-                />
-              ) : (
-                <span className="flex-1 text-sm text-gray-700 truncate min-w-0">
-                  {board.name}
-                </span>
-              )}
-
-              {allBoards.length > 1 && renamingId !== board.id && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDelete(board.id)
+          <div
+            className="fixed inset-0"
+            style={{ zIndex: 40 }}
+            onClick={closeMenu}
+            aria-hidden="true"
+          />
+          <div
+            className="absolute"
+            style={{
+              top: 'calc(100% + 6px)',
+              left: 0,
+              width: 280,
+              background: 'var(--w-card)',
+              borderRadius: 'var(--w-radius-md)',
+              boxShadow: 'var(--w-shadow-float)',
+              border: '1px solid var(--w-line)',
+              padding: 6,
+              zIndex: 50,
+            }}
+            role="listbox"
+          >
+            {allBoards.map((board, index) => {
+              const isActive = board.id === currentBoardId
+              const dot = dotColorForBoard(board.id, index)
+              return (
+                <div
+                  key={board.id}
+                  className="group flex items-center cursor-pointer transition-colors duration-150"
+                  style={{
+                    gap: 10,
+                    padding: '8px 10px',
+                    borderRadius: 'var(--w-radius-sm)',
+                    background: isActive ? 'var(--w-paper-dim)' : 'transparent',
                   }}
-                  className={`shrink-0 text-[10px] px-1 rounded transition-colors duration-150
-                    ${
-                      confirmDeleteId === board.id
-                        ? 'text-red-600 bg-red-50'
-                        : 'text-gray-300 hover:text-gray-500 opacity-0 group-hover:opacity-100'
-                    }`}
-                  aria-label={`Delete ${board.name}`}
+                  onMouseEnter={(e) => {
+                    if (!isActive)
+                      e.currentTarget.style.background = 'var(--w-paper-dim)'
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isActive)
+                      e.currentTarget.style.background = 'transparent'
+                  }}
+                  role="option"
+                  aria-selected={isActive}
+                  onClick={() => {
+                    if (renamingId || isActive) return
+                    onSwitchBoard(board.id)
+                    setOpen(false)
+                  }}
+                  onDoubleClick={() => handleRenameStart(board.id, board.name)}
                 >
-                  {confirmDeleteId === board.id ? 'Delete?' : '×'}
-                </button>
-              )}
-            </div>
-          ))}
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: 999,
+                      background: dot,
+                      flexShrink: 0,
+                    }}
+                  />
+                  {renamingId === board.id ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={handleRenameConfirm}
+                      onKeyDown={handleRenameKeyDown}
+                      className="flex-1 outline-none min-w-0"
+                      style={{
+                        fontFamily: 'var(--w-font-sans)',
+                        fontSize: 13,
+                        fontWeight: 500,
+                        color: 'var(--w-ink)',
+                        background: 'var(--w-card)',
+                        border: '1px solid var(--w-line)',
+                        borderRadius: 4,
+                        padding: '1px 4px',
+                      }}
+                    />
+                  ) : (
+                    <span
+                      className="flex-1 truncate min-w-0"
+                      style={{
+                        fontFamily: 'var(--w-font-sans)',
+                        fontSize: 13,
+                        fontWeight: isActive ? 600 : 500,
+                        color: 'var(--w-ink)',
+                      }}
+                    >
+                      {board.name}
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      fontFamily: 'var(--w-font-mono)',
+                      fontSize: 10,
+                      color: 'var(--w-ink-faint)',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {board.nodeCount}
+                  </span>
+                  {allBoards.length > 1 && renamingId !== board.id && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDelete(board.id)
+                      }}
+                      className="shrink-0 transition-opacity duration-150 cursor-pointer"
+                      style={{
+                        fontFamily: 'var(--w-font-sans)',
+                        fontSize: 10,
+                        padding: '0 4px',
+                        borderRadius: 4,
+                        border: 'none',
+                        background:
+                          confirmDeleteId === board.id
+                            ? 'var(--w-tensions-bg-soft)'
+                            : 'transparent',
+                        color:
+                          confirmDeleteId === board.id
+                            ? 'var(--w-tensions-accent)'
+                            : 'var(--w-ink-faint)',
+                        opacity: confirmDeleteId === board.id ? 1 : 0,
+                      }}
+                      onMouseEnter={(e) => {
+                        if (confirmDeleteId !== board.id)
+                          e.currentTarget.style.opacity = '1'
+                      }}
+                      onMouseLeave={(e) => {
+                        if (confirmDeleteId !== board.id)
+                          e.currentTarget.style.opacity = '0'
+                      }}
+                      aria-label={`Delete ${board.name}`}
+                    >
+                      {confirmDeleteId === board.id ? 'Delete?' : '×'}
+                    </button>
+                  )}
+                </div>
+              )
+            })}
 
-          <div className="border-t border-gray-100 mt-1 pt-1">
             <button
               onClick={() => {
                 const newId = onCreateBoard()
                 setPendingRenameId(newId)
               }}
-              className="w-full text-left px-3 py-1.5 text-sm text-gray-500
-                hover:bg-gray-50 hover:text-gray-700 transition-colors duration-150 cursor-pointer"
+              className="w-full text-left cursor-pointer transition-colors duration-150"
+              style={{
+                marginTop: 4,
+                padding: '8px 10px',
+                borderTop: '1px solid var(--w-line-soft)',
+                fontFamily: 'var(--w-font-sans)',
+                fontSize: 13,
+                color: 'var(--w-standard-accent)',
+                background: 'transparent',
+                border: 'none',
+                borderTopWidth: 1,
+                borderTopStyle: 'solid',
+                borderTopColor: 'var(--w-line-soft)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--w-standard-bg-soft)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
             >
-              + New Board
+              <span style={{ fontWeight: 600 }}>+</span> New board
             </button>
           </div>
-        </div>
         </>
       )}
     </div>

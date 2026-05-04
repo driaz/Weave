@@ -263,9 +263,22 @@ export function AddNodeButton() {
           onClick={closeMenu}
           aria-hidden="true"
         />
-        <div className="absolute bottom-12 left-0 z-50 bg-white rounded-lg border border-gray-200 shadow-md py-1 min-w-[140px]">
+        <div
+          className="absolute"
+          style={{
+            top: 0,
+            left: 'calc(100% + 8px)',
+            zIndex: 50,
+            background: 'var(--w-card)',
+            borderRadius: 'var(--w-radius-md)',
+            border: '1px solid var(--w-line)',
+            boxShadow: 'var(--w-shadow-float)',
+            padding: 6,
+            minWidth: 160,
+          }}
+        >
           {linkInputMode ? (
-            <div className="px-3 py-2">
+            <div style={{ padding: '6px 10px', minWidth: 220 }}>
               <input
                 ref={linkInputRef}
                 type="url"
@@ -277,36 +290,112 @@ export function AddNodeButton() {
                 }}
                 placeholder="Paste a URL..."
                 disabled={fetchingLink}
-                className="w-full text-sm text-gray-700 bg-transparent outline-none placeholder:text-gray-400 min-w-[200px]"
+                className="w-full outline-none"
+                style={{
+                  fontFamily: 'var(--w-font-sans)',
+                  fontSize: 13,
+                  color: 'var(--w-ink)',
+                  background: 'transparent',
+                  border: 'none',
+                }}
                 aria-label="URL for link card"
               />
               {fetchingLink && (
-                <p className="text-xs text-gray-400 mt-1">Fetching...</p>
+                <p
+                  style={{
+                    marginTop: 4,
+                    fontSize: 11,
+                    fontFamily: 'var(--w-font-mono)',
+                    color: 'var(--w-ink-faint)',
+                  }}
+                >
+                  Fetching...
+                </p>
               )}
             </div>
           ) : (
             <>
               <button
                 onClick={handleAddText}
-                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
+                className="w-full text-left cursor-pointer transition-colors duration-150"
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  fontFamily: 'var(--w-font-sans)',
+                  color: 'var(--w-ink)',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: 'var(--w-radius-sm)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--w-paper-dim)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                }}
               >
                 Text Card
               </button>
               <button
                 onClick={handleAddImage}
-                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
+                className="w-full text-left cursor-pointer transition-colors duration-150"
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  fontFamily: 'var(--w-font-sans)',
+                  color: 'var(--w-ink)',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: 'var(--w-radius-sm)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--w-paper-dim)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                }}
               >
                 Image Card
               </button>
               <button
                 onClick={() => setLinkInputMode(true)}
-                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
+                className="w-full text-left cursor-pointer transition-colors duration-150"
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  fontFamily: 'var(--w-font-sans)',
+                  color: 'var(--w-ink)',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: 'var(--w-radius-sm)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--w-paper-dim)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                }}
               >
                 Link Card
               </button>
               <button
                 onClick={handleAddPdf}
-                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
+                className="w-full text-left cursor-pointer transition-colors duration-150"
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  fontFamily: 'var(--w-font-sans)',
+                  color: 'var(--w-ink)',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: 'var(--w-radius-sm)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--w-paper-dim)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                }}
               >
                 PDF Card
               </button>
@@ -317,7 +406,19 @@ export function AddNodeButton() {
       )}
       <button
         onClick={() => setMenuOpen(!menuOpen)}
-        className="w-10 h-10 rounded-full bg-white border border-gray-200 shadow-sm flex items-center justify-center text-gray-400 text-2xl font-light hover:text-gray-700 hover:shadow-md hover:border-gray-300 hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer"
+        className="flex items-center justify-center cursor-pointer transition-transform duration-150 hover:scale-105 active:scale-95"
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: 8,
+          background: 'var(--w-standard-bg-soft)',
+          color: 'var(--w-standard-accent)',
+          fontSize: 18,
+          fontWeight: 700,
+          fontFamily: 'var(--w-font-sans)',
+          lineHeight: 1,
+          border: 'none',
+        }}
         aria-label="Add new card"
         aria-expanded={menuOpen}
         aria-haspopup="true"

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ReactFlow,
+  ReactFlowProvider,
   Controls,
   Panel,
   type Node,
@@ -22,6 +23,8 @@ import {
 } from './components/WeaveEdge'
 import { EdgeDetailPopup } from './components/EdgeDetailPopup'
 import { BoardSwitcher } from './components/BoardSwitcher'
+import { BrandChrome } from './components/BrandChrome'
+import { BrandDropRail } from './components/BrandDropRail'
 import { ReflectView } from './components/ReflectView'
 import { UserMenu } from './components/UserMenu'
 import { HydrationSourceIndicator } from './components/HydrationSourceIndicator'
@@ -623,6 +626,7 @@ export function App() {
   return (
     <BoardIdContext.Provider value={currentBoard.id}>
     <CancelNodeSelectContext.Provider value={cancelPendingNodeSelect}>
+    <ReactFlowProvider>
     <div className="w-screen h-screen relative">
       <HighlightContext.Provider value={highlightState}>
       <EdgeLabelClickContext.Provider value={onLabelClick}>
@@ -643,7 +647,7 @@ export function App() {
         proOptions={{ hideAttribution: true }}
       >
         <Controls position="bottom-right" />
-        <Panel position="top-center">
+        <Panel position="top-center" style={{ top: 64 }}>
           <WeaveButton
             connections={connections}
             activeLayer={activeLayer}
@@ -670,31 +674,6 @@ export function App() {
             }}
           />
         </Panel>
-        <Panel position="top-left">
-          <BoardSwitcher
-            currentBoardId={currentBoard.id}
-            currentBoardName={currentBoard.name}
-            allBoards={allBoards}
-            onCreateBoard={handleCreateBoard}
-            onSwitchBoard={handleSwitchBoard}
-            onRenameBoard={renameBoard}
-            onDeleteBoard={deleteBoard}
-          />
-        </Panel>
-        <Panel position="top-right">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setView('reflect')}
-              className="px-3 py-1.5 text-xs text-gray-500 bg-white/90 border border-gray-200 rounded-md hover:text-gray-700 hover:border-gray-300 shadow-sm cursor-pointer"
-            >
-              Reflect
-            </button>
-            <UserMenu />
-          </div>
-        </Panel>
-        <Panel position="bottom-left">
-          <AddNodeButton />
-        </Panel>
         {nodes.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <p className="text-gray-400 text-lg font-light select-none">
@@ -705,6 +684,27 @@ export function App() {
       </ReactFlow>
       </EdgeLabelClickContext.Provider>
       </HighlightContext.Provider>
+      <BrandChrome
+        view={view}
+        onViewChange={setView}
+        nodeCount={nodes.length}
+        boardSwitcher={
+          <BoardSwitcher
+            currentBoardId={currentBoard.id}
+            currentBoardName={currentBoard.name}
+            currentNodeCount={nodes.length}
+            allBoards={allBoards}
+            onCreateBoard={handleCreateBoard}
+            onSwitchBoard={handleSwitchBoard}
+            onRenameBoard={renameBoard}
+            onDeleteBoard={deleteBoard}
+          />
+        }
+        userMenu={<UserMenu />}
+      />
+      <BrandDropRail>
+        <AddNodeButton />
+      </BrandDropRail>
       {popupEdge && (
         <EdgeDetailPopup
           connection={popupEdge.connection}
@@ -718,6 +718,7 @@ export function App() {
         <SaveErrorToast message={saveError} onDismiss={dismissSaveError} />
       )}
     </div>
+    </ReactFlowProvider>
     </CancelNodeSelectContext.Provider>
     </BoardIdContext.Provider>
   )

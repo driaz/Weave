@@ -65,7 +65,12 @@ function stripLoadingFromLinkCards(nodes: SerializedNode[]): SerializedNode[] {
 
 function boardListFromStore(store: WeaveBoardsStore) {
   return Object.values(store.boards)
-    .map((b) => ({ id: b.id, name: b.name, updatedAt: b.updatedAt }))
+    .map((b) => ({
+      id: b.id,
+      name: b.name,
+      updatedAt: b.updatedAt,
+      nodeCount: b.nodes.length,
+    }))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
@@ -73,6 +78,7 @@ export type BoardSummary = {
   id: BoardId
   name: string
   updatedAt: string
+  nodeCount: number
 }
 
 export type UseBoardStorageResult = {
