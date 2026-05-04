@@ -1,6 +1,57 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
+:root {
+  /* Foundation */
+  --w-paper: #f5f1e8;
+  --w-paper-dim: #ece7da;
+  --w-ink: #2a2521;
+  --w-ink-soft: #6b6258;
+  --w-ink-faint: #a39a8d;
+  --w-line: rgba(42, 37, 33, 0.10);
+  --w-line-soft: rgba(42, 37, 33, 0.06);
+  --w-card: #ffffff;
+
+  /* Mode: Standard (amber/umber) */
+  --w-standard-ink: #5f4a2e;
+  --w-standard-bg: #f0dfb8;
+  --w-standard-bg-soft: #f8ecc8;
+  --w-standard-glow: rgba(201, 148, 47, 0.35);
+  --w-standard-accent: #c9942f;
+
+  /* Mode: Go Deeper (mossy green) */
+  --w-deeper-ink: #2d4a3e;
+  --w-deeper-bg: #c9dccd;
+  --w-deeper-bg-soft: #dfe9dd;
+  --w-deeper-glow: rgba(58, 115, 89, 0.35);
+  --w-deeper-accent: #3a7359;
+
+  /* Mode: Find Tensions (rust/rose) */
+  --w-tensions-ink: #6b2a24;
+  --w-tensions-bg: #f0c9be;
+  --w-tensions-bg-soft: #f6d8cf;
+  --w-tensions-glow: rgba(184, 76, 58, 0.35);
+  --w-tensions-accent: #b84c3a;
+
+  /* Shadows */
+  --w-shadow-lift: 0 1px 2px rgba(42, 37, 33, 0.05), 0 4px 12px rgba(42, 37, 33, 0.06);
+  --w-shadow-card: 0 1px 2px rgba(42, 37, 33, 0.04), 0 8px 24px rgba(42, 37, 33, 0.08);
+  --w-shadow-pop: 0 2px 4px rgba(42, 37, 33, 0.06), 0 12px 32px rgba(42, 37, 33, 0.12);
+  --w-shadow-float: 0 4px 8px rgba(42, 37, 33, 0.04), 0 24px 60px rgba(42, 37, 33, 0.14);
+
+  /* Typography */
+  --w-font-display: 'Fraunces', Georgia, serif;
+  --w-font-sans: 'Inter', -apple-system, sans-serif;
+  --w-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Radii */
+  --w-radius-sm: 6px;
+  --w-radius-md: 10px;
+  --w-radius-lg: 14px;
+  --w-radius-xl: 20px;
+  --w-radius-pill: 999px;
+}
+
 html,
 body,
 #root {
@@ -8,6 +59,25 @@ body,
   padding: 0;
   width: 100%;
   height: 100%;
+}
+
+html,
+body {
+  background-color: var(--w-paper);
+  color: var(--w-ink);
+  font-family: var(--w-font-sans);
+}
+
+.react-flow {
+  background-color: var(--w-paper);
+}
+
+.w-stripe-placeholder {
+  background: repeating-linear-gradient(
+    135deg,
+    #d9cfb8 0 10px,
+    #e8e0cf 10px 20px
+  );
 }
 
 @keyframes shimmer {

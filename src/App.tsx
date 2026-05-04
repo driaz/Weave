@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ReactFlow,
-  Background,
   Controls,
   Panel,
   type Node,
@@ -643,7 +642,6 @@ export function App() {
         fitView
         proOptions={{ hideAttribution: true }}
       >
-        <Background />
         <Controls position="bottom-right" />
         <Panel position="top-center">
           <WeaveButton
