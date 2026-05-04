@@ -1,66 +1,313 @@
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from 'react'
 import { useReactFlow } from '@xyflow/react'
 import type { WeaveMode } from '../types/board'
 import { analyzeCanvas, type Connection, type WeaveResult } from '../api/claude'
-import { getEdgeColor } from '../utils/edgeColors'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
 
 type WeaveState = 'idle' | 'loading' | 'error' | 'no-new'
 
-const MODE_CONFIG: Record<
-  WeaveMode,
-  { pill: string; button: string; loading: string }
-> = {
-  weave: { pill: 'Standard', button: 'Weave', loading: 'Weaving...' },
-  deeper: { pill: 'Go Deeper', button: 'Go Deeper', loading: 'Going deeper...' },
+type ModeMeta = {
+  label: string
+  hint: string
+  ink: string
+  bg: string
+  bgSoft: string
+  accent: string
+  glow: string
+  loading: string
+}
+
+const MODE_META: Record<WeaveMode, ModeMeta> = {
+  weave: {
+    label: 'Standard',
+    hint: 'FIND WHAT CONNECTS',
+    ink: 'var(--w-standard-ink)',
+    bg: 'var(--w-standard-bg)',
+    bgSoft: 'var(--w-standard-bg-soft)',
+    accent: 'var(--w-standard-accent)',
+    glow: 'var(--w-standard-glow)',
+    loading: 'Weaving…',
+  },
+  deeper: {
+    label: 'Go Deeper',
+    hint: "UNEARTH WHAT'S UNDERNEATH",
+    ink: 'var(--w-deeper-ink)',
+    bg: 'var(--w-deeper-bg)',
+    bgSoft: 'var(--w-deeper-bg-soft)',
+    accent: 'var(--w-deeper-accent)',
+    glow: 'var(--w-deeper-glow)',
+    loading: 'Going deeper…',
+  },
   tensions: {
-    pill: 'Find Tensions',
-    button: 'Find Tensions',
-    loading: 'Finding tensions...',
+    label: 'Find Tensions',
+    hint: 'SURFACE WHAT PULLS APART',
+    ink: 'var(--w-tensions-ink)',
+    bg: 'var(--w-tensions-bg)',
+    bgSoft: 'var(--w-tensions-bg-soft)',
+    accent: 'var(--w-tensions-accent)',
+    glow: 'var(--w-tensions-glow)',
+    loading: 'Finding tensions…',
   },
 }
 
-const TOGGLE_MODES: WeaveMode[] = ['weave', 'deeper', 'tensions']
+// `var(...)` strings can't be alpha-mixed, so the ring color uses the same
+// hex literal that the corresponding token resolves to. Keep these in sync
+// with the tokens in src/index.css.
+const MODE_ACCENT_HEX: Record<WeaveMode, string> = {
+  weave: '#c9942f',
+  deeper: '#3a7359',
+  tensions: '#b84c3a',
+}
+
+const ALL_MODES: WeaveMode[] = ['weave', 'deeper', 'tensions']
+
+function ModeGlyph({
+  mode,
+  size = 20,
+  color,
+}: {
+  mode: WeaveMode
+  size?: number
+  color: string
+}) {
+  const stroke = color
+  if (mode === 'weave') {
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 20 20"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path
+          d="M 3 6 Q 10 14, 17 6"
+          stroke={stroke}
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+        <path
+          d="M 3 14 Q 10 6, 17 14"
+          stroke={stroke}
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+      </svg>
+    )
+  }
+  if (mode === 'deeper') {
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 20 20"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path
+          d="M 10 3 L 10 11"
+          stroke={stroke}
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+        <path
+          d="M 10 11 Q 6 13, 4 17"
+          stroke={stroke}
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+        <path
+          d="M 10 11 Q 14 13, 16 17"
+          stroke={stroke}
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+        <circle cx="10" cy="3" r="1.8" fill={stroke} />
+      </svg>
+    )
+  }
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M 8 10 L 2 10"
+        stroke={stroke}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M 4 7 L 1 10 L 4 13"
+        stroke={stroke}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M 12 10 L 18 10"
+        stroke={stroke}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M 16 7 L 19 10 L 16 13"
+        stroke={stroke}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function ArrowNeedle({ color }: { color: string }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M 2 7 L 11 7"
+        stroke={color}
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M 8 4 L 11 7 L 8 10"
+        stroke={color}
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function Spinner({ color }: { color: string }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      style={{ animation: 'spin 0.9s linear infinite' }}
+      aria-hidden="true"
+    >
+      <circle
+        cx="8"
+        cy="8"
+        r="6"
+        stroke={color}
+        strokeOpacity="0.2"
+        strokeWidth="2"
+        fill="none"
+      />
+      <path
+        d="M 8 2 A 6 6 0 0 1 14 8"
+        stroke={color}
+        strokeWidth="2"
+        fill="none"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function Caret({ open, color }: { open: boolean; color: string }) {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      fill="none"
+      style={{
+        transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+        transition: 'transform 150ms ease',
+      }}
+      aria-hidden="true"
+    >
+      <path
+        d="M 2 4 L 5 7 L 8 4"
+        stroke={color}
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+type WeaveButtonProps = {
+  connections: Connection[]
+  activeLayer: WeaveMode
+  onLayerChange: (layer: WeaveMode) => void
+  onResult: (result: WeaveResult, mode: WeaveMode) => void
+  onClear: () => void
+}
 
 export function WeaveButton({
   connections,
   activeLayer,
   onLayerChange,
   onResult,
-  onClear,
-}: {
-  connections: Connection[]
-  activeLayer: WeaveMode
-  onLayerChange: (layer: WeaveMode) => void
-  onResult: (result: WeaveResult, mode: WeaveMode) => void
-  onClear: () => void
-}) {
+  // onClear is intentionally unused in this layout — the bottom bar no
+  // longer surfaces a "Clear connections" affordance. Kept in the prop
+  // shape so the call site doesn't need to change yet; will be wired up
+  // when a settings menu lands.
+  onClear: _onClear,
+}: WeaveButtonProps) {
+  void _onClear
   const [state, setState] = useState<WeaveState>('idle')
   const [loadingMode, setLoadingMode] = useState<WeaveMode | null>(null)
-  const [confirmClear, setConfirmClear] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [nodeCountAtClick, setNodeCountAtClick] = useState(0)
   const { getNodes } = useReactFlow()
   const boardId = useBoardId()
+  const containerRef = useRef<HTMLDivElement>(null)
 
-  // Dismiss clear confirmation on Escape
+  // Close picker on Escape or outside click.
   useEffect(() => {
-    if (!confirmClear) return
+    if (!pickerOpen) return
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setConfirmClear(false)
+      if (e.key === 'Escape') setPickerOpen(false)
+    }
+    const handleClick = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setPickerOpen(false)
+      }
     }
     document.addEventListener('keydown', handleEscape)
-    return () => document.removeEventListener('keydown', handleEscape)
-  }, [confirmClear])
+    document.addEventListener('mousedown', handleClick)
+    return () => {
+      document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('mousedown', handleClick)
+    }
+  }, [pickerOpen])
 
   const handleWeave = useCallback(
     async (mode: WeaveMode) => {
       if (state === 'loading') return
       setState('loading')
       setLoadingMode(mode)
+      setPickerOpen(false)
 
-      // Capture click time at the top so the event row reflects user
-      // intent, not the moment we finally finish analyzing and write.
-      // apiLatencyMs + duration_ms cover the gap between the two.
       const clickedAt = Date.now()
       const clickedAtIso = new Date(clickedAt).toISOString()
 
@@ -78,22 +325,19 @@ export function WeaveButton({
 
       try {
         const nodes = getNodes()
+        setNodeCountAtClick(nodes.length)
         const strip = (id: string) => id.replace(/^node-/, '')
 
-        // Only count connections for THIS specific mode — other modes are irrelevant
         const modeConns = connections.filter((c) => c.mode === mode)
         const isFirstRun = modeConns.length === 0
         contextConnectionsSent = modeConns.length
 
-        // Build set of nodes already connected for THIS mode only
         const connectedNodes = new Set<string>()
         for (const c of modeConns) {
           connectedNodes.add(strip(c.from))
           connectedNodes.add(strip(c.to))
         }
 
-        // Pre-check: skip API call if all content nodes already have connections FOR THIS MODE.
-        // First run of any mode always proceeds (no connections exist yet).
         if (!isFirstRun) {
           const contentNodeIds = nodes
             .filter((n) => {
@@ -123,10 +367,6 @@ export function WeaveButton({
             )
             nodeCount = contentNodeIds.length
             skipped = true
-            // Pre-API short-circuit. contextConnectionsSent is the count
-            // we *would have* sent had we called the API; nothing was
-            // actually transmitted on this click. The skipped flag is
-            // the disambiguator.
             contextConnectionsSent = 0
             errorMessage = 'all_nodes_connected'
             setState('no-new')
@@ -141,9 +381,6 @@ export function WeaveButton({
 
         const result = await analyzeCanvas(nodes, mode, connections)
 
-        // Harvest diagnostics from analyzeCanvas — these are authoritative
-        // about what was actually sent and received (token counts, model,
-        // latency). Falls back to local guesses only if absent.
         nodeCount = result.diagnostics.nodeCount
         contextConnectionsSent = result.diagnostics.contextConnectionsSent
         apiLatencyMs = result.diagnostics.apiLatencyMs
@@ -157,34 +394,15 @@ export function WeaveButton({
         }
         connectionsReturned = result.connections.length
 
-        console.log(
-          `[Weave Debug] Claude returned ${result.connections.length} connections:`,
-          result.connections.map((c) => `${c.from} <-> ${c.to}: ${c.label}`),
-        )
-
-        // First run: keep all connections (no mode-specific connections exist yet).
-        // Re-run: only keep connections where at least one node is unconnected FOR THIS MODE.
         let newConnections: typeof result.connections
-
         if (isFirstRun) {
-          console.log(
-            `[Weave Debug] First run for mode="${mode}", keeping all ${result.connections.length} connections`,
-          )
           newConnections = result.connections
         } else {
           newConnections = result.connections.filter((c) => {
             const fromConnected = connectedNodes.has(strip(c.from))
             const toConnected = connectedNodes.has(strip(c.to))
-            const hasUnconnectedNode = !fromConnected || !toConnected
-            console.log(
-              `[Weave Debug]   ${c.from} <-> ${c.to} → from=${fromConnected ? 'connected' : 'NEW'} to=${toConnected ? 'connected' : 'NEW'} → ${hasUnconnectedNode ? 'KEPT' : 'FILTERED'}`,
-            )
-            return hasUnconnectedNode
+            return !fromConnected || !toConnected
           })
-
-          console.log(
-            `[Weave Debug] After filter: ${newConnections.length} kept out of ${result.connections.length}`,
-          )
         }
 
         connectionsAfterDedup = newConnections.length
@@ -193,7 +411,10 @@ export function WeaveButton({
           setState('no-new')
           setTimeout(() => setState('idle'), 2000)
         } else {
-          onResult({ connections: newConnections, diagnostics: result.diagnostics }, mode)
+          onResult(
+            { connections: newConnections, diagnostics: result.diagnostics },
+            mode,
+          )
           setState('idle')
         }
       } catch (error) {
@@ -234,138 +455,219 @@ export function WeaveButton({
     [state, getNodes, connections, onResult, boardId],
   )
 
-  // Which modes already have connections on the canvas
-  const availableModes = useMemo(() => {
-    const modes = new Set<WeaveMode>()
-    for (const conn of connections) {
-      if (conn.mode) modes.add(conn.mode)
-    }
-    return modes
-  }, [connections])
-
-  const handlePillClick = useCallback(
-    (mode: WeaveMode) => {
-      if (availableModes.has(mode)) {
-        // Already generated — just switch visibility
-        onLayerChange(mode)
-      } else {
-        // Not yet generated — run the analysis
-        handleWeave(mode)
+  // Cmd/Ctrl + Enter shortcut runs the active mode.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault()
+        handleWeave(activeLayer)
       }
-    },
-    [availableModes, onLayerChange, handleWeave],
-  )
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [handleWeave, activeLayer])
 
   const isLoading = state === 'loading'
-  const config = MODE_CONFIG[activeLayer]
-  const loadingText = loadingMode
-    ? MODE_CONFIG[loadingMode].loading
-    : config.loading
-  const hasConnections = connections.length > 0
+  const displayMode: WeaveMode = isLoading && loadingMode ? loadingMode : activeLayer
+  const meta = MODE_META[displayMode]
+  const accentHex = MODE_ACCENT_HEX[displayMode]
+
+  const pillStyle: CSSProperties = {
+    display: 'flex',
+    alignItems: 'stretch',
+    background: meta.bg,
+    borderRadius: 'var(--w-radius-pill)',
+    boxShadow: `var(--w-shadow-pop), 0 0 0 1px ${accentHex}22, 0 0 40px ${meta.glow}`,
+    transition:
+      'background 300ms ease, box-shadow 300ms ease, transform 150ms ease',
+    cursor: isLoading ? 'progress' : 'default',
+  }
+
+  const hintText = (() => {
+    if (isLoading) return `ANALYZING ${nodeCountAtClick} NODES`
+    if (state === 'error') return 'SOMETHING SLIPPED — TRY AGAIN'
+    if (state === 'no-new') return 'NO NEW CONNECTIONS'
+    return `${meta.hint}  ·  ⌘⏎`
+  })()
 
   return (
-    <div className="flex flex-col items-center gap-1.5">
-      {/* Primary action button — re-runs the active mode */}
-      <button
-        onClick={() => handleWeave(activeLayer)}
-        disabled={isLoading}
-        className={`
-          px-4 py-1.5 rounded-full text-sm font-medium shadow-sm border
-          transition-all duration-150 cursor-pointer
-          ${state === 'idle' ? 'bg-white border-gray-200 text-gray-700 hover:shadow-md hover:border-gray-300' : ''}
-          ${state === 'loading' ? 'bg-white border-gray-200 text-gray-400 animate-pulse cursor-default' : ''}
-          ${state === 'error' ? 'bg-red-50 border-red-200 text-red-500' : ''}
-          ${state === 'no-new' ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-default' : ''}
-        `}
-        aria-label="Analyze canvas and find connections"
-      >
-        {state === 'idle' && config.button}
-        {state === 'loading' && loadingText}
-        {state === 'error' && 'Error'}
-        {state === 'no-new' && 'No new connections'}
-      </button>
+    <div
+      ref={containerRef}
+      className="flex flex-col items-center"
+      style={{
+        position: 'absolute',
+        bottom: 24,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 40,
+      }}
+    >
+      <div className="relative">
+        <div style={pillStyle}>
+          <button
+            type="button"
+            onClick={() => {
+              if (isLoading) return
+              setPickerOpen((prev) => !prev)
+            }}
+            disabled={isLoading}
+            aria-haspopup="listbox"
+            aria-expanded={pickerOpen}
+            className="flex items-center cursor-pointer select-none"
+            style={{
+              gap: 8,
+              padding: '0 16px 0 18px',
+              background: 'transparent',
+              border: 'none',
+              borderRight: `1px solid ${accentHex}33`,
+              color: meta.ink,
+              fontFamily: 'var(--w-font-sans)',
+              fontSize: 13,
+              fontWeight: 500,
+            }}
+          >
+            <ModeGlyph mode={displayMode} size={18} color={meta.ink} />
+            <span>{meta.label}</span>
+            <Caret open={pickerOpen} color={meta.ink} />
+          </button>
 
-      {/* Layer toggle pills — visible after first weave */}
-      {hasConnections && !isLoading && (
-        <div className="flex flex-col items-center gap-1">
-          <div className="flex items-center gap-1">
-            {TOGGLE_MODES.map((mode) => {
-              const isActive = activeLayer === mode
-              const isGenerated = availableModes.has(mode)
-              const colors = getEdgeColor(mode)
+          <button
+            type="button"
+            onClick={() => handleWeave(activeLayer)}
+            disabled={isLoading}
+            aria-label="Weave: analyze canvas and find connections"
+            className="flex items-center cursor-pointer select-none"
+            style={{
+              gap: 10,
+              padding: '14px 24px 14px 20px',
+              background: 'transparent',
+              border: 'none',
+              color: meta.ink,
+              fontFamily: 'var(--w-font-display)',
+              fontSize: 18,
+              fontWeight: 500,
+              letterSpacing: '-0.2px',
+              cursor: isLoading ? 'progress' : 'pointer',
+            }}
+          >
+            {isLoading ? (
+              <>
+                <Spinner color={meta.ink} />
+                <span>{meta.loading}</span>
+              </>
+            ) : (
+              <>
+                <span>Weave</span>
+                <ArrowNeedle color={meta.ink} />
+              </>
+            )}
+          </button>
+        </div>
 
+        {pickerOpen && !isLoading && (
+          <div
+            role="listbox"
+            aria-label="Weave mode"
+            style={{
+              position: 'absolute',
+              bottom: 'calc(100% + 12px)',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 280,
+              background: '#fffdf6',
+              borderRadius: 16,
+              boxShadow: 'var(--w-shadow-float)',
+              border: '1px solid var(--w-line)',
+              padding: 8,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+              animation: 'weave-popover-in 180ms ease',
+            }}
+          >
+            {ALL_MODES.map((m) => {
+              const mMeta = MODE_META[m]
+              const active = m === activeLayer
               return (
                 <button
-                  key={mode}
-                  onClick={() => handlePillClick(mode)}
-                  className={`
-                    flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px]
-                    transition-all duration-150 cursor-pointer
-                    ${
-                      isActive
-                        ? 'font-medium'
-                        : isGenerated
-                          ? 'bg-white border border-gray-200 text-gray-500 hover:border-gray-300 hover:text-gray-700'
-                          : 'bg-white border border-dashed border-gray-200 text-gray-400 hover:border-gray-300'
-                    }
-                  `}
-                  style={
-                    isActive
-                      ? {
-                          backgroundColor: colors.fill,
-                          color: '#FFFFFF',
-                          borderWidth: '1px',
-                          borderStyle: 'solid',
-                          borderColor: colors.fill,
-                        }
-                      : undefined
-                  }
+                  key={m}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => {
+                    onLayerChange(m)
+                    setPickerOpen(false)
+                  }}
+                  className="flex items-center cursor-pointer text-left transition-colors duration-150"
+                  style={{
+                    gap: 12,
+                    padding: '10px 12px',
+                    borderRadius: 10,
+                    background: active ? mMeta.bgSoft : 'transparent',
+                    border: 'none',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!active)
+                      e.currentTarget.style.background = 'var(--w-paper-dim)'
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!active) e.currentTarget.style.background = 'transparent'
+                  }}
                 >
-                  <span
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{
-                      backgroundColor: isActive
-                        ? '#FFFFFF'
-                        : isGenerated
-                          ? colors.stroke
-                          : '#9CA3AF',
-                    }}
-                  />
-                  {MODE_CONFIG[mode].pill}
+                  <ModeGlyph mode={m} size={28} color={mMeta.ink} />
+                  <div className="flex flex-col" style={{ flex: 1, gap: 2 }}>
+                    <span
+                      style={{
+                        fontFamily: 'var(--w-font-sans)',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: mMeta.ink,
+                      }}
+                    >
+                      {mMeta.label}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: 'var(--w-font-sans)',
+                        fontSize: 11,
+                        color: 'var(--w-ink-soft)',
+                      }}
+                    >
+                      {mMeta.hint.toLowerCase()}
+                    </span>
+                  </div>
+                  {active && (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: 999,
+                        background: mMeta.accent,
+                        flexShrink: 0,
+                      }}
+                    />
+                  )}
                 </button>
               )
             })}
           </div>
-          {confirmClear ? (
-            <div className="flex items-center gap-1.5 text-[10px]">
-              <span className="text-gray-500">Clear all connections?</span>
-              <button
-                onClick={() => {
-                  onClear()
-                  setConfirmClear(false)
-                }}
-                className="text-red-500 hover:text-red-600 font-medium cursor-pointer"
-              >
-                Yes
-              </button>
-              <button
-                onClick={() => setConfirmClear(false)}
-                className="text-gray-400 hover:text-gray-500 cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirmClear(true)}
-              className="text-[10px] text-gray-400 hover:text-gray-500
-                transition-colors duration-150 cursor-pointer"
-            >
-              Clear connections
-            </button>
-          )}
-        </div>
-      )}
+        )}
+      </div>
+
+      <p
+        style={{
+          textAlign: 'center',
+          marginTop: 10,
+          marginBottom: 0,
+          fontFamily: 'var(--w-font-mono)',
+          fontSize: 11,
+          color: 'var(--w-ink-soft)',
+          letterSpacing: 0.5,
+        }}
+      >
+        {hintText}
+      </p>
     </div>
   )
 }

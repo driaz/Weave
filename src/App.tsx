@@ -3,7 +3,6 @@ import {
   ReactFlow,
   ReactFlowProvider,
   Controls,
-  Panel,
   type Node,
   type Edge,
   type OnNodesChange,
@@ -647,33 +646,6 @@ export function App() {
         proOptions={{ hideAttribution: true }}
       >
         <Controls position="bottom-right" />
-        <Panel position="top-center" style={{ top: 64 }}>
-          <WeaveButton
-            connections={connections}
-            activeLayer={activeLayer}
-            onLayerChange={setActiveLayer}
-            onResult={(result, mode) => {
-              clearHighlight()
-              // Normalise ids at ingest: Claude sometimes emits
-              // `node-N` (self-propagating once it lands in the
-              // existing-connection context). Strip the prefix so
-              // state, localStorage, edge jsonb, and context loopback
-              // are all uniformly bare. Breaks the format lottery.
-              const normalised = result.connections.map((c) => ({
-                ...c,
-                from: c.from.replace(/^node-/, ''),
-                to: c.to.replace(/^node-/, ''),
-              }))
-              setConnections((prev) => [...prev, ...normalised])
-              setActiveLayer(mode)
-            }}
-            onClear={() => {
-              clearHighlight()
-              setConnections([])
-              setActiveLayer('weave')
-            }}
-          />
-        </Panel>
         {nodes.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <p className="text-gray-400 text-lg font-light select-none">
@@ -705,10 +677,36 @@ export function App() {
       <BrandDropRail>
         <AddNodeButton />
       </BrandDropRail>
+      <WeaveButton
+        connections={connections}
+        activeLayer={activeLayer}
+        onLayerChange={setActiveLayer}
+        onResult={(result, mode) => {
+          clearHighlight()
+          // Normalise ids at ingest: Claude sometimes emits
+          // `node-N` (self-propagating once it lands in the
+          // existing-connection context). Strip the prefix so
+          // state, localStorage, edge jsonb, and context loopback
+          // are all uniformly bare. Breaks the format lottery.
+          const normalised = result.connections.map((c) => ({
+            ...c,
+            from: c.from.replace(/^node-/, ''),
+            to: c.to.replace(/^node-/, ''),
+          }))
+          setConnections((prev) => [...prev, ...normalised])
+          setActiveLayer(mode)
+        }}
+        onClear={() => {
+          clearHighlight()
+          setConnections([])
+          setActiveLayer('weave')
+        }}
+      />
       {popupEdge && (
         <EdgeDetailPopup
           connection={popupEdge.connection}
           position={popupEdge.position}
+          connectionNumber={connections.indexOf(popupEdge.connection) + 1}
           onClose={closeEdgeDetail}
         />
       )}
