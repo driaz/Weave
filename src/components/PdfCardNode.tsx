@@ -1,4 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from 'react'
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
 import { useNodeHighlightStatus } from '../hooks/useSelectedNode'
 import { createPortal } from 'react-dom'
@@ -13,6 +19,17 @@ export type PdfCardData = {
   label: string
   thumbnailDataUrl: string
   pageCount: number
+}
+
+const CARD_WIDTH = 280
+const PREVIEW_WIDTH = 72
+const LINE_WIDTHS = ['80%', '95%', '95%', '65%', '95%', '95%', '65%', '95%']
+
+const HANDLE_STYLE: CSSProperties = {
+  background: 'var(--w-ink-faint)',
+  border: 'none',
+  width: 6,
+  height: 6,
 }
 
 function stripExtension(fileName: string): string {
@@ -107,9 +124,7 @@ function PdfLightbox({
               {currentPage} / {pageCount}
             </span>
             <button
-              onClick={() =>
-                setCurrentPage((p) => Math.min(pageCount, p + 1))
-              }
+              onClick={() => setCurrentPage((p) => Math.min(pageCount, p + 1))}
               disabled={currentPage >= pageCount}
               className="px-3 py-1.5 text-sm text-white bg-white/20 rounded-md hover:bg-white/30 disabled:opacity-30 disabled:cursor-default cursor-pointer transition-colors"
               aria-label="Next page"
@@ -124,9 +139,38 @@ function PdfLightbox({
   )
 }
 
+function PaperPreview() {
+  return (
+    <div
+      aria-hidden="true"
+      className="flex flex-col"
+      style={{
+        width: PREVIEW_WIDTH,
+        background: '#faf6ec',
+        borderRight: '1px solid var(--w-line)',
+        padding: '12px 8px',
+        gap: 5,
+        flexShrink: 0,
+      }}
+    >
+      {LINE_WIDTHS.map((w, i) => (
+        <span
+          key={i}
+          style={{
+            display: 'block',
+            width: w,
+            height: 3,
+            borderRadius: 1,
+            background: 'rgba(42, 37, 33, 0.12)',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function PdfCardNode({ id, data }: NodeProps) {
-  const { pdfDataUrl, fileName, label, thumbnailDataUrl, pageCount } =
-    data as PdfCardData
+  const { pdfDataUrl, fileName, label, pageCount } = data as PdfCardData
   const defaultLabel = stripExtension(fileName)
   const [editingLabel, setEditingLabel] = useState(!label)
   const [labelValue, setLabelValue] = useState(label || defaultLabel)
@@ -150,6 +194,7 @@ export function PdfCardNode({ id, data }: NodeProps) {
       })
     }
   }, [boardId, id, cancelPendingNodeSelect])
+
   const closeLightbox = useCallback(() => {
     setShowLightbox(false)
     const openedAt = lightboxOpenedAtRef.current
@@ -186,58 +231,35 @@ export function PdfCardNode({ id, data }: NodeProps) {
     [finishLabelEdit],
   )
 
-  const pageLabel =
-    pageCount === 1 ? '1 page' : pageCount > 0 ? `${pageCount} pages` : ''
+  const highlightClass = `${isConnected ? ' node-highlight' : ''}${isSelected ? ' selected-node-highlight' : ''}`.trim()
+  const displayLabel = label || defaultLabel
+  const pagesText = pageCount > 0 ? `PDF · ${pageCount} ${pageCount === 1 ? 'page' : 'pages'}` : 'PDF'
 
   return (
     <>
       <div
-        className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden${isConnected ? ' node-highlight' : ''}${isSelected ? ' selected-node-highlight' : ''}`}
-        aria-label={`PDF: ${label || defaultLabel}`}
+        className={`flex ${highlightClass}`.trim() || undefined}
+        onDoubleClick={openLightbox}
+        style={{
+          width: CARD_WIDTH,
+          background: 'var(--w-card)',
+          borderRadius: 'var(--w-radius-lg)',
+          boxShadow: 'var(--w-shadow-card)',
+          border: '1px solid var(--w-line)',
+          overflow: 'hidden',
+          fontFamily: 'var(--w-font-sans)',
+          color: 'var(--w-ink)',
+          userSelect: 'none',
+          cursor: 'pointer',
+        }}
+        aria-label={`PDF: ${displayLabel}`}
       >
-        {thumbnailDataUrl ? (
-          <img
-            src={thumbnailDataUrl}
-            alt={label || defaultLabel}
-            draggable={false}
-            onDoubleClick={openLightbox}
-            className="w-[250px] h-[180px] object-cover object-top cursor-pointer"
-          />
-        ) : (
-          <div
-            className="w-[250px] h-[180px] bg-gray-50 flex items-center justify-center cursor-pointer"
-            onDoubleClick={openLightbox}
-          >
-            <svg
-              width="40"
-              height="48"
-              viewBox="0 0 40 48"
-              fill="none"
-              aria-hidden="true"
-            >
-              <rect
-                x="0.5"
-                y="0.5"
-                width="39"
-                height="47"
-                rx="3"
-                fill="white"
-                stroke="#D1D5DB"
-              />
-              <text
-                x="20"
-                y="30"
-                textAnchor="middle"
-                fontSize="12"
-                fontWeight="600"
-                fill="#9CA3AF"
-              >
-                PDF
-              </text>
-            </svg>
-          </div>
-        )}
-        <div className="px-3 py-2">
+        <PaperPreview />
+
+        <div
+          className="flex-1 flex flex-col"
+          style={{ padding: '14px 14px 10px', minWidth: 0 }}
+        >
           {editingLabel ? (
             <input
               ref={inputRef}
@@ -246,35 +268,62 @@ export function PdfCardNode({ id, data }: NodeProps) {
               onChange={(e) => setLabelValue(e.target.value)}
               onBlur={finishLabelEdit}
               onKeyDown={handleLabelKeyDown}
-              className="nodrag nowheel nopan w-full text-xs text-gray-500 bg-transparent outline-none"
+              className="nodrag nowheel nopan"
+              style={{
+                width: '100%',
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                fontFamily: 'var(--w-font-display)',
+                fontSize: 13,
+                fontWeight: 500,
+                lineHeight: 1.3,
+                color: 'var(--w-ink)',
+                marginBottom: 6,
+              }}
               placeholder={defaultLabel}
             />
           ) : (
             <p
-              className="text-xs text-gray-500 truncate cursor-text"
               onDoubleClick={(e) => {
                 e.stopPropagation()
-                setLabelValue(label || defaultLabel)
+                setLabelValue(displayLabel)
                 setEditingLabel(true)
               }}
+              style={{
+                margin: 0,
+                marginBottom: 6,
+                fontFamily: 'var(--w-font-display)',
+                fontSize: 13,
+                fontWeight: 500,
+                lineHeight: 1.3,
+                color: 'var(--w-ink)',
+                cursor: 'text',
+                display: '-webkit-box',
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+              }}
             >
-              {label || defaultLabel}
+              {displayLabel}
             </p>
           )}
-          {pageLabel && (
-            <p className="text-xs text-gray-400 mt-0.5">{pageLabel}</p>
-          )}
+
+          <p
+            style={{
+              margin: 0,
+              fontFamily: 'var(--w-font-mono)',
+              fontSize: 10,
+              color: 'var(--w-ink-faint)',
+              letterSpacing: 0.4,
+            }}
+          >
+            {pagesText}
+          </p>
         </div>
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="!bg-gray-400"
-        />
-        <Handle
-          type="target"
-          position={Position.Left}
-          className="!bg-gray-400"
-        />
+
+        <Handle type="source" position={Position.Right} style={HANDLE_STYLE} />
+        <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
       </div>
       {showLightbox && (
         <PdfLightbox

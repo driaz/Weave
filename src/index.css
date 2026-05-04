@@ -90,36 +90,49 @@ body {
 }
 
 .shimmer {
-  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background: linear-gradient(
+    90deg,
+    var(--w-paper-dim) 25%,
+    #e3dcc7 50%,
+    var(--w-paper-dim) 75%
+  );
   background-size: 800px 100%;
   animation: shimmer 1.5s infinite linear;
 }
 
 @keyframes node-highlight-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
+    box-shadow:
+      0 0 0 1.5px var(--w-standard-glow),
+      0 0 6px transparent;
   }
   50% {
-    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 1);
+    box-shadow:
+      0 0 0 1.5px var(--w-standard-glow),
+      0 0 14px var(--w-standard-glow);
   }
 }
 
 .node-highlight {
-  box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
+  box-shadow: 0 0 0 1.5px var(--w-standard-glow);
   animation: node-highlight-pulse 1.8s ease-in-out infinite;
 }
 
 @keyframes selected-node-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
+    box-shadow:
+      0 0 0 1.5px var(--w-standard-glow),
+      0 0 6px transparent;
   }
   50% {
-    box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 1);
+    box-shadow:
+      0 0 0 1.5px var(--w-standard-glow),
+      0 0 14px var(--w-standard-glow);
   }
 }
 
 .selected-node-highlight {
-  box-shadow: 0 0 0 1.5px rgba(255, 140, 0, 0.6);
+  box-shadow: 0 0 0 1.5px var(--w-standard-glow);
   animation: selected-node-pulse 0.8s ease-in-out 2;
 }
 

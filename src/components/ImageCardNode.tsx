@@ -1,4 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from 'react'
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react'
 import { useNodeHighlightStatus } from '../hooks/useSelectedNode'
 import { createPortal } from 'react-dom'
@@ -10,6 +16,28 @@ export type ImageCardData = {
   imageDataUrl: string
   fileName: string
   label: string
+}
+
+const CARD_WIDTH = 250
+const IMAGE_HEIGHT = 200
+
+const HANDLE_STYLE: CSSProperties = {
+  background: 'var(--w-ink-faint)',
+  border: 'none',
+  width: 6,
+  height: 6,
+}
+
+const CARD_BASE: CSSProperties = {
+  width: CARD_WIDTH,
+  background: 'var(--w-card)',
+  borderRadius: 'var(--w-radius-lg)',
+  boxShadow: 'var(--w-shadow-card)',
+  border: '1px solid var(--w-line)',
+  overflow: 'hidden',
+  fontFamily: 'var(--w-font-sans)',
+  color: 'var(--w-ink)',
+  userSelect: 'none',
 }
 
 function stripExtension(fileName: string): string {
@@ -81,6 +109,7 @@ export function ImageCardNode({ id, data }: NodeProps) {
       })
     }
   }, [boardId, id, cancelPendingNodeSelect])
+
   const closeLightbox = useCallback(() => {
     setShowLightbox(false)
     const openedAt = lightboxOpenedAtRef.current
@@ -117,56 +146,129 @@ export function ImageCardNode({ id, data }: NodeProps) {
     [finishLabelEdit],
   )
 
+  const highlightClass = `${isConnected ? ' node-highlight' : ''}${isSelected ? ' selected-node-highlight' : ''}`.trim()
+  const displayLabel = label || defaultLabel
+  const hasLabel = displayLabel.trim().length > 0
+
   return (
     <>
-      <div
-        className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden${isConnected ? ' node-highlight' : ''}${isSelected ? ' selected-node-highlight' : ''}`}
-      >
+      <div style={CARD_BASE} className={highlightClass || undefined}>
         {imageDataUrl ? (
           <img
             src={imageDataUrl}
-            alt={label || defaultLabel}
+            alt={displayLabel}
             draggable={false}
             onDoubleClick={openLightbox}
-            className="w-[250px] h-[200px] object-cover cursor-pointer"
+            style={{
+              display: 'block',
+              width: CARD_WIDTH,
+              height: IMAGE_HEIGHT,
+              objectFit: 'cover',
+              cursor: 'pointer',
+            }}
           />
         ) : (
-          <div className="shimmer w-[250px] h-[200px]" />
-        )}
-        <div className="px-3 py-2">
-          {editingLabel ? (
-            <input
-              ref={inputRef}
-              type="text"
-              value={labelValue}
-              onChange={(e) => setLabelValue(e.target.value)}
-              onBlur={finishLabelEdit}
-              onKeyDown={handleLabelKeyDown}
-              className="nodrag nowheel nopan w-full text-xs text-gray-500 bg-transparent outline-none"
-              placeholder={defaultLabel}
-            />
-          ) : (
-            <p
-              className="text-xs text-gray-500 truncate cursor-text"
-              onDoubleClick={() => {
-                setLabelValue(label || defaultLabel)
-                setEditingLabel(true)
+          <div
+            className="w-stripe-placeholder"
+            style={{
+              position: 'relative',
+              width: CARD_WIDTH,
+              height: IMAGE_HEIGHT,
+            }}
+          >
+            <span
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                fontFamily: 'var(--w-font-mono)',
+                fontSize: 10,
+                color: 'rgba(60, 50, 30, 0.5)',
+                background: 'rgba(255, 255, 255, 0.7)',
+                padding: '3px 8px',
+                borderRadius: 4,
+                letterSpacing: 0.4,
               }}
             >
-              {label || defaultLabel}
-            </p>
-          )}
-        </div>
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="!bg-gray-400"
-        />
-        <Handle
-          type="target"
-          position={Position.Left}
-          className="!bg-gray-400"
-        />
+              image
+            </span>
+          </div>
+        )}
+
+        {(editingLabel || hasLabel) && (
+          <div
+            className="flex items-center"
+            style={{
+              gap: 8,
+              padding: '10px 14px',
+              fontSize: 11,
+              color: 'var(--w-ink-soft)',
+            }}
+          >
+            <span
+              style={{
+                fontFamily: 'var(--w-font-mono)',
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: 0.6,
+                color: 'var(--w-ink-soft)',
+                textTransform: 'uppercase',
+                flexShrink: 0,
+              }}
+            >
+              IMG
+            </span>
+            {editingLabel ? (
+              <input
+                ref={inputRef}
+                type="text"
+                value={labelValue}
+                onChange={(e) => setLabelValue(e.target.value)}
+                onBlur={finishLabelEdit}
+                onKeyDown={handleLabelKeyDown}
+                className="nodrag nowheel nopan"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  background: 'transparent',
+                  border: 'none',
+                  outline: 'none',
+                  fontFamily: 'var(--w-font-sans)',
+                  fontSize: 11,
+                  fontStyle: 'italic',
+                  color: 'var(--w-ink-soft)',
+                }}
+                placeholder={defaultLabel}
+              />
+            ) : (
+              <p
+                onDoubleClick={() => {
+                  setLabelValue(displayLabel)
+                  setEditingLabel(true)
+                }}
+                style={{
+                  margin: 0,
+                  flex: 1,
+                  minWidth: 0,
+                  fontFamily: 'var(--w-font-sans)',
+                  fontSize: 11,
+                  fontStyle: 'italic',
+                  color: 'var(--w-ink-soft)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  cursor: 'text',
+                }}
+              >
+                {displayLabel}
+              </p>
+            )}
+          </div>
+        )}
+
+        <Handle type="source" position={Position.Right} style={HANDLE_STYLE} />
+        <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
       </div>
       {showLightbox && (
         <ImageLightbox
