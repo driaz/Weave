@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react'
+import { createContext, useContext, type CSSProperties } from 'react'
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -170,7 +170,8 @@ export function WeaveEdge({
           opacity: pathOpacity,
           transition: 'opacity 200ms ease',
           pointerEvents: 'none',
-        }}
+          ['--w-edge-glow' as string]: colors.glow,
+        } as CSSProperties}
       />
 
       {active && (
@@ -182,11 +183,14 @@ export function WeaveEdge({
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              backgroundColor: '#FFFFFF',
+              backgroundColor: colors.bg,
               borderWidth: '1px',
               borderStyle: 'solid',
-              borderColor: edgeData.isHighlighted ? '#FF8C00' : colors.border,
-              color: edgeData.isHighlighted ? '#FF8C00' : colors.text,
+              borderColor: colors.border,
+              color: colors.text,
+              boxShadow: edgeData.isHighlighted
+                ? `0 0 0 3px ${colors.glow}`
+                : undefined,
             }}
             onClick={(e) => {
               if (edgeData.connection) {

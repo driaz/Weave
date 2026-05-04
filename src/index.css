@@ -125,16 +125,16 @@ body {
 
 @keyframes edge-highlight-pulse {
   0%, 100% {
-    opacity: 0.85;
+    filter: drop-shadow(0 0 4px var(--w-edge-glow, rgba(0, 0, 0, 0.2)));
   }
   50% {
-    opacity: 1;
+    filter: drop-shadow(0 0 10px var(--w-edge-glow, rgba(0, 0, 0, 0.2)));
   }
 }
 
 .edge-highlight {
-  stroke: #FF8C00 !important;
-  opacity: 0.85 !important;
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 6px var(--w-edge-glow, rgba(0, 0, 0, 0.2)));
   animation: edge-highlight-pulse 0.8s ease-in-out 2;
 }
 

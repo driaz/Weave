@@ -6,29 +6,33 @@ export type EdgeColorSet = {
   border: string
   text: string
   fill: string
+  glow: string
 }
 
 const COLORS: Record<WeaveMode, EdgeColorSet> = {
   weave: {
-    stroke: '#4A7BF7',
-    bg: '#EEF2FF',
-    border: '#A5B4FC',
-    text: '#3B5CC6',
-    fill: '#4A7BF7',
+    stroke: 'var(--w-standard-accent)',
+    bg: 'var(--w-card)',
+    border: 'var(--w-standard-bg)',
+    text: 'var(--w-standard-accent)',
+    fill: 'var(--w-standard-accent)',
+    glow: 'var(--w-standard-glow)',
   },
   deeper: {
-    stroke: '#D97706',
-    bg: '#FFFBEB',
-    border: '#FCD34D',
-    text: '#B45309',
-    fill: '#D97706',
+    stroke: 'var(--w-deeper-accent)',
+    bg: 'var(--w-card)',
+    border: 'var(--w-deeper-bg)',
+    text: 'var(--w-deeper-accent)',
+    fill: 'var(--w-deeper-accent)',
+    glow: 'var(--w-deeper-glow)',
   },
   tensions: {
-    stroke: '#E11D48',
-    bg: '#FFF1F2',
-    border: '#FDA4AF',
-    text: '#BE123C',
-    fill: '#E11D48',
+    stroke: 'var(--w-tensions-accent)',
+    bg: 'var(--w-card)',
+    border: 'var(--w-tensions-bg)',
+    text: 'var(--w-tensions-accent)',
+    fill: 'var(--w-tensions-accent)',
+    glow: 'var(--w-tensions-glow)',
   },
 }
 
