@@ -1,7 +1,124 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import { supabase } from '../services/supabaseClient'
 import { useAuth } from '../auth/AuthContext'
+
+const PAPER_GRAIN_URL =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Ccircle cx='2' cy='2' r='0.6' fill='%232a2521' fill-opacity='0.05'/%3E%3C/svg%3E\")"
+
+function BackgroundThreads() {
+  return (
+    <svg
+      aria-hidden="true"
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+      }}
+      preserveAspectRatio="none"
+      viewBox="0 0 1280 720"
+    >
+      <path
+        d="M -40 180 Q 300 80, 620 200 T 1280 160"
+        stroke="var(--w-standard-accent)"
+        strokeWidth="1.2"
+        strokeOpacity="0.18"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path
+        d="M -40 540 Q 340 460, 680 580 T 1300 560"
+        stroke="var(--w-deeper-accent)"
+        strokeWidth="1.2"
+        strokeOpacity="0.18"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path
+        d="M -40 360 Q 260 300, 620 400 T 1280 340"
+        stroke="var(--w-tensions-accent)"
+        strokeWidth="1.2"
+        strokeOpacity="0.18"
+        strokeLinecap="round"
+        strokeDasharray="5 4"
+        fill="none"
+      />
+    </svg>
+  )
+}
+
+function WeaveMark() {
+  return (
+    <svg
+      width="44"
+      height="44"
+      viewBox="0 0 40 40"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M 6 14 Q 20 28, 34 14"
+        stroke="#c9942f"
+        strokeWidth="2"
+        fill="none"
+        strokeLinecap="round"
+      />
+      <path
+        d="M 6 26 Q 20 12, 34 26"
+        stroke="#c9942f"
+        strokeOpacity="0.55"
+        strokeWidth="2"
+        fill="none"
+        strokeLinecap="round"
+      />
+      <circle cx="6" cy="20" r="2.4" fill="#faf6ec" stroke="#c9942f" strokeWidth="1.5" />
+      <circle cx="34" cy="20" r="2.4" fill="#faf6ec" stroke="#c9942f" strokeWidth="1.5" />
+      <circle cx="20" cy="20" r="2.8" fill="#c9942f" />
+    </svg>
+  )
+}
+
+function GitHubIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.09.68-.22.68-.48 0-.24-.01-.87-.01-1.71-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.46-1.11-1.46-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02.8-.22 1.65-.33 2.5-.33.85 0 1.7.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85 0 1.34-.01 2.42-.01 2.75 0 .27.18.58.69.48A10.02 10.02 0 0022 12c0-5.52-4.48-10-10-10z" />
+    </svg>
+  )
+}
+
+const BUTTON_BASE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 12,
+  padding: '14px 24px',
+  borderRadius: 'var(--w-radius-pill)',
+  background: '#fffdf6',
+  color: 'var(--w-ink)',
+  border: '1px solid var(--w-line)',
+  boxShadow: 'var(--w-shadow-lift)',
+  fontFamily: 'var(--w-font-sans)',
+  fontSize: 15,
+  fontWeight: 500,
+  cursor: 'pointer',
+  transition:
+    'background 180ms ease, color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease',
+}
+
+const BUTTON_HOVER: Partial<CSSProperties> = {
+  background: '#2a2521',
+  color: '#fffdf6',
+  borderColor: '#2a2521',
+  boxShadow: 'var(--w-shadow-pop)',
+  transform: 'translateY(-1px)',
+}
 
 export function Login() {
   const { user, loading } = useAuth()
@@ -9,6 +126,7 @@ export function Login() {
   const [searchParams] = useSearchParams()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
     const queryError = searchParams.get('error')
@@ -17,8 +135,26 @@ export function Login() {
 
   if (loading) {
     return (
-      <div className="w-screen h-screen flex items-center justify-center">
-        <p className="text-gray-400 text-sm font-light select-none">Loading…</p>
+      <div
+        style={{
+          width: '100%',
+          height: '100%',
+          background: 'var(--w-paper)',
+          display: 'grid',
+          placeItems: 'center',
+        }}
+      >
+        <p
+          style={{
+            fontFamily: 'var(--w-font-mono)',
+            fontSize: 11,
+            color: 'var(--w-ink-faint)',
+            letterSpacing: 0.5,
+            userSelect: 'none',
+          }}
+        >
+          LOADING…
+        </p>
       </div>
     )
   }
@@ -49,33 +185,166 @@ export function Login() {
     }
   }
 
+  const buttonStyle: CSSProperties = {
+    ...BUTTON_BASE,
+    ...(hovered && !submitting ? BUTTON_HOVER : null),
+    opacity: submitting ? 0.6 : 1,
+    cursor: submitting ? 'not-allowed' : 'pointer',
+  }
+
+  const hintColor =
+    hovered && !submitting ? 'rgba(255, 253, 246, 0.6)' : 'var(--w-ink-faint)'
+  const hintBorderColor =
+    hovered && !submitting ? 'rgba(255, 253, 246, 0.2)' : 'var(--w-line)'
+
   return (
-    <div className="w-screen h-screen flex items-center justify-center bg-white">
-      <div className="flex flex-col items-center gap-6 max-w-sm w-full px-6">
-        <h1 className="text-2xl font-light text-gray-800 select-none">Weave</h1>
-        <p className="text-sm text-gray-500 text-center font-light">
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        background: 'var(--w-paper)',
+        position: 'relative',
+        overflow: 'hidden',
+        display: 'grid',
+        placeItems: 'center',
+      }}
+    >
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          backgroundImage: PAPER_GRAIN_URL,
+        }}
+      />
+      <BackgroundThreads />
+
+      <div
+        style={{
+          position: 'relative',
+          width: 420,
+          maxWidth: 'calc(100% - 32px)',
+          padding: '48px 40px 36px',
+          background: '#fffdf6',
+          borderRadius: 'var(--w-radius-xl)',
+          boxShadow: 'var(--w-shadow-float)',
+          border: '1px solid var(--w-line)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+        }}
+      >
+        <WeaveMark />
+
+        <h1
+          style={{
+            margin: 0,
+            marginTop: 18,
+            marginBottom: 4,
+            fontFamily: 'var(--w-font-display)',
+            fontSize: 32,
+            fontWeight: 600,
+            letterSpacing: '-0.8px',
+            color: 'var(--w-ink)',
+            userSelect: 'none',
+          }}
+        >
+          Weave
+        </h1>
+
+        <p
+          style={{
+            margin: 0,
+            marginBottom: 28,
+            fontFamily: 'var(--w-font-sans)',
+            fontSize: 14,
+            color: 'var(--w-ink-soft)',
+          }}
+        >
           Sign in to open your canvas.
         </p>
+
         <button
           onClick={handleSignIn}
           disabled={submitting}
-          className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200
-            rounded-lg shadow-sm hover:shadow-md transition-shadow duration-150
-            text-sm text-gray-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          onFocus={() => setHovered(true)}
+          onBlur={() => setHovered(false)}
+          style={buttonStyle}
         >
-          <svg
-            className="w-4 h-4"
-            viewBox="0 0 24 24"
-            fill="currentColor"
+          <GitHubIcon />
+          <span>{submitting ? 'Redirecting…' : 'Continue with GitHub'}</span>
+          <span
+            style={{
+              paddingLeft: 12,
+              borderLeft: `1px solid ${hintBorderColor}`,
+              fontFamily: 'var(--w-font-mono)',
+              fontSize: 10,
+              letterSpacing: 0.5,
+              color: hintColor,
+              transition: 'color 180ms ease, border-color 180ms ease',
+            }}
             aria-hidden="true"
           >
-            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.26.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.387-1.333-1.756-1.333-1.756-1.09-.745.083-.73.083-.73 1.205.085 1.838 1.237 1.838 1.237 1.07 1.835 2.81 1.305 3.495.998.108-.776.42-1.305.763-1.605-2.665-.305-5.467-1.332-5.467-5.932 0-1.31.468-2.38 1.236-3.22-.124-.303-.536-1.524.118-3.176 0 0 1.008-.323 3.3 1.23A11.5 11.5 0 0 1 12 5.803c1.02.005 2.047.138 3.006.404 2.29-1.553 3.297-1.23 3.297-1.23.655 1.653.243 2.874.12 3.176.77.84 1.235 1.91 1.235 3.22 0 4.61-2.807 5.625-5.48 5.922.432.372.816 1.102.816 2.222 0 1.606-.015 2.898-.015 3.293 0 .32.216.694.824.576C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12z" />
-          </svg>
-          {submitting ? 'Redirecting…' : 'Continue with GitHub'}
+            ↵
+          </span>
         </button>
+
         {error && (
-          <p className="text-xs text-red-600 text-center max-w-xs">{error}</p>
+          <p
+            style={{
+              marginTop: 16,
+              marginBottom: 0,
+              fontFamily: 'var(--w-font-sans)',
+              fontSize: 12,
+              color: 'var(--w-tensions-accent)',
+              textAlign: 'center',
+              maxWidth: 320,
+            }}
+          >
+            {error}
+          </p>
         )}
+
+        <p
+          style={{
+            marginTop: 24,
+            marginBottom: 0,
+            maxWidth: 340,
+            textAlign: 'center',
+            fontFamily: 'var(--w-font-mono)',
+            fontSize: 10,
+            color: 'var(--w-ink-faint)',
+            letterSpacing: 0.4,
+            lineHeight: 1.6,
+          }}
+        >
+          By continuing you agree to Weave's{' '}
+          <a
+            href="/terms"
+            style={{
+              color: 'inherit',
+              textDecoration: 'underline',
+              textDecorationColor: 'var(--w-line)',
+            }}
+          >
+            Terms
+          </a>{' '}
+          and{' '}
+          <a
+            href="/privacy"
+            style={{
+              color: 'inherit',
+              textDecoration: 'underline',
+              textDecorationColor: 'var(--w-line)',
+            }}
+          >
+            Privacy
+          </a>
+          .
+        </p>
       </div>
     </div>
   )
