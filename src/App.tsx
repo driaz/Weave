@@ -23,7 +23,11 @@ import {
 import { EdgeDetailPopup } from './components/EdgeDetailPopup'
 import { BoardSwitcher } from './components/BoardSwitcher'
 import { BrandChrome } from './components/BrandChrome'
-import { BrandDropRail } from './components/BrandDropRail'
+import {
+  CanvasAmbience,
+  WeavingShimmer,
+  ThinkingPanel,
+} from './components/CanvasEffects'
 import { ReflectView } from './components/ReflectView'
 import { UserMenu } from './components/UserMenu'
 import { HydrationSourceIndicator } from './components/HydrationSourceIndicator'
@@ -91,6 +95,7 @@ export function App() {
     currentBoard.connections,
   )
   const [activeLayer, setActiveLayer] = useState<WeaveMode>('weave')
+  const [weavingMode, setWeavingMode] = useState<WeaveMode | null>(null)
   const [highlightState, setHighlightState] = useState<HighlightState>(null)
   // Separate state for the popup — can be open alongside any highlight mode
   const [popupEdge, setPopupEdge] = useState<{
@@ -605,11 +610,16 @@ export function App() {
     <BoardIdContext.Provider value={currentBoard.id}>
     <CancelNodeSelectContext.Provider value={cancelPendingNodeSelect}>
     <ReactFlowProvider>
-    <div className="w-screen h-screen relative">
+    <div
+      className={`w-screen h-screen relative${weavingMode ? ' canvas-weaving' : ''}`}
+    >
       <HighlightContext.Provider value={highlightState}>
       <EdgeLabelClickContext.Provider value={onLabelClick}>
       {view === 'canvas' && (
         <>
+          <CanvasAmbience mode={activeLayer} />
+          <WeavingShimmer mode={weavingMode} />
+          <ThinkingPanel mode={weavingMode} />
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -635,9 +645,7 @@ export function App() {
               </div>
             )}
           </ReactFlow>
-          <BrandDropRail>
-            <AddNodeButton />
-          </BrandDropRail>
+          <AddNodeButton />
           <WeaveButton
             connections={connections}
             activeLayer={activeLayer}
@@ -662,6 +670,7 @@ export function App() {
               setConnections([])
               setActiveLayer('weave')
             }}
+            onLoadingChange={setWeavingMode}
           />
           {popupEdge && (
             <EdgeDetailPopup

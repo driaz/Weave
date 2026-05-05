@@ -269,13 +269,21 @@ export function AddNodeButton() {
   )
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div
+      ref={containerRef}
+      style={{
+        position: 'absolute',
+        bottom: 24,
+        left: 24,
+        zIndex: 20,
+      }}
+    >
       {menuOpen && (
         <div
           className="absolute"
           style={{
-            top: 0,
-            left: 'calc(100% + 8px)',
+            bottom: 'calc(100% + 8px)',
+            left: 0,
             zIndex: 50,
             background: 'var(--w-card)',
             borderRadius: 'var(--w-radius-md)',
@@ -415,16 +423,18 @@ export function AddNodeButton() {
         onClick={() => setMenuOpen(!menuOpen)}
         className="flex items-center justify-center cursor-pointer transition-transform duration-150 hover:scale-105 active:scale-95"
         style={{
-          width: 28,
-          height: 28,
-          borderRadius: 8,
+          width: 44,
+          height: 44,
+          borderRadius: '50%',
           background: 'var(--w-standard-bg-soft)',
           color: 'var(--w-standard-accent)',
-          fontSize: 18,
-          fontWeight: 700,
+          fontSize: 20,
+          fontWeight: 600,
           fontFamily: 'var(--w-font-sans)',
           lineHeight: 1,
-          border: 'none',
+          border: '1px solid var(--w-line)',
+          boxShadow: 'var(--w-shadow-lift)',
+          padding: 0,
         }}
         aria-label="Add new card"
         aria-expanded={menuOpen}

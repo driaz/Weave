@@ -257,6 +257,13 @@ type WeaveButtonProps = {
   onLayerChange: (layer: WeaveMode) => void
   onResult: (result: WeaveResult, mode: WeaveMode) => void
   onClear: () => void
+  /**
+   * Notified whenever the active analysis state changes. Receives the
+   * mode currently being woven, or `null` when idle. Lifts loading state
+   * up so canvas-wide effects (shimmer overlay, thinking panel,
+   * edge dimming) can observe it without re-running the pipeline.
+   */
+  onLoadingChange?: (mode: WeaveMode | null) => void
 }
 
 export function WeaveButton({
@@ -269,10 +276,15 @@ export function WeaveButton({
   // shape so the call site doesn't need to change yet; will be wired up
   // when a settings menu lands.
   onClear: _onClear,
+  onLoadingChange,
 }: WeaveButtonProps) {
   void _onClear
   const [state, setState] = useState<WeaveState>('idle')
   const [loadingMode, setLoadingMode] = useState<WeaveMode | null>(null)
+
+  useEffect(() => {
+    onLoadingChange?.(loadingMode)
+  }, [loadingMode, onLoadingChange])
   const [pickerOpen, setPickerOpen] = useState(false)
   const [nodeCountAtClick, setNodeCountAtClick] = useState(0)
   const { getNodes } = useReactFlow()

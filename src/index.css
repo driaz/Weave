@@ -100,6 +100,24 @@ body {
   animation: shimmer 1.5s infinite linear;
 }
 
+@keyframes weave-shimmer-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+@keyframes weave-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.react-flow__edges {
+  transition: opacity 0.4s ease;
+}
+
+.canvas-weaving .react-flow__edges {
+  opacity: 0.3;
+}
+
 @keyframes node-highlight-pulse {
   0%, 100% {
     box-shadow:
