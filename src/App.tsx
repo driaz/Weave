@@ -28,6 +28,7 @@ import {
   WeavingShimmer,
   ThinkingPanel,
 } from './components/CanvasEffects'
+import { EmptyCanvas } from './components/EmptyCanvas'
 import { ReflectView } from './components/ReflectView'
 import { UserMenu } from './components/UserMenu'
 import { HydrationSourceIndicator } from './components/HydrationSourceIndicator'
@@ -637,14 +638,8 @@ export function App() {
             proOptions={{ hideAttribution: true }}
           >
             <Controls position="bottom-right" />
-            {nodes.length === 0 && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <p className="text-gray-400 text-lg font-light select-none">
-                  Drop content or click + to begin
-                </p>
-              </div>
-            )}
           </ReactFlow>
+          {nodes.length === 0 && <EmptyCanvas />}
           <AddNodeButton />
           <WeaveButton
             connections={connections}
