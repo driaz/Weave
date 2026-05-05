@@ -36,6 +36,10 @@ export function useStaggeredEdges(
       highlightState?.type === 'connection'
         ? stripNodePrefix(highlightState.connection.to)
         : null
+    const hlMode: WeaveMode | null =
+      highlightState?.type === 'connection'
+        ? (highlightState.connection.mode ?? 'weave')
+        : null
 
     return connections.map((conn, index) => {
       const source = stripNodePrefix(conn.from)
@@ -54,7 +58,12 @@ export function useStaggeredEdges(
         isHighlighted =
           onActiveLayer && (source === hlNodeId || target === hlNodeId)
       } else if (hlFrom != null && hlTo != null) {
-        isHighlighted = source === hlFrom && target === hlTo
+        // Same node pair AND same mode — sibling edges in other modes
+        // (e.g. a Standard connection between A and B alongside a
+        // Find Tensions one) should stay un-highlighted.
+        const connMode: WeaveMode = conn.mode ?? 'weave'
+        isHighlighted =
+          source === hlFrom && target === hlTo && connMode === hlMode
       }
 
       return {
