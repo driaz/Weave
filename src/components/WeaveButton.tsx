@@ -294,10 +294,12 @@ export function WeaveButton({
       }
     }
     document.addEventListener('keydown', handleEscape)
-    document.addEventListener('mousedown', handleClick)
+    // Capture phase: React Flow's pan handler stops mousedown propagation
+    // for canvas clicks, so a regular bubble listener wouldn't fire.
+    document.addEventListener('mousedown', handleClick, true)
     return () => {
       document.removeEventListener('keydown', handleEscape)
-      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('mousedown', handleClick, true)
     }
   }, [pickerOpen])
 

@@ -44,25 +44,40 @@ export function BoardSwitcher({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [pendingRenameId, setPendingRenameId] = useState<string | null>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setOpen(false)
-        setRenamingId(null)
-        setConfirmDeleteId(null)
-      }
-    }
-    document.addEventListener('keydown', handleEscape)
-    return () => document.removeEventListener('keydown', handleEscape)
-  }, [open])
+  const containerRef = useRef<HTMLDivElement>(null)
 
   const closeMenu = useCallback(() => {
     setOpen(false)
     setRenamingId(null)
     setConfirmDeleteId(null)
   }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        closeMenu()
+      }
+    }
+    const handleClick = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        closeMenu()
+      }
+    }
+    document.addEventListener('keydown', handleEscape)
+    // Capture phase: React Flow's pan handler calls stopPropagation on
+    // mousedown before it bubbles, so a regular listener never fires for
+    // clicks on the canvas. Capture-phase listeners run on the way down
+    // from the root, before any target can stop propagation.
+    document.addEventListener('mousedown', handleClick, true)
+    return () => {
+      document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('mousedown', handleClick, true)
+    }
+  }, [open, closeMenu])
 
   useEffect(() => {
     if (renamingId && renameInputRef.current) {
@@ -123,7 +138,7 @@ export function BoardSwitcher({
   )
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center select-none cursor-pointer transition-colors duration-150"
@@ -184,13 +199,6 @@ export function BoardSwitcher({
       </button>
 
       {open && (
-        <>
-          <div
-            className="fixed inset-0"
-            style={{ zIndex: 40 }}
-            onClick={closeMenu}
-            aria-hidden="true"
-          />
           <div
             className="absolute"
             style={{
@@ -357,7 +365,6 @@ export function BoardSwitcher({
               <span style={{ fontWeight: 600 }}>+</span> New board
             </button>
           </div>
-        </>
       )}
     </div>
   )

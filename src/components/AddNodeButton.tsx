@@ -20,25 +20,39 @@ export function AddNodeButton() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pdfInputRef = useRef<HTMLInputElement>(null)
   const linkInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (!menuOpen) return
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setMenuOpen(false)
-        setLinkInputMode(false)
-        setLinkUrl('')
-      }
-    }
-    document.addEventListener('keydown', handleEscape)
-    return () => document.removeEventListener('keydown', handleEscape)
-  }, [menuOpen])
+  const containerRef = useRef<HTMLDivElement>(null)
 
   const closeMenu = useCallback(() => {
     setMenuOpen(false)
     setLinkInputMode(false)
     setLinkUrl('')
   }, [])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        closeMenu()
+      }
+    }
+    const handleClick = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        closeMenu()
+      }
+    }
+    document.addEventListener('keydown', handleEscape)
+    // Capture phase: React Flow's pan handler stops mousedown propagation
+    // for canvas clicks. Capture-phase listeners fire before any target
+    // can call stopPropagation, so the click-outside check still runs.
+    document.addEventListener('mousedown', handleClick, true)
+    return () => {
+      document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('mousedown', handleClick, true)
+    }
+  }, [menuOpen, closeMenu])
 
   useEffect(() => {
     if (linkInputMode && linkInputRef.current) {
@@ -255,14 +269,8 @@ export function AddNodeButton() {
   )
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       {menuOpen && (
-        <>
-        <div
-          className="fixed inset-0 z-40"
-          onClick={closeMenu}
-          aria-hidden="true"
-        />
         <div
           className="absolute"
           style={{
@@ -402,7 +410,6 @@ export function AddNodeButton() {
             </>
           )}
         </div>
-        </>
       )}
       <button
         onClick={() => setMenuOpen(!menuOpen)}
