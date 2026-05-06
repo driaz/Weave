@@ -7,6 +7,8 @@ import 'dotenv/config'
 import Fastify from 'fastify'
 import sensible from '@fastify/sensible'
 import cors from '@fastify/cors'
+import { Readable } from 'node:stream'
+import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { verifyUserToken } from './auth.js'
 import { processMedia } from './process.js'
 
@@ -61,6 +63,70 @@ app.post<{ Body: ProcessBody }>('/process', async (req, reply) => {
     .catch((err) => app.log.error({ err, nodeId: node_id }, 'processMedia failed'))
 
   return reply.code(202).send({ accepted: true })
+})
+
+interface TtsBody {
+  text: string
+}
+
+const TTS_MAX_TEXT_LENGTH = 5000
+
+app.post<{ Body: TtsBody }>('/api/tts', async (req, reply) => {
+  const { text } = req.body ?? ({} as TtsBody)
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return reply.badRequest('text is required')
+  }
+  if (text.length > TTS_MAX_TEXT_LENGTH) {
+    return reply.badRequest(`text exceeds max length of ${TTS_MAX_TEXT_LENGTH} characters`)
+  }
+
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) {
+    req.log.error({ phase: 'tts.config' }, 'ELEVENLABS_API_KEY not configured')
+    return reply.code(500).send({ error: 'ElevenLabs API key not configured' })
+  }
+
+  const voiceId = process.env.ELEVENLABS_VOICE_ID
+  if (!voiceId) {
+    req.log.error({ phase: 'tts.config' }, 'ELEVENLABS_VOICE_ID not configured')
+    return reply.code(500).send({ error: 'ElevenLabs voice ID not configured' })
+  }
+
+  let upstream: Response
+  try {
+    upstream = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json',
+        Accept: 'audio/mpeg',
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_flash_v2_5',
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        output_format: 'mp3_44100_128',
+      }),
+    })
+  } catch (err) {
+    req.log.error({ err, phase: 'tts.fetch' }, 'ElevenLabs request failed')
+    return reply.code(502).send({ error: 'TTS generation failed' })
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    const detail = await upstream.text().catch(() => '')
+    req.log.error(
+      { status: upstream.status, detail: detail.slice(0, 500), phase: 'tts.upstream' },
+      'ElevenLabs returned error',
+    )
+    return reply.code(502).send({ error: 'TTS generation failed' })
+  }
+
+  reply
+    .header('Content-Type', 'audio/mpeg')
+    .header('Transfer-Encoding', 'chunked')
+
+  return reply.send(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>))
 })
 
 await app.listen({ host: '0.0.0.0', port: PORT })
