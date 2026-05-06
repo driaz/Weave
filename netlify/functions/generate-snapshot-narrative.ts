@@ -10,7 +10,7 @@ import { createClient } from '@supabase/supabase-js'
 // Constants
 // ---------------------------------------------------------------------------
 
-const CLAUDE_MODEL = 'claude-opus-4-6'
+const CLAUDE_MODEL = 'claude-opus-4-7'
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages'
 const CLAUDE_MAX_TOKENS = 2048
 
