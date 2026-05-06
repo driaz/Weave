@@ -53,8 +53,8 @@ export default async (req: Request) => {
     return new Response(null, { status: 204 })
   }
 
-  const anthropicKey = process.env.ANTHROPIC_API_KEY
-  const supabaseUrl = process.env.SUPABASE_URL
+  const anthropicKey = process.env.VITE_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!anthropicKey || !supabaseUrl || !supabaseServiceKey) {
     return Response.json(
