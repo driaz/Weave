@@ -23,6 +23,13 @@ export type LinkCardData = {
   imageMimeType?: string
   transcript?: string
   youtubeTranscript?: string
+  /**
+   * 2-3 sentence Sonnet summary of YouTube video content. Generated after
+   * the transcript lands and consumed by the voice pipeline so it can speak
+   * about a node without the raw transcript. Populated only on YouTube
+   * linkCards (not Twitter, not generic).
+   */
+  contentDescription?: string
 }
 
 const CARD_WIDTH = 250

@@ -63,6 +63,3 @@ export default async (req: Request) => {
   }
 }
 
-export const config = {
-  path: '/.netlify/functions/youtube-transcript',
-}

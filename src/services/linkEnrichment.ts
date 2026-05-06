@@ -112,14 +112,32 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
 
     logger?.debug('enrich.youtube.start', 'success', { url })
 
-    fetchTranscript(url).then((transcript) => {
-      if (transcript) {
-        transcriptLanded = true
-        transcriptLen = transcript.length
-        patchNodeData({ transcript })
-        logger?.debug('enrich.transcript', 'success', { field: 'transcript', len: transcript.length })
-      } else {
+    fetchTranscript(url).then(async (transcript) => {
+      if (!transcript) {
         logger?.debug('enrich.transcript', 'degraded', { field: 'transcript', reason: 'empty' })
+        return
+      }
+      transcriptLanded = true
+      transcriptLen = transcript.length
+      patchNodeData({ transcript })
+      logger?.debug('enrich.transcript', 'success', { field: 'transcript', len: transcript.length })
+
+      // Generate the voice-pipeline content description. Best-effort: a
+      // failure here doesn't block transcript persistence or the embed
+      // that fires at the 8s mark. media_analysis from the Fly pipeline
+      // typically hasn't landed yet at ingest time (it takes 30-90s),
+      // so tonal context is left null here — the backfill picks it up
+      // for older nodes where it's already present.
+      const description = await fetchContentDescription({
+        title: metadata.title,
+        channel: metadata.authorName ?? null,
+        transcript,
+      })
+      if (description) {
+        patchNodeData({ contentDescription: description })
+        logger?.debug('enrich.description', 'success', { len: description.length })
+      } else {
+        logger?.debug('enrich.description', 'degraded', { reason: 'empty-or-failed' })
       }
     })
 
@@ -152,6 +170,63 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
     Date.now() - startedAt,
   )
   embedNodeAsync(boardId, nodeId, 'linkCard', { ...metadata, loading: false }, logger)
+}
+
+/**
+ * Ask the Netlify generate-content-description function for a 2-3
+ * sentence summary of the YouTube video. Mirrors fetchTranscript's
+ * never-throws contract: any failure (network, missing API key on the
+ * server, Sonnet error) returns empty string and the caller continues.
+ */
+async function fetchContentDescription(opts: {
+  title: string
+  channel: string | null
+  transcript: string
+  tonalContext?: string | null
+}): Promise<string> {
+  if (!opts.title || !opts.transcript) return ''
+
+  let response: Response
+  try {
+    response = await fetch('/.netlify/functions/generate-content-description', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(opts),
+    })
+  } catch (err) {
+    console.warn('[contentDescription] network error:', err)
+    return ''
+  }
+
+  if (!response.ok) {
+    console.warn(
+      `[contentDescription] returned ${response.status} ${response.statusText}`,
+    )
+    return ''
+  }
+
+  // Same SPA-fallback guard as fetchTranscript — `vite` without `netlify
+  // dev` will hand back index.html for the function path and JSON.parse
+  // explodes silently.
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!contentType.includes('application/json')) {
+    console.warn(
+      `[contentDescription] non-JSON response (content-type "${contentType}"); ` +
+        'function probably not running. Try `netlify dev`.',
+    )
+    return ''
+  }
+
+  try {
+    const data = (await response.json()) as { description?: string; error?: string }
+    if (data.error) {
+      console.warn(`[contentDescription] returned error: ${data.error}`)
+    }
+    return data.description ?? ''
+  } catch (err) {
+    console.warn('[contentDescription] failed to parse JSON:', err)
+    return ''
+  }
 }
 
 /**
