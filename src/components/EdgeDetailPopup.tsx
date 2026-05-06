@@ -1,7 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import type { Node } from '@xyflow/react'
 import type { Connection } from '../api/claude'
 import type { WeaveMode } from '../types/board'
+import { useVoiceInsight } from '../hooks/useVoiceInsight'
+import { nodeToVoicePayload } from '../utils/voicePayload'
+import { trackEvent } from '../services/eventTracker'
+import { useBoardId } from '../hooks/useBoardId'
 
 type ModeMeta = {
   label: string
@@ -199,10 +204,168 @@ function StatBar({
   )
 }
 
+function SpeakerIcon({ size = 14, color }: { size?: number; color: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M3.5 7.5h3l4-3v11l-4-3h-3z"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        fill={color}
+        fillOpacity="0.15"
+      />
+      <path
+        d="M13.5 7.5c1 .8 1 4.2 0 5"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <path
+        d="M15.5 5.5c2 1.5 2 7.5 0 9"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function StopIcon({ size = 14, color }: { size?: number; color: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
+      <rect x="5" y="5" width="10" height="10" rx="1.5" fill={color} />
+    </svg>
+  )
+}
+
+function LoadingDots({ color }: { color: string }) {
+  return (
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 3, height: 14 }}
+      aria-hidden="true"
+    >
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: 4,
+            height: 4,
+            borderRadius: '50%',
+            background: color,
+            animation: 'voiceDot 1s ease-in-out infinite',
+            animationDelay: `${i * 0.15}s`,
+          }}
+        />
+      ))}
+    </span>
+  )
+}
+
+type VoiceButtonState = 'idle' | 'loading' | 'playing' | 'error'
+
+function VoiceInsightButton({
+  state,
+  available,
+  accent,
+  accentHex,
+  onClick,
+}: {
+  state: VoiceButtonState
+  available: boolean
+  accent: string
+  accentHex: string
+  onClick: () => void
+}) {
+  const labelByState: Record<VoiceButtonState, string> = {
+    idle: 'Listen to insight',
+    loading: 'Generating…',
+    playing: 'Stop',
+    error: 'Couldn’t play',
+  }
+  const disabled = !available || state === 'loading'
+  const label = available ? labelByState[state] : 'Listen unavailable'
+
+  const isError = state === 'error'
+  const color = isError ? 'var(--w-tensions-ink)' : accent
+  const bg =
+    state === 'playing'
+      ? `${accentHex}1f`
+      : state === 'loading'
+        ? `${accentHex}14`
+        : isError
+          ? 'rgba(184, 76, 58, 0.10)'
+          : 'transparent'
+  const borderColor = isError
+    ? 'rgba(184, 76, 58, 0.35)'
+    : `${accentHex}55`
+
+  return (
+    <>
+      <style>{`
+        @keyframes voiceDot {
+          0%, 80%, 100% { opacity: 0.25; transform: scale(0.85); }
+          40% { opacity: 1; transform: scale(1); }
+        }
+      `}</style>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        aria-pressed={state === 'playing'}
+        className="cursor-pointer transition-colors duration-150"
+        style={{
+          marginTop: 12,
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          padding: '8px 12px',
+          borderRadius: 'var(--w-radius-pill)',
+          border: `1px solid ${borderColor}`,
+          background: bg,
+          color,
+          fontFamily: 'var(--w-font-sans)',
+          fontSize: 12,
+          fontWeight: 600,
+          letterSpacing: 0.2,
+          opacity: disabled ? 0.55 : 1,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {state === 'loading' ? (
+          <LoadingDots color={color} />
+        ) : state === 'playing' ? (
+          <StopIcon size={12} color={color} />
+        ) : (
+          <SpeakerIcon size={14} color={color} />
+        )}
+        <span>{label}</span>
+      </button>
+    </>
+  )
+}
+
 type EdgeDetailPopupProps = {
   connection: Connection
   position: { x: number; y: number }
   connectionNumber?: number
+  node1?: Node
+  node2?: Node
   onClose: () => void
 }
 
@@ -210,12 +373,63 @@ export function EdgeDetailPopup({
   connection,
   position,
   connectionNumber,
+  node1,
+  node2,
   onClose,
 }: EdgeDetailPopupProps) {
   const popupRef = useRef<HTMLDivElement>(null)
   const mode: WeaveMode = connection.mode ?? 'weave'
   const meta = MODE_META[mode]
   const accentHex = MODE_ACCENT_HEX[mode]
+  const boardId = useBoardId()
+
+  const buildRequest = useCallback(() => {
+    if (!node1 || !node2) return null
+    const p1 = nodeToVoicePayload(node1)
+    const p2 = nodeToVoicePayload(node2)
+    if (!p1 || !p2) return null
+    return {
+      connectionLabel: connection.label,
+      connectionExplanation: connection.explanation,
+      node1: p1,
+      node2: p2,
+    }
+  }, [connection.label, connection.explanation, node1, node2])
+
+  const fromId = connection.from.replace(/^node-/, '')
+  const toId = connection.to.replace(/^node-/, '')
+
+  const handlePlayed = useCallback(
+    (metrics: {
+      durationListened: number
+      completed: boolean
+      insightLength: number
+      totalLatency: number
+    }) => {
+      trackEvent('voice_insight_played', {
+        boardId,
+        targetId: `connection:${boardId}:${fromId}:${toId}`,
+        durationMs: Math.round(metrics.durationListened * 1000),
+        metadata: {
+          connectionLabel: connection.label,
+          nodeIds: [fromId, toId],
+          durationListened: metrics.durationListened,
+          completed: metrics.completed,
+          insightLength: metrics.insightLength,
+          totalLatency: metrics.totalLatency,
+          mode,
+        },
+      })
+    },
+    [boardId, connection.label, fromId, toId, mode],
+  )
+
+  const { state: voiceState, trigger: triggerVoice } = useVoiceInsight({
+    buildRequest,
+    onPlayed: handlePlayed,
+  })
+
+  const voiceAvailable = Boolean(node1 && node2)
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -335,6 +549,14 @@ export function EdgeDetailPopup({
             isLast
           />
         </div>
+
+        <VoiceInsightButton
+          state={voiceState}
+          available={voiceAvailable}
+          accent={meta.accent}
+          accentHex={accentHex}
+          onClick={triggerVoice}
+        />
 
         <div
           className="flex items-center justify-between"

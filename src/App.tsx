@@ -672,6 +672,12 @@ export function App() {
               connection={popupEdge.connection}
               position={popupEdge.position}
               connectionNumber={connections.indexOf(popupEdge.connection) + 1}
+              node1={nodes.find(
+                (n) => n.id === popupEdge.connection.from.replace(/^node-/, ''),
+              )}
+              node2={nodes.find(
+                (n) => n.id === popupEdge.connection.to.replace(/^node-/, ''),
+              )}
               onClose={closeEdgeDetail}
             />
           )}
