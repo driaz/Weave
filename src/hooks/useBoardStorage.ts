@@ -14,6 +14,7 @@ import {
   buildStoreFromCache,
   emptyStore,
   fetchFromSupabase,
+  writeStoreToCache,
 } from '../persistence/hydration'
 import { syncBoardToSupabase } from '../persistence/syncBoard'
 import { logHydrationSource, logSyncOutcome } from '../persistence/syncLogger'
@@ -233,13 +234,33 @@ export function useBoardStorage(): UseBoardStorageResult {
           const next = outcome.store
           const prev = storeRef.current
 
+          // Snap-back guard: `next.lastActiveBoard` was frozen as
+          // `preferredActiveId` when this IIFE started. If the user
+          // switched boards during the await, the store has moved on
+          // and applying `next` as-is would revert their switch.
+          // Preserve the user's choice — but only if Supabase still
+          // knows about that board (otherwise fall through to whatever
+          // Supabase returned rather than render an undefined board).
+          const finalNext =
+            prev.lastActiveBoard !== next.lastActiveBoard &&
+            next.boards[prev.lastActiveBoard]
+              ? { ...next, lastActiveBoard: prev.lastActiveBoard }
+              : next
+
+          // Mirror the (possibly snap-back-corrected) store to cache.
+          // Done here rather than inside fetchFromSupabase so the
+          // cached `lastActiveBoard` reflects the user's mid-fetch
+          // switch — otherwise refresh would snap them back to the
+          // pre-switch board.
+          writeStoreToCache(finalNext)
+
           // Only swap state if Supabase's view differs from what we
           // rendered. Otherwise we'd trigger a redundant sync cycle
           // in App.tsx for a no-op.
-          if (!storesEqual(prev, next)) {
-            const activeBoard = next.boards[next.lastActiveBoard]
+          if (!storesEqual(prev, finalNext)) {
+            const activeBoard = finalNext.boards[finalNext.lastActiveBoard]
             if (activeBoard) resetNodeIdCounter(activeBoard.nodeIdCounter)
-            setStore(next)
+            setStore(finalNext)
             // Signal App.tsx to re-seed its React state from the
             // freshly-hydrated `currentBoard` — the cache may have
             // been missing image nodes (quota stripping) or stale

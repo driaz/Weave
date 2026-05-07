@@ -340,7 +340,9 @@ export async function fetchFromSupabase(
         supabaseBoards,
         preferredActiveId,
       )
-      writeStoreToCache(store)
+      // Cache write moved to caller — the bootstrap may apply a
+      // snap-back override to `lastActiveBoard` after this resolves,
+      // and we want the cached store to match the in-memory store.
       logHydrationSource('supabase', 'fetched from Supabase')
       return { kind: 'success', store, source: 'supabase' }
     }
@@ -349,7 +351,6 @@ export async function fetchFromSupabase(
     // has something to render.
     const newBoard = await persistence.boards.create({ name: 'Untitled' })
     const store = storeFromSingleBoard(newBoard)
-    writeStoreToCache(store)
     logHydrationSource('supabase', 'new user, auto-created first board')
     return { kind: 'success', store, source: 'supabase' }
   } catch (err) {
