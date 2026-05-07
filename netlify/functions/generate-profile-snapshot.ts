@@ -229,7 +229,7 @@ function agglomerativeClustering(
   }
 
   // Each node starts as its own cluster (array of original indices)
-  let clusters: number[][] = nodes.map((_, i) => [i])
+  const clusters: number[][] = nodes.map((_, i) => [i])
 
   while (clusters.length > 1) {
     // Find the pair of clusters with highest average linkage similarity

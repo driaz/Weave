@@ -201,12 +201,14 @@ export function App() {
     prevHydrationRevRef.current = hydrationRevision
   }, [
     currentBoard.id,
+    currentBoard.name,
     currentBoard.nodes,
     currentBoard.connections,
     hydrating,
     rollbackSignal,
     hydrationRevision,
     markBoardClean,
+    allBoards,
   ])
 
   // Track session lifecycle

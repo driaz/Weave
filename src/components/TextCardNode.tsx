@@ -47,7 +47,7 @@ function parseText(raw: string): ParsedQuote | ParsedNote {
 
   // Walk forward to find the matching closing quote and any trailing
   // attribution after an em dash, en dash, or hyphen separator.
-  let inner = text.slice(1)
+  const inner = text.slice(1)
   const closerMatch = inner.match(QUOTE_CLOSERS_RX)
   if (!closerMatch || closerMatch.index === undefined) {
     // No closing quote — strip the opener and treat as a quote without a
@@ -56,7 +56,7 @@ function parseText(raw: string): ParsedQuote | ParsedNote {
   }
 
   const quote = inner.slice(0, closerMatch.index).trim()
-  let rest = inner.slice(closerMatch.index + 1).trim()
+  const rest = inner.slice(closerMatch.index + 1).trim()
 
   let source: string | null = null
   const dashMatch = rest.match(/^[—–-]\s*(.+)$/)
