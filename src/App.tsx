@@ -51,6 +51,7 @@ import { embedNodeAsync } from './services/embeddingService'
 import { enrichLinkNode } from './services/linkEnrichment'
 import { supabase } from './services/supabaseClient'
 import { buildProcessingLogAppender, createNodeLogger } from './utils/logger'
+import { detectRenderAnomaly } from './utils/renderAnomaly'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -178,6 +179,14 @@ export function App() {
         position: n.position,
         data: n.data,
       }))
+      detectRenderAnomaly({
+        rendered: {
+          id: currentBoard.id,
+          name: currentBoard.name,
+          nodeCount: freshNodes.length,
+        },
+        boards: allBoards,
+      })
       setNodes(freshNodes)
       setConnections(currentBoard.connections)
       markBoardClean(currentBoard.id, freshNodes, currentBoard.connections)

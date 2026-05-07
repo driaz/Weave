@@ -26,6 +26,10 @@ import {
 } from '../persistence/cache'
 import { AuthError, persistence } from '../persistence'
 import { computeSaveSignature } from './saveSignature'
+import {
+  setBootFetchStatus,
+  setLastRequestedBoardId,
+} from '../utils/renderAnomaly'
 
 function generateBoardId(): BoardId {
   return crypto.randomUUID()
@@ -220,6 +224,8 @@ export function useBoardStorage(): UseBoardStorageResult {
         logHydrationSource('cache', 'rendered from cache, revalidating')
       }
 
+      setBootFetchStatus('pending')
+
       try {
         const outcome = await fetchFromSupabase(storeRef.current.lastActiveBoard)
 
@@ -245,10 +251,12 @@ export function useBoardStorage(): UseBoardStorageResult {
           }
           setHydrationError(null)
           setHydrating(false)
+          setBootFetchStatus('success')
           return
         }
 
         // Network error from Supabase.
+        setBootFetchStatus('failed')
         if (hadCacheAtMountRef.current) {
           // Cache is live — keep serving it and warn in the console.
           logHydrationSource(
@@ -269,6 +277,7 @@ export function useBoardStorage(): UseBoardStorageResult {
           setHydrating(false)
         }
       } catch (err) {
+        setBootFetchStatus('failed')
         if (err instanceof AuthError) {
           // ProtectedRoute will bounce to /login on the next render.
           throw err
@@ -461,6 +470,7 @@ export function useBoardStorage(): UseBoardStorageResult {
 
   const createBoard = useCallback((): BoardId => {
     const board = createDefaultBoard()
+    setLastRequestedBoardId(board.id)
     resetNodeIdCounter(1)
 
     setStore((prev) => {
@@ -514,6 +524,7 @@ export function useBoardStorage(): UseBoardStorageResult {
     const board = storeRef.current.boards[boardId]
     if (!board) return
 
+    setLastRequestedBoardId(boardId)
     resetNodeIdCounter(board.nodeIdCounter)
     setStore((prev) => ({ ...prev, lastActiveBoard: boardId }))
     putLastActiveBoard(boardId)
