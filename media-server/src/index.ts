@@ -29,7 +29,7 @@ const allowedOrigins = (process.env.WEAVE_ALLOWED_ORIGINS ?? 'http://localhost:5
   .map((s) => s.trim())
   .filter(Boolean)
 
-const app = Fastify({ logger: true })
+const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 })
 await app.register(sensible)
 await app.register(cors, {
   origin: allowedOrigins,

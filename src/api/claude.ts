@@ -5,9 +5,120 @@ import type { LinkCardData } from '../components/LinkCardNode'
 import type { PdfCardData } from '../components/PdfCardNode'
 import type { WeaveMode } from '../types/board'
 import { compressBase64Image } from '../utils/imageUtils'
+import { supabase } from '../services/supabaseClient'
 
 const API_URL = 'https://api.anthropic.com/v1/messages'
+const PROXY_URL = 'https://weave-media.fly.dev/api/claude'
 const MODEL = 'claude-opus-4-6'
+
+type ClaudeMessageResult = {
+  text: string
+  model: string | null
+  promptTokens: number | null
+  completionTokens: number | null
+  stopReason: string | null
+}
+
+/**
+ * Consume an Anthropic Messages SSE stream and return the accumulated
+ * text + metadata. Option A (non-progressive): waits for `message_stop`
+ * before resolving. Throws on stream `error` events or premature EOF.
+ */
+async function consumeAnthropicStream(
+  body: ReadableStream<Uint8Array>,
+): Promise<ClaudeMessageResult> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let text = ''
+  let model: string | null = null
+  let promptTokens: number | null = null
+  let completionTokens: number | null = null
+  let stopReason: string | null = null
+  let sawMessageStop = false
+
+  const handleEvent = (raw: string) => {
+    let dataLine = ''
+    for (const line of raw.split('\n')) {
+      if (line.startsWith('data:')) {
+        dataLine = line.startsWith('data: ') ? line.slice(6) : line.slice(5)
+      }
+    }
+    if (!dataLine) return
+    let event: { type?: string; [k: string]: unknown }
+    try {
+      event = JSON.parse(dataLine)
+    } catch {
+      console.warn('[analyzeCanvas] malformed SSE data line:', dataLine.slice(0, 200))
+      return
+    }
+    const type = event.type
+    if (type === 'message_start') {
+      const m = (event as { message?: { model?: unknown; usage?: { input_tokens?: unknown } } }).message
+      if (typeof m?.model === 'string') model = m.model
+      if (typeof m?.usage?.input_tokens === 'number') promptTokens = m.usage.input_tokens
+    } else if (type === 'content_block_delta') {
+      const delta = (event as { delta?: { type?: string; text?: unknown } }).delta
+      if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        text += delta.text
+      }
+    } else if (type === 'message_delta') {
+      const e = event as { delta?: { stop_reason?: unknown }; usage?: { output_tokens?: unknown } }
+      if (typeof e.delta?.stop_reason === 'string') stopReason = e.delta.stop_reason
+      if (typeof e.usage?.output_tokens === 'number') completionTokens = e.usage.output_tokens
+    } else if (type === 'message_stop') {
+      sawMessageStop = true
+    } else if (type === 'error') {
+      const detail = (event as { error?: { message?: unknown } }).error?.message
+      throw new Error(`Claude stream error: ${typeof detail === 'string' ? detail : 'unknown'}`)
+    }
+    // ping, content_block_start, content_block_stop — ignore
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (value) {
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() ?? ''
+      for (const part of parts) handleEvent(part)
+    }
+    if (done) break
+  }
+  if (buffer.trim()) handleEvent(buffer)
+
+  if (!sawMessageStop) throw new Error('Claude stream ended without message_stop')
+  if (!text) throw new Error('Claude stream produced no text')
+
+  return { text, model, promptTokens, completionTokens, stopReason }
+}
+
+async function fetchClaudeViaProxy(requestBody: string): Promise<ClaudeMessageResult> {
+  if (!supabase) {
+    throw new Error('Supabase client not configured — cannot authenticate Claude proxy request')
+  }
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+  if (!token) throw new Error('No Supabase session — please sign in')
+
+  const response = await fetch(PROXY_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: requestBody,
+  })
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '')
+    throw new Error(`Claude proxy error (${response.status}): ${errorBody}`)
+  }
+  if (!response.body) {
+    throw new Error('Claude proxy response has no body')
+  }
+  return consumeAnthropicStream(response.body)
+}
 
 const JSON_FORMAT_INSTRUCTIONS = `You MUST respond with ONLY a valid JSON object. Do not include any text before or after the JSON. Do not include markdown formatting or code fences. Do not explain your reasoning outside the JSON structure. Your entire response must be parseable by JSON.parse().
 
@@ -404,39 +515,48 @@ export async function analyzeCanvas(
   })
 
   const apiStart = Date.now()
-  const response = useProxy
-    ? await fetch('/api/claude', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: requestBody,
-      })
-    : await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-          'content-type': 'application/json',
-        },
-        body: requestBody,
-      })
+  let messageResult: ClaudeMessageResult
+  if (useProxy) {
+    messageResult = await fetchClaudeViaProxy(requestBody)
+  } else {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'content-type': 'application/json',
+      },
+      body: requestBody,
+    })
 
-  if (!response.ok) {
-    const errorBody = await response.text()
-    throw new Error(`Anthropic API error (${response.status}): ${errorBody}`)
+    if (!response.ok) {
+      const errorBody = await response.text()
+      throw new Error(`Anthropic API error (${response.status}): ${errorBody}`)
+    }
+
+    const json = await response.json()
+    const textBlock = json.content?.find(
+      (block: { type: string }) => block.type === 'text',
+    )
+    if (!textBlock?.text) {
+      throw new Error('No text content in Claude response')
+    }
+    const usage = json.usage as
+      | { input_tokens?: number; output_tokens?: number }
+      | undefined
+    messageResult = {
+      text: textBlock.text,
+      model: typeof json.model === 'string' ? json.model : null,
+      promptTokens: typeof usage?.input_tokens === 'number' ? usage.input_tokens : null,
+      completionTokens:
+        typeof usage?.output_tokens === 'number' ? usage.output_tokens : null,
+      stopReason: typeof json.stop_reason === 'string' ? json.stop_reason : null,
+    }
   }
-
-  const json = await response.json()
   const apiLatencyMs = Date.now() - apiStart
 
-  const textBlock = json.content?.find(
-    (block: { type: string }) => block.type === 'text',
-  )
-  if (!textBlock?.text) {
-    throw new Error('No text content in Claude response')
-  }
-
-  const rawText = textBlock.text
+  const rawText = messageResult.text
     .replace(/^```json\n?/, '')
     .replace(/\n?```$/, '')
     .trim()
@@ -457,19 +577,14 @@ export async function analyzeCanvas(
   // Tag each connection with the mode
   parsed.connections = parsed.connections.map((c) => ({ ...c, mode }))
 
-  const usage = json.usage as
-    | { input_tokens?: number; output_tokens?: number }
-    | undefined
-
   parsed.diagnostics = {
     nodeCount: contentNodes.length,
     contextConnectionsSent: contextConnections.length,
     apiLatencyMs,
-    promptTokens: typeof usage?.input_tokens === 'number' ? usage.input_tokens : null,
-    completionTokens:
-      typeof usage?.output_tokens === 'number' ? usage.output_tokens : null,
-    model: typeof json.model === 'string' ? json.model : null,
-    stopReason: typeof json.stop_reason === 'string' ? json.stop_reason : null,
+    promptTokens: messageResult.promptTokens,
+    completionTokens: messageResult.completionTokens,
+    model: messageResult.model,
+    stopReason: messageResult.stopReason,
     skippedApiCall: false,
   }
 
