@@ -14,6 +14,11 @@ import { processMedia } from './process.js'
 
 const PORT = Number(process.env.PORT ?? 3000)
 
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
+if (!ANTHROPIC_API_KEY) {
+  throw new Error('ANTHROPIC_API_KEY is required')
+}
+
 // Browsers send a CORS preflight (OPTIONS) for cross-origin POSTs that
 // carry Authorization + Content-Type: application/json — which every
 // /process call does. Without an allow-list registered, Fastify 404s the
@@ -125,6 +130,52 @@ app.post<{ Body: TtsBody }>('/api/tts', async (req, reply) => {
   reply
     .header('Content-Type', 'audio/mpeg')
     .header('Transfer-Encoding', 'chunked')
+
+  return reply.send(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>))
+})
+
+app.post('/api/claude', async (req, reply) => {
+  const auth = req.headers.authorization
+  if (!auth?.startsWith('Bearer ')) {
+    return reply.unauthorized('missing bearer token')
+  }
+  const userId = await verifyUserToken(auth.slice('Bearer '.length))
+  if (!userId) return reply.unauthorized('invalid token')
+
+  const body = req.body
+  if (!body || typeof body !== 'object') {
+    return reply.badRequest('JSON body required')
+  }
+
+  let upstream: Response
+  try {
+    upstream = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ...body, stream: true }),
+    })
+  } catch (err) {
+    req.log.error({ err, phase: 'claude.fetch' }, 'Anthropic request failed')
+    return reply.code(502).send({ error: 'Claude request failed' })
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    const detail = await upstream.text().catch(() => '')
+    req.log.error(
+      { status: upstream.status, detail: detail.slice(0, 500), phase: 'claude.upstream' },
+      'Anthropic returned error',
+    )
+    return reply.code(upstream.status).send({ error: 'Claude request failed', detail })
+  }
+
+  reply
+    .header('Content-Type', 'text/event-stream')
+    .header('Cache-Control', 'no-cache')
+    .header('X-Accel-Buffering', 'no')
 
   return reply.send(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>))
 })
