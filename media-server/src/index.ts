@@ -135,6 +135,22 @@ app.post<{ Body: TtsBody }>('/api/tts', async (req, reply) => {
 })
 
 app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
+  // Client mints a playbackId per listen-button click and sends it in
+  // X-Playback-Id so the full turn (client logs + Fly logs) can be joined.
+  // Missing header → 'unattributed' placeholder so the field is always
+  // present in logs. Don't fail the request — voice-v2 is rolling out
+  // behind a flag and old clients won't send it.
+  const headerVal = req.headers['x-playback-id']
+  const rawPlaybackId = Array.isArray(headerVal) ? headerVal[0] : headerVal
+  const playbackId =
+    typeof rawPlaybackId === 'string' && rawPlaybackId.length > 0
+      ? rawPlaybackId
+      : 'unattributed'
+  const log = req.log.child({ playbackId })
+  if (playbackId === 'unattributed') {
+    log.warn({ phase: 'tts-stream.no-correlation' }, 'X-Playback-Id header missing')
+  }
+
   const auth = req.headers.authorization
   if (!auth?.startsWith('Bearer ')) {
     return reply.unauthorized('missing bearer token')
@@ -152,17 +168,17 @@ app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
 
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) {
-    req.log.error({ phase: 'tts-stream.config' }, 'ELEVENLABS_API_KEY not configured')
+    log.error({ phase: 'tts-stream.config' }, 'ELEVENLABS_API_KEY not configured')
     return reply.code(500).send({ error: 'ElevenLabs API key not configured' })
   }
 
   const voiceId = process.env.ELEVENLABS_VOICE_ID
   if (!voiceId) {
-    req.log.error({ phase: 'tts-stream.config' }, 'ELEVENLABS_VOICE_ID not configured')
+    log.error({ phase: 'tts-stream.config' }, 'ELEVENLABS_VOICE_ID not configured')
     return reply.code(500).send({ error: 'ElevenLabs voice ID not configured' })
   }
 
-  req.log.info({ phase: 'tts-stream.request', textLength: text.length }, 'tts-stream request received')
+  log.info({ phase: 'tts-stream.request', textLength: text.length }, 'tts-stream request received')
 
   // output_format must be a query param, NOT a body field — ElevenLabs silently
   // ignores it in the body and falls back to mp3, which breaks the PCM pipeline.
@@ -170,7 +186,7 @@ app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
 
   let upstream: Response
   try {
-    req.log.info({ phase: 'tts-stream.upstream', url }, 'issuing ElevenLabs request')
+    log.info({ phase: 'tts-stream.upstream', url }, 'issuing ElevenLabs request')
     upstream = await fetch(url, {
       method: 'POST',
       headers: {
@@ -189,20 +205,20 @@ app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
       }),
     })
   } catch (err) {
-    req.log.error({ err, phase: 'tts-stream.upstream' }, 'ElevenLabs request failed')
+    log.error({ err, phase: 'tts-stream.upstream' }, 'ElevenLabs request failed')
     return reply.code(502).send({ error: 'TTS generation failed' })
   }
 
   if (!upstream.ok || !upstream.body) {
     const detail = await upstream.text().catch(() => '')
-    req.log.error(
+    log.error(
       { status: upstream.status, detail: detail.slice(0, 500), phase: 'tts-stream.upstream' },
       'ElevenLabs returned error',
     )
     return reply.code(502).send({ error: 'TTS generation failed' })
   }
 
-  req.log.info(
+  log.info(
     { status: upstream.status, phase: 'tts-stream.upstream' },
     'ElevenLabs stream opened',
   )
@@ -219,10 +235,10 @@ app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
     bytesStreamed += chunk.length
   })
   nodeStream.on('end', () => {
-    req.log.info({ phase: 'tts-stream.complete', bytesStreamed }, 'streaming ended')
+    log.info({ phase: 'tts-stream.complete', bytesStreamed }, 'streaming ended')
   })
   nodeStream.on('error', (err) => {
-    req.log.error({ err, phase: 'tts-stream.pipe' }, 'stream error during pipe')
+    log.error({ err, phase: 'tts-stream.pipe' }, 'stream error during pipe')
   })
 
   return reply.send(nodeStream)
