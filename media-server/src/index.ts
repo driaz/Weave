@@ -134,6 +134,100 @@ app.post<{ Body: TtsBody }>('/api/tts', async (req, reply) => {
   return reply.send(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>))
 })
 
+app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
+  const auth = req.headers.authorization
+  if (!auth?.startsWith('Bearer ')) {
+    return reply.unauthorized('missing bearer token')
+  }
+  const userId = await verifyUserToken(auth.slice('Bearer '.length))
+  if (!userId) return reply.unauthorized('invalid token')
+
+  const { text } = req.body ?? ({} as TtsBody)
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return reply.badRequest('text is required')
+  }
+  if (text.length > TTS_MAX_TEXT_LENGTH) {
+    return reply.badRequest(`text exceeds max length of ${TTS_MAX_TEXT_LENGTH} characters`)
+  }
+
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) {
+    req.log.error({ phase: 'tts-stream.config' }, 'ELEVENLABS_API_KEY not configured')
+    return reply.code(500).send({ error: 'ElevenLabs API key not configured' })
+  }
+
+  const voiceId = process.env.ELEVENLABS_VOICE_ID
+  if (!voiceId) {
+    req.log.error({ phase: 'tts-stream.config' }, 'ELEVENLABS_VOICE_ID not configured')
+    return reply.code(500).send({ error: 'ElevenLabs voice ID not configured' })
+  }
+
+  req.log.info({ phase: 'tts-stream.request', textLength: text.length }, 'tts-stream request received')
+
+  // output_format must be a query param, NOT a body field — ElevenLabs silently
+  // ignores it in the body and falls back to mp3, which breaks the PCM pipeline.
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=pcm_24000`
+
+  let upstream: Response
+  try {
+    req.log.info({ phase: 'tts-stream.upstream', url }, 'issuing ElevenLabs request')
+    upstream = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_turbo_v2_5',
+        voice_settings: {
+          stability: 0.6,
+          similarity_boost: 0.8,
+          style: 0.2,
+          use_speaker_boost: true,
+        },
+      }),
+    })
+  } catch (err) {
+    req.log.error({ err, phase: 'tts-stream.upstream' }, 'ElevenLabs request failed')
+    return reply.code(502).send({ error: 'TTS generation failed' })
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    const detail = await upstream.text().catch(() => '')
+    req.log.error(
+      { status: upstream.status, detail: detail.slice(0, 500), phase: 'tts-stream.upstream' },
+      'ElevenLabs returned error',
+    )
+    return reply.code(502).send({ error: 'TTS generation failed' })
+  }
+
+  req.log.info(
+    { status: upstream.status, phase: 'tts-stream.upstream' },
+    'ElevenLabs stream opened',
+  )
+
+  reply
+    .header('Content-Type', 'audio/pcm')
+    .header('Transfer-Encoding', 'chunked')
+    .header('Cache-Control', 'no-cache')
+    .header('X-Accel-Buffering', 'no')
+
+  const nodeStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>)
+  let bytesStreamed = 0
+  nodeStream.on('data', (chunk: Buffer) => {
+    bytesStreamed += chunk.length
+  })
+  nodeStream.on('end', () => {
+    req.log.info({ phase: 'tts-stream.complete', bytesStreamed }, 'streaming ended')
+  })
+  nodeStream.on('error', (err) => {
+    req.log.error({ err, phase: 'tts-stream.pipe' }, 'stream error during pipe')
+  })
+
+  return reply.send(nodeStream)
+})
+
 app.post('/api/claude', async (req, reply) => {
   const auth = req.headers.authorization
   if (!auth?.startsWith('Bearer ')) {
