@@ -24,12 +24,21 @@ export type PlaybackEvent =
   | {
       type: 'voice.playback.firstAudio'
       playbackId: string
-      latencyMs: number
+      /** Wall-clock ms from `started` to the moment the first chunk was scheduled. */
+      scheduledLatencyMs: number
+      /** Wall-clock ms from `started` to when the first sample reaches speakers — headline KPI. */
+      audibleLatencyMs: number
       ts: number
     }
   | {
       type: 'voice.playback.underrun'
       playbackId: string
+      /**
+       * Where the underrun was detected. `pre-schedule` = we tried to schedule a
+       * chunk but `nextStartTime` was already past. `post-source-end` = a source
+       * ended with nothing else queued and the stream still open.
+       */
+      phase: 'pre-schedule' | 'post-source-end'
       chunkIndex: number
       bufferedMs: number
       ts: number
@@ -95,10 +104,8 @@ export class PcmStreamPlayer {
   }
 
   /**
-   * Begins playback. Resolves when the stream is fully consumed (the final
-   * chunk has been *scheduled*, not necessarily finished playing — the
-   * `voice.playback.ended` event fires when the last scheduled source
-   * actually ends).
+   * Resolves when stream scheduling is complete, not when playback ends.
+   * Subscribe to the `ended` event for playback completion.
    *
    * Throws — after emitting a `voice.playback.error` event — on any failure
    * during setup, stream read, decode, or scheduling.
@@ -108,7 +115,7 @@ export class PcmStreamPlayer {
     opts: { playbackId: string },
   ): Promise<void> {
     this.playbackId = opts.playbackId
-    this.startedTs = Date.now()
+    this.startedTs = performance.now()
     this.emit({
       type: 'voice.playback.started',
       playbackId: this.playbackId,
@@ -135,7 +142,7 @@ export class PcmStreamPlayer {
         playbackId: this.playbackId,
         from,
         to,
-        ts: Date.now(),
+        ts: performance.now(),
       })
     }
     this.audioContext.addEventListener('statechange', this.statechangeListener)
@@ -259,7 +266,7 @@ export class PcmStreamPlayer {
       this.emit({
         type: 'voice.playback.ended',
         playbackId: this.playbackId,
-        ts: Date.now(),
+        ts: performance.now(),
       })
     }
   }
@@ -286,30 +293,33 @@ export class PcmStreamPlayer {
     }
 
     let source: AudioBufferSourceNode
+    let scheduledStartTime: number
     try {
       source = ctx.createBufferSource()
       source.buffer = buffer
       source.connect(ctx.destination)
 
-      const now = ctx.currentTime
-      if (this.nextStartTime < now) {
+      const nowCtx = ctx.currentTime
+      if (this.nextStartTime < nowCtx) {
         // We're behind the clock — there is (or was) a gap. Only count as
         // an underrun after first audio has been emitted; before then,
-        // nextStartTime < now just means the prebuffer took longer than
+        // nextStartTime < nowCtx just means the prebuffer took longer than
         // a single sample-tick to assemble (not a real underrun).
         if (this.firstAudioEmitted) {
           this.emit({
             type: 'voice.playback.underrun',
             playbackId: this.playbackId,
+            phase: 'pre-schedule',
             chunkIndex: this.chunkIndex,
             bufferedMs: 0,
-            ts: Date.now(),
+            ts: performance.now(),
           })
         }
-        this.nextStartTime = now
+        this.nextStartTime = nowCtx
       }
 
-      source.start(this.nextStartTime)
+      scheduledStartTime = this.nextStartTime
+      source.start(scheduledStartTime)
       this.nextStartTime += buffer.duration
       this.scheduledCount++
       this.chunkIndex++
@@ -320,11 +330,20 @@ export class PcmStreamPlayer {
 
     if (!this.firstAudioEmitted) {
       this.firstAudioEmitted = true
+      // Sample wall-clock and AudioContext clock back-to-back so the
+      // translation from context-time to wall-time is anchored to a single
+      // instant. (scheduledStartTime - nowCtx) is how far in the future the
+      // first sample plays; adding it to nowWall projects that onto wall time.
+      const nowWall = performance.now()
+      const nowCtx = ctx.currentTime
+      const firstAudibleWallClock =
+        nowWall + (scheduledStartTime - nowCtx) * 1000
       this.emit({
         type: 'voice.playback.firstAudio',
         playbackId: this.playbackId,
-        latencyMs: Date.now() - this.startedTs,
-        ts: Date.now(),
+        scheduledLatencyMs: nowWall - this.startedTs,
+        audibleLatencyMs: firstAudibleWallClock - this.startedTs,
+        ts: nowWall,
       })
     }
 
@@ -337,15 +356,16 @@ export class PcmStreamPlayer {
           this.emit({
             type: 'voice.playback.ended',
             playbackId: this.playbackId,
-            ts: Date.now(),
+            ts: performance.now(),
           })
         } else {
           this.emit({
             type: 'voice.playback.underrun',
             playbackId: this.playbackId,
+            phase: 'post-source-end',
             chunkIndex: this.chunkIndex,
             bufferedMs: 0,
-            ts: Date.now(),
+            ts: performance.now(),
           })
         }
       }
@@ -367,7 +387,7 @@ export class PcmStreamPlayer {
       playbackId: this.playbackId,
       phase,
       error: message,
-      ts: Date.now(),
+      ts: performance.now(),
     })
   }
 }
