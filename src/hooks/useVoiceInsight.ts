@@ -187,6 +187,9 @@ export function useVoiceInsight({ buildRequest, onPlayed }: Options) {
         }
 
         insightLengthRef.current = insight.length
+        // Note: totalLatency here measures click→scheduling-complete, not click→audible.
+        // For audible latency, see voice.playback.firstAudio.audibleLatencyMs in console logs.
+        // Plumbing audibleLatencyMs through VoicePlayedMetrics deferred to Voice v2.
         totalLatencyRef.current = Date.now() - tapStartRef.current
 
         const onEvent = (event: PlaybackEvent) => {
