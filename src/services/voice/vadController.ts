@@ -304,7 +304,7 @@ export class VadController {
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      throw new VoiceError('mic_denied', `getUserMedia failed: ${message}`, false)
+      throw new VoiceError('mic_denied', `getUserMedia failed: ${message}`, true)
     }
     this.mediaStream = stream
 
@@ -320,7 +320,7 @@ export class VadController {
       throw new VoiceError(
         'audio_context_failed',
         `AudioContext construction failed: ${message}`,
-        false,
+        true,
       )
     }
     this.audioContext = ctx
@@ -335,7 +335,7 @@ export class VadController {
         throw new VoiceError(
           'audio_context_failed',
           `AudioContext.resume failed: ${message}`,
-          false,
+          true,
         )
       }
     }
@@ -354,7 +354,7 @@ export class VadController {
       throw new VoiceError(
         'worklet_load_failed',
         `addModule(${WORKLET_URL}) failed: ${message}`,
-        false,
+        true,
       )
     }
 
