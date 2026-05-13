@@ -35,6 +35,7 @@ import { HydrationSourceIndicator } from './components/HydrationSourceIndicator'
 import { DevEnvBadge } from './components/DevEnvBadge'
 import { CanvasSkeleton } from './components/CanvasSkeleton'
 import { SaveErrorToast } from './components/SaveErrorToast'
+import { VoiceSessionCard } from './components/voice/VoiceSessionCard'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
 import type { Connection } from './api/claude'
@@ -722,6 +723,7 @@ export function App() {
       />
       <HydrationSourceIndicator />
       <DevEnvBadge />
+      <VoiceSessionCard />
       {saveError && (
         <SaveErrorToast message={saveError} onDismiss={dismissSaveError} />
       )}
