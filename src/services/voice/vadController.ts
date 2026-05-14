@@ -818,10 +818,15 @@ export class VadController {
 
     let assistantText = ''
     try {
+      // Anthropic Messages API rejects an empty messages array. Send a
+      // synthetic "Begin." user turn as a programmatic trigger; role.txt
+      // tells Claude to ignore it and open with its observation. The
+      // orchestrator's hasPriorAssistant check stays false (no assistant
+      // message yet), so cadence-opening.txt still drives the response.
       for await (const chunk of runConversationTurn({
         connectionContext: this.opts.connectionContext,
         nodeContent: this.opts.nodeContent,
-        messages: [],
+        messages: [{ role: 'user', content: 'Begin.' }],
       })) {
         if (abort.signal.aborted) return
         assistantText += chunk
