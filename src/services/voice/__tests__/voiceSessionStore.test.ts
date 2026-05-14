@@ -18,6 +18,17 @@ function makeError(
   }
 }
 
+/**
+ * Walk the store to `listening`. Since initComplete now lands in
+ * `assistant_speaking` (the opening turn), getting to listening requires
+ * one extra step: playbackEndedNaturally to end the opening.
+ */
+function reachListening(s: VoiceSessionStore): void {
+  s.userClickedSpeak()
+  s.initComplete()
+  s.playbackEndedNaturally()
+}
+
 describe('voiceSessionStore', () => {
   let store: VoiceSessionStore
 
@@ -65,11 +76,13 @@ describe('voiceSessionStore', () => {
       store.userClickedSpeak()
     })
 
-    it('initComplete → listening, sessionId preserved', () => {
+    it('initComplete → assistant_speaking, generates turnId, sessionId preserved', () => {
       const sid = store.getState().sessionId
       store.initComplete()
-      expect(store.getState().status).toBe('listening')
-      expect(store.getState().sessionId).toBe(sid)
+      const s = store.getState()
+      expect(s.status).toBe('assistant_speaking')
+      expect(s.sessionId).toBe(sid)
+      expect(s.turnId).toBeTruthy()
     })
 
     it('initFailed → error, error payload set', () => {
@@ -101,8 +114,7 @@ describe('voiceSessionStore', () => {
 
   describe('transitions from listening', () => {
     beforeEach(() => {
-      store.userClickedSpeak()
-      store.initComplete()
+      reachListening(store)
     })
 
     it('vadSpeechStarted → user_speaking, generates turnId', () => {
@@ -136,8 +148,7 @@ describe('voiceSessionStore', () => {
 
   describe('transitions from user_speaking', () => {
     beforeEach(() => {
-      store.userClickedSpeak()
-      store.initComplete()
+      reachListening(store)
       store.vadSpeechStarted()
     })
 
@@ -171,8 +182,7 @@ describe('voiceSessionStore', () => {
 
   describe('transitions from processing_user_turn', () => {
     beforeEach(() => {
-      store.userClickedSpeak()
-      store.initComplete()
+      reachListening(store)
       store.vadSpeechStarted()
       store.vadSpeechEnded()
     })
@@ -260,12 +270,13 @@ describe('voiceSessionStore', () => {
   })
 
   describe('transitions from assistant_speaking', () => {
+    // Enter assistant_speaking via the opening-turn path
+    // (initComplete now lands here directly). The post-processing path
+    // is covered separately by the firstAudioChunkArrived test in the
+    // processing_user_turn block.
     beforeEach(() => {
       store.userClickedSpeak()
       store.initComplete()
-      store.vadSpeechStarted()
-      store.vadSpeechEnded()
-      store.firstAudioChunkArrived()
     })
 
     it('playbackEndedNaturally → listening, turnId cleared, sessionId preserved', () => {
@@ -332,8 +343,7 @@ describe('voiceSessionStore', () => {
 
   describe('correlation ID lifecycle across multi-turn sessions', () => {
     it('sessionId persists across multiple completed turns', () => {
-      store.userClickedSpeak()
-      store.initComplete()
+      reachListening(store)
       const sid = store.getState().sessionId
 
       store.vadSpeechStarted()
@@ -349,9 +359,23 @@ describe('voiceSessionStore', () => {
       expect(store.getState().sessionId).toBe(sid)
     })
 
-    it('each new turn generates a fresh turnId', () => {
+    it('opening turn gets a fresh turnId that differs from the first user turn', () => {
       store.userClickedSpeak()
       store.initComplete()
+      const openingTid = store.getState().turnId
+      expect(openingTid).toBeTruthy()
+
+      store.playbackEndedNaturally()
+      expect(store.getState().turnId).toBeNull()
+
+      store.vadSpeechStarted()
+      const userTid = store.getState().turnId
+      expect(userTid).toBeTruthy()
+      expect(userTid).not.toBe(openingTid)
+    })
+
+    it('each new turn generates a fresh turnId', () => {
+      reachListening(store)
 
       store.vadSpeechStarted()
       const tid1 = store.getState().turnId
@@ -368,8 +392,7 @@ describe('voiceSessionStore', () => {
     })
 
     it('retry from error clears turnId, keeps sessionId', () => {
-      store.userClickedSpeak()
-      store.initComplete()
+      reachListening(store)
       store.vadSpeechStarted()
       store.vadSpeechEnded()
       const tid = store.getState().turnId
@@ -396,7 +419,7 @@ describe('voiceSessionStore', () => {
 
       expect(calls).toEqual([
         { status: 'initializing', prev: 'idle' },
-        { status: 'listening', prev: 'initializing' },
+        { status: 'assistant_speaking', prev: 'initializing' },
       ])
       unsub()
     })
@@ -419,17 +442,13 @@ describe('voiceSessionStore', () => {
     })
 
     it('throws when called from listening', () => {
-      store.userClickedSpeak()
-      store.initComplete()
+      reachListening(store)
       expect(() => store.setSubstep('stt')).toThrow(/only valid during/)
     })
 
     it('throws when called from assistant_speaking', () => {
       store.userClickedSpeak()
       store.initComplete()
-      store.vadSpeechStarted()
-      store.vadSpeechEnded()
-      store.firstAudioChunkArrived()
       expect(() => store.setSubstep('tts')).toThrow(/only valid during/)
     })
   })

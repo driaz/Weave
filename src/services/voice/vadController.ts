@@ -161,8 +161,9 @@ export class VadController {
   }
 
   /**
-   * Open the session. Transitions store idle → initializing → listening
-   * on success, or → error on failure. Throws nothing; surface errors
+   * Open the session. Transitions store idle → initializing →
+   * assistant_speaking on success (Claude opens the conversation
+   * unprompted), or → error on failure. Throws nothing; surface errors
    * through the store.
    */
   async start(): Promise<void> {
@@ -185,6 +186,7 @@ export class VadController {
         { sampleRate: this.audioContext?.sampleRate ?? null },
         { correlationId: sessionId },
       )
+      this.kickOffOpeningTurn()
     } catch (err) {
       const vErr = toVoiceError(err, 'unknown')
       this.logger.event(
@@ -221,6 +223,15 @@ export class VadController {
       )
       void this.processUserTurn()
     } else if (state.status === 'assistant_speaking') {
+      // Abort any in-flight Claude/TTS work for this turn. Critical for
+      // the opening, where Claude may still be streaming when the user
+      // clicks Stop — without the abort, the for-await loop would keep
+      // accumulating and then start TTS into a session that's already
+      // returned to listening.
+      if (this.currentTurnAbort) {
+        this.currentTurnAbort.abort()
+        this.currentTurnAbort = null
+      }
       this.pcmPlayer?.stop()
       this.pcmPlayer = null
       this.store.userClickedStop()
@@ -276,6 +287,7 @@ export class VadController {
     try {
       await this.setupAudioPipeline()
       this.store.initComplete()
+      this.kickOffOpeningTurn()
     } catch (err) {
       const vErr = toVoiceError(err, 'unknown')
       this.logger.event(
@@ -287,6 +299,26 @@ export class VadController {
       this.store.initFailed(vErr)
       this.teardownSession()
     }
+  }
+
+  /**
+   * Log voice.turn.started for the opening (initComplete just generated
+   * the turnId) and fire-and-forget the opening turn. Shared by start()
+   * and userClickedRetry() so retry doesn't accidentally diverge.
+   */
+  private kickOffOpeningTurn(): void {
+    const state = this.store.getState()
+    const correlationIds = {
+      correlationId: state.turnId ?? undefined,
+      parentCorrelationId: state.sessionId ?? undefined,
+    }
+    this.logger.event(
+      'voice.turn.started',
+      'success',
+      { isOpening: true },
+      correlationIds,
+    )
+    void this.runOpeningTurn()
   }
 
   // ------- setup -------
@@ -392,7 +424,9 @@ export class VadController {
     source.connect(node)
     this.sourceNode = source
 
-    node.port.postMessage({ type: 'start' })
+    // No 'start' yet. The worklet stays passive while Claude delivers
+    // the opening turn; rearmWorklet() activates VAD once the opening
+    // playback ends (or is interrupted via userClickedStop).
   }
 
   private waitForWorkletReady(
@@ -759,6 +793,79 @@ export class VadController {
     }
   }
 
+  /**
+   * Drive the opening turn: empty messages → Claude opens (cadence
+   * picks opening prompt automatically when there is no prior
+   * assistant message) → TTS → playback. State is already
+   * `assistant_speaking` from initComplete; the `firstAudio` event
+   * from PcmStreamPlayer no longer drives a store transition for this
+   * path, but does emit a latency-tagged log.
+   *
+   * Failures use fatalError because Claude/TTS-failure store actions
+   * (claudeFailed/ttsFailed) require processing_user_turn state, which
+   * the opening never enters.
+   */
+  private async runOpeningTurn(): Promise<void> {
+    const initialState = this.store.getState()
+    if (initialState.status !== 'assistant_speaking') return
+
+    const sessionId = initialState.sessionId ?? ''
+    const turnId = initialState.turnId ?? ''
+    const correlationIds = { correlationId: turnId, parentCorrelationId: sessionId }
+
+    const abort = new AbortController()
+    this.currentTurnAbort = abort
+
+    let assistantText = ''
+    try {
+      for await (const chunk of runConversationTurn({
+        connectionContext: this.opts.connectionContext,
+        nodeContent: this.opts.nodeContent,
+        messages: [],
+      })) {
+        if (abort.signal.aborted) return
+        assistantText += chunk
+      }
+    } catch (err) {
+      if (abort.signal.aborted) return
+      const vErr = toVoiceError(err, 'claude_failed', 'claude')
+      this.logger.event(
+        'voice.turn.claude_failed',
+        'failed',
+        { error: vErr.message, isOpening: true },
+        correlationIds,
+      )
+      this.handleFatal(vErr)
+      return
+    }
+    this.messages.push({ role: 'assistant', content: assistantText })
+
+    try {
+      const ttsStream = await fetchTtsStream({
+        text: assistantText,
+        playbackId: turnId,
+        signal: abort.signal,
+      })
+      if (abort.signal.aborted) return
+
+      const player = new PcmStreamPlayer({
+        onEvent: (e) => this.handlePlaybackEvent(e, correlationIds),
+      })
+      this.pcmPlayer = player
+      await player.start(ttsStream, { playbackId: turnId })
+    } catch (err) {
+      if (abort.signal.aborted) return
+      const vErr = toVoiceError(err, 'tts_failed', 'tts')
+      this.logger.event(
+        'voice.turn.tts_failed',
+        'failed',
+        { error: vErr.message, isOpening: true },
+        correlationIds,
+      )
+      this.handleFatal(vErr)
+    }
+  }
+
   private handlePlaybackEvent(
     event: PlaybackEvent,
     correlationIds: { correlationId: string; parentCorrelationId: string },
@@ -774,6 +881,20 @@ export class VadController {
             {
               scheduledLatencyMs: event.scheduledLatencyMs,
               audibleLatencyMs: event.audibleLatencyMs,
+            },
+            correlationIds,
+          )
+        } else if (state.status === 'assistant_speaking') {
+          // Opening turn: state is already assistant_speaking from
+          // initComplete — no store transition, but emit the latency
+          // log so first-audio telemetry covers both paths.
+          this.logger.event(
+            'voice.turn.processing_complete',
+            'success',
+            {
+              scheduledLatencyMs: event.scheduledLatencyMs,
+              audibleLatencyMs: event.audibleLatencyMs,
+              isOpening: true,
             },
             correlationIds,
           )

@@ -17,12 +17,15 @@
  *     the next → idle. userClickedRetry (error → initializing) preserves
  *     sessionId because that transition is recovery within an existing
  *     session, not a new one.
- *   - turnId is generated on listening → user_speaking and cleared on
- *     any transition that ends a turn: assistant_speaking → listening,
- *     processing_user_turn → listening (empty / too-short), any → idle,
- *     and on userClickedRetry (the failed turn is abandoned). turnId
- *     is preserved on → error so error logs can correlate to the turn
- *     that failed.
+ *   - turnId is generated on two transitions into a turn:
+ *       initializing → assistant_speaking (the opening turn — Claude
+ *         speaks first, unprompted, when the session is ready), and
+ *       listening → user_speaking (every subsequent user turn).
+ *     turnId is cleared on any transition that ends a turn:
+ *     assistant_speaking → listening, processing_user_turn → listening
+ *     (empty / too-short), any → idle, and on userClickedRetry (the
+ *     failed turn is abandoned). turnId is preserved on → error so
+ *     error logs can correlate to the turn that failed.
  *   - substep is a free-form marker the orchestrator updates while in
  *     processing_user_turn for log granularity. Auto-cleared on every
  *     transition out of processing_user_turn. setSubstep() outside that
@@ -159,7 +162,7 @@ export function createVoiceSessionStore(): VoiceSessionStore {
 
     initComplete() {
       if (state.status !== 'initializing') reject('initComplete')
-      setState({ status: 'listening' })
+      setState({ status: 'assistant_speaking', turnId: generateId() })
     },
 
     initFailed(error) {
