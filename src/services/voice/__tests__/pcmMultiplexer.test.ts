@@ -482,4 +482,152 @@ describe('PcmMultiplexer', () => {
       expect(dup).toBeDefined()
     })
   })
+
+  /**
+   * Regression tests for the live-discovered byte-misalignment bug.
+   *
+   * The pipeline is int16LE PCM at 24kHz: every audio sample is exactly 2
+   * bytes. If the multiplexer ever emits a per-segment byte count that is
+   * odd, every int16 sample reconstructed downstream from the seam onward
+   * is half-bytes from two different samples — i.e. white noise.
+   *
+   * Real-world ElevenLabs response bodies can have odd total byte counts
+   * (network truncation, partial-sample close, framing artifacts). The
+   * multiplexer must enforce that what it enqueues per segment is even,
+   * holding any trailing odd byte as a carry within the segment and
+   * dropping a leftover carry at segment end (it's an incomplete sample).
+   *
+   * Original mux tests passed because they all used even-byte synthetic
+   * streams. These tests fail against the unpatched mux and pass after
+   * the fix.
+   */
+  describe('int16 sample alignment at segment seams (regression for live static-noise bug)', () => {
+    it('drops a trailing odd byte at the end of an odd-byte segment', async () => {
+      // Single segment with 7 bytes (odd). Expected: 6 bytes emitted
+      // (trailing byte dropped as an incomplete sample).
+      const seg0 = new Uint8Array([1, 2, 3, 4, 5, 6, 99])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([seg0]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(6)
+      expect(out.length % 2).toBe(0)
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6])
+    })
+
+    it('preserves seam alignment when segment 0 has odd bytes and segment 1 has even bytes', async () => {
+      // seg 0: 7 bytes (odd) → mux drops trailing byte → 6 bytes emitted.
+      // seg 1: 4 bytes (even, 2 samples) → emitted as-is.
+      // Total: 10 bytes, all aligned. seg 1 starts at even offset 6.
+      const seg0 = new Uint8Array([1, 2, 3, 4, 5, 6, 99])
+      const seg1 = new Uint8Array([10, 20, 30, 40])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([seg0]))
+      mux.addSegment(1, streamFromChunks([seg1]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(10)
+      expect(out.length % 2).toBe(0)
+      // First 6 bytes are seg0 minus its odd tail byte.
+      expect(Array.from(out.slice(0, 6))).toEqual([1, 2, 3, 4, 5, 6])
+      // Next 4 bytes are seg1 in full, starting at an even offset.
+      expect(Array.from(out.slice(6, 10))).toEqual([10, 20, 30, 40])
+    })
+
+    it('preserves alignment across multiple odd-byte segments in sequence', async () => {
+      // Three segments, all odd → each drops its trailing byte.
+      const seg0 = new Uint8Array([1, 2, 3]) // 3 → 2 bytes
+      const seg1 = new Uint8Array([4, 5, 6, 7, 8]) // 5 → 4 bytes
+      const seg2 = new Uint8Array([9, 10, 11, 12, 13, 14, 15]) // 7 → 6 bytes
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([seg0]))
+      mux.addSegment(1, streamFromChunks([seg1]))
+      mux.addSegment(2, streamFromChunks([seg2]))
+      mux.endOfSegments()
+      await settle(30)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(12)
+      expect(out.length % 2).toBe(0)
+      // seg0 contribution: bytes 0-1.
+      expect(Array.from(out.slice(0, 2))).toEqual([1, 2])
+      // seg1 contribution: bytes 2-5.
+      expect(Array.from(out.slice(2, 6))).toEqual([4, 5, 6, 7])
+      // seg2 contribution: bytes 6-11.
+      expect(Array.from(out.slice(6, 12))).toEqual([9, 10, 11, 12, 13, 14])
+    })
+
+    it('carries an odd byte across multiple small chunks within one segment', async () => {
+      // Segment delivered as three odd-sized chunks: 3 + 5 + 1 = 9 bytes.
+      // Cumulative is odd → mux drops the final trailing byte.
+      // Output should be the first 8 bytes in order.
+      const chunkA = new Uint8Array([1, 2, 3])
+      const chunkB = new Uint8Array([4, 5, 6, 7, 8])
+      const chunkC = new Uint8Array([9])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([chunkA, chunkB, chunkC]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(8)
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    })
+
+    it('handles odd-then-odd chunk sequence whose CUMULATIVE total is even (no drop)', async () => {
+      // 3 + 5 = 8 bytes, cumulative even → no byte dropped at end.
+      // Within the segment, the mux still has to carry the trailing odd
+      // byte between chunks; the seam test is that no byte is LOST.
+      const chunkA = new Uint8Array([1, 2, 3])
+      const chunkB = new Uint8Array([4, 5, 6, 7, 8])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([chunkA, chunkB]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(8)
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    })
+
+    it('emits voice.mux.alignment_correction when a trailing odd byte is dropped', async () => {
+      // Surface the correction for observability — segments should be
+      // even-byte in production; if one isn't, we want to see it.
+      mux.start()
+      mux.addSegment(0, streamFromChunks([new Uint8Array([1, 2, 3, 4, 5, 6, 99])]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const correction = events.find(
+        (e) => e.type === 'voice.mux.alignment_correction',
+      )
+      expect(correction).toBeDefined()
+      if (correction && correction.type === 'voice.mux.alignment_correction') {
+        expect(correction.sequence).toBe(0)
+        expect(correction.droppedBytes).toBe(1)
+      }
+    })
+
+    it('does NOT emit alignment_correction for even-byte segments', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(200, 0xaa)]))
+      mux.addSegment(1, streamFromChunks([bytes(150, 0xbb)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const correction = events.find(
+        (e) => e.type === 'voice.mux.alignment_correction',
+      )
+      expect(correction).toBeUndefined()
+    })
+  })
 })

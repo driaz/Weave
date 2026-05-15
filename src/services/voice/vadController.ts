@@ -1035,6 +1035,19 @@ export class VadController {
           )
           return
         }
+        case 'voice.mux.alignment_correction': {
+          // Fail-loud: a segment ended on an odd byte count; the mux
+          // dropped the trailing byte to keep int16 sample alignment at
+          // the seam. ElevenLabs PCM should be even-byte — if this fires,
+          // something upstream is truncating a sample.
+          this.logger.event(
+            'voice.mux.alignment_correction',
+            'failed',
+            { sequence: event.sequence, droppedBytes: event.droppedBytes },
+            correlationIds,
+          )
+          return
+        }
         case 'voice.mux.error': {
           this.logger.event(
             'voice.mux.error',

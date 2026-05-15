@@ -72,6 +72,20 @@ export type MuxEvent =
       ts: number
     }
   | {
+      /**
+       * Fired when a segment ended with an odd byte count and the mux
+       * dropped its trailing byte to keep int16 sample alignment intact
+       * at the segment seam. Fail-loud: ElevenLabs segments should be
+       * even-byte; if this fires in production, something upstream is
+       * truncating a sample (network close, proxy framing, partial
+       * sample close) and we want it visible.
+       */
+      type: 'voice.mux.alignment_correction'
+      sequence: number
+      droppedBytes: number
+      ts: number
+    }
+  | {
       type: 'voice.mux.handoff_stall'
       sequence: number
       waitMs: number
@@ -146,6 +160,15 @@ interface Segment {
   consumedBytes: number
   state: SegmentState
   streamEnded: boolean
+  /**
+   * Per-segment int16-alignment carry. If a chunk would have caused this
+   * segment's enqueued bytes to become odd, the trailing byte is held
+   * here and prepended to the next chunk. At segment end, a leftover
+   * carry is dropped (incomplete sample) and an alignment_correction
+   * event is emitted. This guarantees the bytes the multiplexer hands
+   * to the sink are int16-aligned at every segment seam.
+   */
+  tailByte: Uint8Array | null
 }
 
 export class PcmMultiplexer {
@@ -245,6 +268,7 @@ export class PcmMultiplexer {
       consumedBytes: 0,
       state: 'pending',
       streamEnded: false,
+      tailByte: null,
     }
     const insertIdx = this.segments.findIndex((s) => s.sequence > sequence)
     if (insertIdx === -1) this.segments.push(seg)
@@ -421,12 +445,32 @@ export class PcmMultiplexer {
         })
       }
 
-      // Drain staged bytes.
+      // Drain staged bytes. Enforce int16 sample alignment per segment:
+      // each enqueue is even-byte; a trailing odd byte becomes tailByte
+      // and is prepended to the next chunk. This way the absolute
+      // cumulative position in the shared stream stays sample-aligned at
+      // every segment seam regardless of how ElevenLabs chunks its body.
       while (active.staged.length > 0) {
-        const chunk = active.staged.shift()!
+        const incoming = active.staged.shift()!
+        let combined: Uint8Array
+        if (active.tailByte && active.tailByte.length > 0) {
+          combined = new Uint8Array(active.tailByte.length + incoming.length)
+          combined.set(active.tailByte)
+          combined.set(incoming, active.tailByte.length)
+          active.tailByte = null
+        } else {
+          combined = incoming
+        }
+        const evenLen = combined.length - (combined.length % 2)
+        if (combined.length % 2 === 1) {
+          active.tailByte = combined.slice(combined.length - 1)
+        }
+        if (evenLen === 0) continue // nothing to enqueue this round (carry only)
+        const aligned =
+          evenLen === combined.length ? combined : combined.slice(0, evenLen)
         try {
-          this.sharedController.enqueue(chunk)
-          active.consumedBytes += chunk.length
+          this.sharedController.enqueue(aligned)
+          active.consumedBytes += aligned.length
         } catch {
           // Controller already closed (likely stop() raced). Bail.
           return
@@ -434,6 +478,18 @@ export class PcmMultiplexer {
       }
 
       if (active.streamEnded && active.staged.length === 0) {
+        // Drop any trailing odd byte — an incomplete int16 sample. Surface
+        // the correction so misaligned upstream segments are visible.
+        if (active.tailByte && active.tailByte.length > 0) {
+          const dropped = active.tailByte.length
+          active.tailByte = null
+          this.emit({
+            type: 'voice.mux.alignment_correction',
+            sequence: active.sequence,
+            droppedBytes: dropped,
+            ts: performance.now(),
+          })
+        }
         active.state = 'drained'
         this.emit({
           type: 'voice.mux.segment_drained',
