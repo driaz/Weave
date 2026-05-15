@@ -7,6 +7,7 @@ import 'dotenv/config'
 import Fastify from 'fastify'
 import sensible from '@fastify/sensible'
 import cors from '@fastify/cors'
+import multipart from '@fastify/multipart'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { verifyUserToken } from './auth.js'
@@ -18,6 +19,8 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
 if (!ANTHROPIC_API_KEY) {
   throw new Error('ANTHROPIC_API_KEY is required')
 }
+
+const STT_BODY_LIMIT = 10 * 1024 * 1024
 
 // Browsers send a CORS preflight (OPTIONS) for cross-origin POSTs that
 // carry Authorization + Content-Type: application/json — which every
@@ -34,7 +37,14 @@ await app.register(sensible)
 await app.register(cors, {
   origin: allowedOrigins,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Playback-Id', 'X-Recording-Id'],
+})
+await app.register(multipart, {
+  limits: {
+    fileSize: STT_BODY_LIMIT,
+    files: 1,
+    fields: 0,
+  },
 })
 
 app.get('/health', async () => ({ status: 'ok' }))
@@ -288,6 +298,129 @@ app.post('/api/claude', async (req, reply) => {
     .header('X-Accel-Buffering', 'no')
 
   return reply.send(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>))
+})
+
+app.post('/api/stt', async (req, reply) => {
+  // X-Recording-Id mirrors the X-Playback-Id pattern on /api/tts-stream:
+  // client mints a per-turn id so client + server logs can be joined. If
+  // the header is missing, fall through with 'unattributed' rather than
+  // failing — the orchestrator may evolve to call STT directly without
+  // session correlation.
+  const headerVal = req.headers['x-recording-id']
+  const rawRecordingId = Array.isArray(headerVal) ? headerVal[0] : headerVal
+  const recordingId =
+    typeof rawRecordingId === 'string' && rawRecordingId.length > 0
+      ? rawRecordingId
+      : 'unattributed'
+  const log = req.log.child({ recordingId })
+
+  const auth = req.headers.authorization
+  if (!auth?.startsWith('Bearer ')) {
+    return reply.unauthorized('missing bearer token')
+  }
+  const userId = await verifyUserToken(auth.slice('Bearer '.length))
+  if (!userId) return reply.unauthorized('invalid token')
+
+  const openaiKey = process.env.OPENAI_API_KEY
+  if (!openaiKey) {
+    log.error({ phase: 'stt.config' }, 'OPENAI_API_KEY not configured')
+    return reply.code(500).send({ error: 'STT not configured' })
+  }
+
+  let filePart: Awaited<ReturnType<typeof req.file>>
+  try {
+    filePart = await req.file()
+  } catch (err) {
+    log.error({ err, phase: 'stt.multipart' }, 'multipart parse failed')
+    return reply.badRequest('multipart/form-data with an audio file required')
+  }
+  if (!filePart) {
+    return reply.badRequest('missing audio file field')
+  }
+  if (filePart.fieldname !== 'audio') {
+    return reply.badRequest(`expected file field "audio", got "${filePart.fieldname}"`)
+  }
+
+  const audioBuffer = await filePart.toBuffer()
+  const audioSizeBytes = audioBuffer.length
+  if (audioSizeBytes === 0) {
+    return reply.badRequest('audio file is empty')
+  }
+
+  log.info(
+    {
+      event: 'voice.stt.started',
+      recordingId,
+      audioSizeBytes,
+      filename: filePart.filename,
+      mimetype: filePart.mimetype,
+    },
+    'voice.stt.started',
+  )
+
+  const form = new FormData()
+  form.append(
+    'file',
+    new Blob([audioBuffer], { type: filePart.mimetype || 'application/octet-stream' }),
+    filePart.filename || 'audio',
+  )
+  form.append('model', 'whisper-1')
+  form.append('response_format', 'json')
+  form.append('temperature', '0')
+  form.append('language', 'en')
+
+  const startedAt = Date.now()
+  let upstream: Response
+  try {
+    upstream = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${openaiKey}` },
+      body: form,
+    })
+  } catch (err) {
+    const durationMs = Date.now() - startedAt
+    log.error(
+      { err, durationMs, phase: 'stt.upstream', event: 'voice.stt.error' },
+      'voice.stt.error',
+    )
+    return reply.code(502).send({ error: 'STT request failed' })
+  }
+
+  const durationMs = Date.now() - startedAt
+
+  if (!upstream.ok) {
+    const errorBody = await upstream.text().catch(() => '')
+    log.error(
+      {
+        event: 'voice.stt.error',
+        recordingId,
+        statusCode: upstream.status,
+        errorBody: errorBody.slice(0, 500),
+        durationMs,
+      },
+      'voice.stt.error',
+    )
+    return reply.code(502).send({
+      error: 'Whisper request failed',
+      statusCode: upstream.status,
+      detail: errorBody,
+    })
+  }
+
+  const json = (await upstream.json().catch(() => null)) as { text?: unknown } | null
+  const transcript = typeof json?.text === 'string' ? json.text : ''
+
+  log.info(
+    {
+      event: 'voice.stt.completed',
+      recordingId,
+      transcriptLength: transcript.length,
+      durationMs,
+    },
+    'voice.stt.completed',
+  )
+
+  return reply.send({ transcript, durationMs })
 })
 
 await app.listen({ host: '0.0.0.0', port: PORT })

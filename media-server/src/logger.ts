@@ -29,14 +29,21 @@ export interface LogEvent {
   ts: string
   durationMs?: number
   detail?: Record<string, unknown>
+  correlationId?: string
+  parentCorrelationId?: string
+}
+
+export interface CorrelationIds {
+  correlationId?: string
+  parentCorrelationId?: string
 }
 
 export interface NodeLogger {
-  debug(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number): void
-  info(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number): void
-  warn(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number): void
-  error(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number): void
-  persist(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number): Promise<void>
+  debug(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number, correlationIds?: CorrelationIds): void
+  info(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number, correlationIds?: CorrelationIds): void
+  warn(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number, correlationIds?: CorrelationIds): void
+  error(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number, correlationIds?: CorrelationIds): void
+  persist(phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number, correlationIds?: CorrelationIds): Promise<void>
 }
 
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 }
@@ -55,6 +62,7 @@ function buildEvent(
   outcome: Outcome,
   detail: Record<string, unknown> | undefined,
   durationMs: number | undefined,
+  correlationIds: CorrelationIds | undefined,
 ): LogEvent {
   const event: LogEvent = {
     phase,
@@ -64,6 +72,8 @@ function buildEvent(
   }
   if (typeof durationMs === 'number') event.durationMs = durationMs
   if (detail) event.detail = detail
+  if (correlationIds?.correlationId) event.correlationId = correlationIds.correlationId
+  if (correlationIds?.parentCorrelationId) event.parentCorrelationId = correlationIds.parentCorrelationId
   return event
 }
 
@@ -80,16 +90,16 @@ function emit(level: LogLevel, nodeId: string, boardId: string, event: LogEvent)
  */
 export function createNodeLogger(nodeId: string, boardId: string, userId: string): NodeLogger {
   const make = (level: LogLevel) =>
-    (phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number) =>
-      emit(level, nodeId, boardId, buildEvent(phase, outcome, detail, durationMs))
+    (phase: string, outcome: Outcome, detail?: Record<string, unknown>, durationMs?: number, correlationIds?: CorrelationIds) =>
+      emit(level, nodeId, boardId, buildEvent(phase, outcome, detail, durationMs, correlationIds))
 
   return {
     debug: make('debug'),
     info: make('info'),
     warn: make('warn'),
     error: make('error'),
-    async persist(phase, outcome, detail, durationMs) {
-      const event = buildEvent(phase, outcome, detail, durationMs)
+    async persist(phase, outcome, detail, durationMs, correlationIds) {
+      const event = buildEvent(phase, outcome, detail, durationMs, correlationIds)
       // Echo to stdout at info so persist events are visible in fly logs
       // even when the RPC fails.
       emit('info', nodeId, boardId, event)
@@ -108,6 +118,7 @@ export function createNodeLogger(nodeId: string, boardId: string, userId: string
             'logger.persist',
             'failed',
             { error: error.message, originalPhase: phase },
+            undefined,
             undefined,
           ),
         )

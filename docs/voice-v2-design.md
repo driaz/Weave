@@ -281,7 +281,7 @@ Reasoning: losing a 10-minute conversation to a browser crash would be infuriati
 
 ## 9. Dev loop (Q8)
 
-**Prompts as files; thin smoke-test runner.**
+**Prompts as files; iterate live, no harness.**
 
 `role` and `cadence` text live as raw files in the repo, imported at runtime via Vite's `?raw` import. This is the production shape — Voice v2 reads these files at session start to compose the system prompt.
 
@@ -292,23 +292,15 @@ prompts/
   cadence-followup.txt
 ```
 
-A thin runner (`scripts/voice-prompt-test.ts`, ~80 lines) loads these files plus a JSON fixture, calls the existing `/api/claude` streaming proxy, prints Claude's tokens as they stream, and prints a final block with TTFT, total latency, token count, and stop reason.
+**No smoke-test runner.** The earlier design proposed a Node script to test prompts in isolation. On reflection, this would test the wrong things:
 
-```
-fixtures/
-  opening.json          # empty messages[], triggers opening cadence
-  mid-conversation.json # 4-6 messages, triggers follow-up cadence
-```
+- `role.txt` is lifted from production's voice-insight flow, where it's already producing strong output. It doesn't need re-evaluation.
+- `cadence-opening.txt` is also lifted from production. Same story.
+- `cadence-followup.txt` is the only genuinely new piece. But it can't be meaningfully evaluated as text-in/text-out — the question "does this follow-up land in the conversational flow when read aloud" requires audio + real user turns. A smoke test would only verify that Claude produces 2-3 sentences when asked to, which is a one-time confirmation, not iteration tooling.
 
-Run: `npm run voice:prompt-test -- --fixture mid-conversation`
+**The iteration loop is live, from the start.** When Voice v2's conversation pipeline runs, the first real test of `cadence-followup` happens in a real conversation. If it's broken, the fix loop is: edit `cadence-followup.txt`, hot reload, click Speak, hear it.
 
-**Framing: this is a smoke test, not an evaluation environment.** It catches structural failures (prompt syntactically broken, Claude generating 6 sentences when cadence says 2-3, role drifting into therapy-speak) before live testing. Audio quality, conversational feel, and turn-shape evaluation happen in the live app — text output cannot evaluate those.
-
-**Why the runner pays for itself despite being smoke-test-only:** the file structure isn't disposable. The same `prompts/*.txt` files load at runtime in Voice v2. The runner is a thin debugging entry point against the same files the live app uses. Edit a prompt, smoke-test in the runner, then load the live app to evaluate audio.
-
-**Latency note:** the runner measures Claude's TTFT and streaming time in isolation. Useful sanity-check (e.g., catching prompt bloat that adds 200ms to TTFT) but not the conversational-feel metric — that's the sum of STT + Claude + TTS-first-audio and only the live app surfaces it.
-
-**Tool #2 and Tool #3: skip.** VAD test page and session-card preview were considered and cut. Same reasoning as before: VAD's hybrid pattern is the safety net for imperfect tuning, session card iterates fast enough via React fast refresh.
+**Tool #2 and Tool #3: also skip.** VAD test page and session-card preview were considered and cut for the same reason — VAD's hybrid pattern is the safety net for imperfect tuning, session card iterates fast enough via React fast refresh.
 
 ---
 
@@ -392,7 +384,8 @@ These are things deliberately left open because they're better answered during i
 3. **Exact mic indicator visual design** — needs design pass when card component is being built.
 4. **State machine modeling** — explicit state library (xstate?) vs. ad-hoc React state? Probably ad-hoc for v1.
 5. **Error recovery behaviors** — what happens if STT fails mid-session? Claude times out? Network blip? Define on a per-failure basis during implementation.
-6. **Initial text for `role`, `cadence-opening`, and `cadence-followup`** — drafted in design conversation, committed alongside the runner, then iterated live. Starting material is in memory entries #9 (role: analytical observer, non-mirroring) and #10 (cadence: 5-7 sentence opens, 2-3 sentence follow-ups).
+
+*(Earlier draft included an open question about initial text for `role.txt`, `cadence-opening.txt`, and `cadence-followup.txt`. Resolved: drafted in design conversation, committed alongside Phase 2 implementation work. `role.txt` and `cadence-opening.txt` lifted from production voice-insight prompt; `cadence-followup.txt` newly written.)*
 
 ---
 
@@ -402,7 +395,7 @@ A rough sketch of what implementation phases might look like, to give a sense of
 
 - **Phase 0:** Audit existing code (similar to Swap 1 Phase 0). Map all touchpoints in `useVoiceInsight`, `EdgeDetailPopup`, related state, existing TTS flow.
 - **Phase 1:** Schema migration (`voice_sessions` modification + `voice_turns` creation, RLS policies, indexes).
-- **Phase 2:** Commit initial `prompts/role.txt`, `prompts/cadence-opening.txt`, `prompts/cadence-followup.txt` files. Build the smoke-test runner (`scripts/voice-prompt-test.ts`) and minimal fixtures. Smoke-test the initial prompt text — confirm Claude isn't producing structurally broken output. *Audio-level iteration happens in Phase 10, not here.*
+- **Phase 2:** Commit initial `prompts/role.txt`, `prompts/cadence-opening.txt`, `prompts/cadence-followup.txt` files. `role.txt` and `cadence-opening.txt` are lifted from production's voice-insight prompt; `cadence-followup.txt` is the only new piece. No iteration tooling — first real test of follow-up cadence happens in Phase 9's end-to-end conversation. *Audio-level iteration happens in Phase 10, not here.*
 - **Phase 3:** Build the prompt composition module (`buildSystemPrompt({ role, cadence, connectionContext, nodeContent })`) and the Claude conversation orchestrator (handles message history, calls `/api/claude`, manages streaming).
 - **Phase 4:** Build Whisper STT integration (Fly route + client upload wiring + event taxonomy).
 - **Phase 5:** Build mic capture + client VAD module. Test with hybrid manual override only initially, then enable silence detection.
@@ -410,7 +403,7 @@ A rough sketch of what implementation phases might look like, to give a sense of
 - **Phase 7:** Build floating session card UI. Wire to state machine.
 - **Phase 8:** Wire Speak button into EdgeDetailPopup. Per-turn persistence.
 - **Phase 9:** End-to-end QA. First real 10-15 min conversation.
-- **Phase 10:** Iterate based on actual conversational feel. This is where audio-level prompt tuning happens — `role` and `cadence` files get edited, hot-reloaded in the live app, evaluated by hearing the result. Also tune VAD threshold and any other live-only parameters. Smoke-test runner remains available throughout for structural regression checks.
+- **Phase 10:** Iterate based on actual conversational feel. This is where audio-level prompt tuning happens — `role` and `cadence` files get edited, hot-reloaded in the live app, evaluated by hearing the result. Also tune VAD threshold and any other live-only parameters.
 
 Each phase produces its own commits on `feat/voice-v2`. Phases are commits-on-a-branch, not separate branches, same pattern as Swap 1.
 
@@ -431,7 +424,7 @@ For each design decision, the reasoning is captured above. Summary of the most c
 | Schema shape | Sessions + turns (relational) | Cascaded architecture produces per-turn artifacts |
 | Persistence timing | Per turn | Crash resilience > write efficiency |
 | Audio retention | User recordings yes, assistant TTS no | Text is the persistent record |
-| Dev tooling scope | Smoke-test runner over prompt files | Production prompt structure; runner is thin entry point |
+| Dev tooling scope | None; prompts as files, iterate live | Existing prompt text is already strong; only new piece (cadence-followup) requires audio + real turns to evaluate |
 | Audio quality tuning | Deferred to during Voice v2 testing | Need real conversational use to evaluate |
 
 ---

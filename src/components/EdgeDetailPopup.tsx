@@ -4,9 +4,15 @@ import type { Node } from '@xyflow/react'
 import type { Connection } from '../api/claude'
 import type { WeaveMode } from '../types/board'
 import { useVoiceInsight } from '../hooks/useVoiceInsight'
+import { useVoiceSession } from '../hooks/useVoiceSession'
 import { nodeToVoicePayload } from '../utils/voicePayload'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
+import { beginVoiceSession } from '../services/voice/voiceSessionManager'
+import {
+  buildConnectionContext,
+  buildNodeContent,
+} from '../services/voice/voiceContext'
 
 type ModeMeta = {
   label: string
@@ -274,6 +280,81 @@ function LoadingDots({ color }: { color: string }) {
   )
 }
 
+function MicIcon({ size = 14, color }: { size?: number; color: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <rect x="9" y="3" width="6" height="11" rx="3" fill={color} fillOpacity="0.18" stroke={color} strokeWidth="1.5" />
+      <path
+        d="M5 11a7 7 0 0 0 14 0"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <path d="M12 18v3" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function SpeakButton({
+  available,
+  voiceSessionActive,
+  accent,
+  accentHex,
+  onClick,
+}: {
+  available: boolean
+  voiceSessionActive: boolean
+  accent: string
+  accentHex: string
+  onClick: () => void
+}) {
+  const disabled = !available || voiceSessionActive
+  const label = !available
+    ? 'Speak unavailable'
+    : voiceSessionActive
+      ? 'Voice session active'
+      : 'Speak'
+  const color = accent
+  const borderColor = `${accentHex}55`
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="cursor-pointer transition-colors duration-150"
+      style={{
+        marginTop: 8,
+        width: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        padding: '8px 12px',
+        borderRadius: 'var(--w-radius-pill)',
+        border: `1px solid ${borderColor}`,
+        background: 'transparent',
+        color,
+        fontFamily: 'var(--w-font-sans)',
+        fontSize: 12,
+        fontWeight: 600,
+        letterSpacing: 0.2,
+        opacity: disabled ? 0.55 : 1,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      }}
+    >
+      <MicIcon size={14} color={color} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
 type VoiceButtonState = 'idle' | 'loading' | 'playing' | 'error'
 
 function VoiceInsightButton({
@@ -431,6 +512,19 @@ export function EdgeDetailPopup({
 
   const voiceAvailable = Boolean(node1 && node2)
 
+  const voiceSession = useVoiceSession()
+  const voiceSessionActive = voiceSession.status !== 'idle'
+
+  const handleSpeak = useCallback(() => {
+    if (!node1 || !node2) return
+    if (voiceSessionActive) return
+    void beginVoiceSession({
+      boardId,
+      connectionContext: buildConnectionContext(connection),
+      nodeContent: buildNodeContent(node1, node2),
+    })
+  }, [boardId, connection, node1, node2, voiceSessionActive])
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -556,6 +650,14 @@ export function EdgeDetailPopup({
           accent={meta.accent}
           accentHex={accentHex}
           onClick={triggerVoice}
+        />
+
+        <SpeakButton
+          available={voiceAvailable}
+          voiceSessionActive={voiceSessionActive}
+          accent={meta.accent}
+          accentHex={accentHex}
+          onClick={handleSpeak}
         />
 
         <div

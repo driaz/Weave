@@ -1,0 +1,725 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  PcmMultiplexer,
+  type MuxEvent,
+  type PcmAudioSink,
+  type SinkFactory,
+} from '../pcmMultiplexer'
+import type { PlaybackEvent } from '../../pcmStreamPlayer'
+
+/**
+ * Synthetic byte-recording sink. Reads the merged stream and stores every
+ * chunk in arrival order. Emits voice.playback.firstAudio after the first
+ * non-empty chunk arrives, voice.playback.ended when the stream closes.
+ * Can be commanded to emit a voice.playback.underrun for forwarding tests.
+ */
+class RecordingSink implements PcmAudioSink {
+  readonly chunks: Uint8Array[] = []
+  startCalled = false
+  stopCalled = false
+  private readonly onPlaybackEvent: (e: PlaybackEvent) => void
+  private playbackId = ''
+  private firstAudioEmitted = false
+  private endedEmitted = false
+  /** Resolved when start() returns (stream fully consumed). */
+  private donePromise!: Promise<void>
+  resolveDone!: () => void
+
+  constructor(onPlaybackEvent: (e: PlaybackEvent) => void) {
+    this.onPlaybackEvent = onPlaybackEvent
+    this.donePromise = new Promise<void>((resolve) => {
+      this.resolveDone = resolve
+    })
+  }
+
+  /** Concatenated bytes across all chunks, in arrival order. */
+  concatenated(): Uint8Array {
+    let total = 0
+    for (const c of this.chunks) total += c.length
+    const out = new Uint8Array(total)
+    let pos = 0
+    for (const c of this.chunks) {
+      out.set(c, pos)
+      pos += c.length
+    }
+    return out
+  }
+
+  /** Force an underrun event for forwarding tests. */
+  forceUnderrun(
+    phase: 'pre-schedule' | 'post-source-end' = 'post-source-end',
+  ): void {
+    this.onPlaybackEvent({
+      type: 'voice.playback.underrun',
+      playbackId: this.playbackId,
+      phase,
+      chunkIndex: 0,
+      bufferedMs: 0,
+      ts: 0,
+    })
+  }
+
+  async start(
+    stream: ReadableStream<Uint8Array>,
+    opts: { playbackId: string },
+  ): Promise<void> {
+    this.startCalled = true
+    this.playbackId = opts.playbackId
+    this.onPlaybackEvent({
+      type: 'voice.playback.started',
+      playbackId: opts.playbackId,
+      ts: 0,
+    })
+    const reader = stream.getReader()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value && value.length > 0) {
+          this.chunks.push(value)
+          if (!this.firstAudioEmitted) {
+            this.firstAudioEmitted = true
+            this.onPlaybackEvent({
+              type: 'voice.playback.firstAudio',
+              playbackId: opts.playbackId,
+              scheduledLatencyMs: 0,
+              audibleLatencyMs: 0,
+              ts: 0,
+            })
+          }
+        }
+      }
+      if (!this.endedEmitted) {
+        this.endedEmitted = true
+        this.onPlaybackEvent({
+          type: 'voice.playback.ended',
+          playbackId: opts.playbackId,
+          ts: 0,
+        })
+      }
+    } finally {
+      this.resolveDone()
+    }
+    return this.donePromise
+  }
+
+  stop(): void {
+    this.stopCalled = true
+  }
+}
+
+/** Build a ReadableStream that emits the given chunks then closes. */
+function streamFromChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(c)
+      controller.close()
+    },
+  })
+}
+
+/**
+ * Stream backed by an external `pump` function. Emits chunks only when
+ * the test calls pump.push(bytes) / pump.end(). Used to control when a
+ * segment hits the prebuffer floor / closes.
+ */
+interface ManualStreamHandle {
+  stream: ReadableStream<Uint8Array>
+  push(bytes: Uint8Array): void
+  end(): void
+}
+
+function manualStream(): ManualStreamHandle {
+  let pendingResolve: ((value: { done: boolean; value?: Uint8Array }) => void) | null =
+    null
+  const queue: Uint8Array[] = []
+  let closed = false
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      // Drain whatever's queued first; if nothing, wait for push/end.
+      while (true) {
+        if (queue.length > 0) {
+          controller.enqueue(queue.shift()!)
+          return
+        }
+        if (closed) {
+          controller.close()
+          return
+        }
+        await new Promise<void>((resolve) => {
+          pendingResolve = () => resolve()
+        })
+      }
+    },
+  })
+
+  return {
+    stream,
+    push(bytes) {
+      queue.push(bytes)
+      if (pendingResolve) {
+        const r = pendingResolve
+        pendingResolve = null
+        r({ done: false, value: bytes })
+      }
+    },
+    end() {
+      closed = true
+      if (pendingResolve) {
+        const r = pendingResolve
+        pendingResolve = null
+        r({ done: true })
+      }
+    },
+  }
+}
+
+/** Make a Uint8Array of `length` bytes, each = (fill & 0xff). */
+function bytes(length: number, fill: number): Uint8Array {
+  return new Uint8Array(length).fill(fill & 0xff)
+}
+
+/** Yield to the microtask queue a few times so async pulls can settle. */
+async function settle(ticks = 5): Promise<void> {
+  for (let i = 0; i < ticks; i++) {
+    await Promise.resolve()
+  }
+}
+
+describe('PcmMultiplexer', () => {
+  let events: MuxEvent[]
+  let sink: RecordingSink
+  let sinkFactory: SinkFactory
+  let mux: PcmMultiplexer
+
+  beforeEach(() => {
+    events = []
+    sinkFactory = (onPlaybackEvent) => {
+      sink = new RecordingSink(onPlaybackEvent)
+      return sink
+    }
+    mux = new PcmMultiplexer({
+      playbackId: 'test-playback',
+      onEvent: (e) => events.push(e),
+      sinkFactory,
+      // 100 bytes floor — small enough that tiny synthetic segments
+      // either meet it or hit stream-end first (handled identically).
+      prebufferFloorBytes: 100,
+    })
+  })
+
+  afterEach(() => {
+    try {
+      mux.stop()
+    } catch {
+      /* idempotent */
+    }
+  })
+
+  describe('basic ordering', () => {
+    it('plays two segments back-to-back, output is segment 0 bytes then segment 1 bytes', async () => {
+      const seg0 = bytes(200, 0xaa)
+      const seg1 = bytes(150, 0xbb)
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([seg0]))
+      mux.addSegment(1, streamFromChunks([seg1]))
+      mux.endOfSegments()
+
+      await settle(20)
+
+      const combined = sink.concatenated()
+      expect(combined.length).toBe(seg0.length + seg1.length)
+      // First 200 bytes should be 0xAA, next 150 should be 0xBB.
+      for (let i = 0; i < seg0.length; i++) expect(combined[i]).toBe(0xaa)
+      for (let i = 0; i < seg1.length; i++) {
+        expect(combined[seg0.length + i]).toBe(0xbb)
+      }
+    })
+
+    it('emits segment_added → segment_ready → segment_writing → segment_drained for each segment', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(200, 0x01)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const types = events.map((e) => e.type)
+      expect(types).toContain('voice.mux.segment_added')
+      expect(types).toContain('voice.mux.segment_ready')
+      expect(types).toContain('voice.mux.segment_writing')
+      expect(types).toContain('voice.mux.segment_drained')
+
+      // Order must be added → ready → writing → drained.
+      const idxAdded = types.indexOf('voice.mux.segment_added')
+      const idxReady = types.indexOf('voice.mux.segment_ready')
+      const idxWriting = types.indexOf('voice.mux.segment_writing')
+      const idxDrained = types.indexOf('voice.mux.segment_drained')
+      expect(idxAdded).toBeLessThan(idxReady)
+      expect(idxReady).toBeLessThan(idxWriting)
+      expect(idxWriting).toBeLessThan(idxDrained)
+    })
+
+    it('handles a single segment correctly', async () => {
+      const only = bytes(300, 0x42)
+      mux.start()
+      mux.addSegment(0, streamFromChunks([only]))
+      mux.endOfSegments()
+      await settle(20)
+
+      expect(sink.concatenated()).toEqual(only)
+    })
+  })
+
+  describe('out-of-order completion preserves playback order', () => {
+    it('seg 1 finishes first but seg 0 bytes still emit first', async () => {
+      const seg0 = bytes(200, 0xaa)
+      const seg1 = bytes(150, 0xbb)
+
+      // Create a manual stream for seg 0 so we can hold it back, and a
+      // pre-closed stream for seg 1 that completes immediately.
+      const seg0Handle = manualStream()
+      const seg1Stream = streamFromChunks([seg1])
+
+      mux.start()
+      // Register seg 1 first (out-of-order add) so its bytes are staged
+      // before seg 0's bytes arrive.
+      mux.addSegment(1, seg1Stream)
+      mux.addSegment(0, seg0Handle.stream)
+
+      // Let seg 1 fully stream into staging first.
+      await settle(10)
+      // Sink must NOT have received any bytes yet — seg 0 hasn't started.
+      expect(sink.concatenated().length).toBe(0)
+
+      // Now feed seg 0 and close.
+      seg0Handle.push(seg0)
+      seg0Handle.end()
+      mux.endOfSegments()
+      await settle(20)
+
+      const combined = sink.concatenated()
+      // Total bytes correct.
+      expect(combined.length).toBe(seg0.length + seg1.length)
+      // First 200 are seg 0's pattern (0xAA), then 150 of seg 1 (0xBB).
+      for (let i = 0; i < seg0.length; i++) expect(combined[i]).toBe(0xaa)
+      for (let i = 0; i < seg1.length; i++) {
+        expect(combined[seg0.length + i]).toBe(0xbb)
+      }
+    })
+  })
+
+  describe('prebuffer floor and handoff stall', () => {
+    it('does not start writing a segment until it has met the prebuffer floor (or its stream has ended)', async () => {
+      // Use a large floor so that a small first push does NOT meet it.
+      const slowMux = new PcmMultiplexer({
+        playbackId: 'slow',
+        onEvent: (e) => events.push(e),
+        sinkFactory,
+        prebufferFloorBytes: 500,
+      })
+      const handle = manualStream()
+      slowMux.start()
+      slowMux.addSegment(0, handle.stream)
+
+      // Push a tiny amount — below floor. Stream still open.
+      handle.push(bytes(50, 0x11))
+      await settle(5)
+      // Nothing should be written yet.
+      expect(sink.concatenated().length).toBe(0)
+      // No 'segment_ready' event yet.
+      expect(events.find((e) => e.type === 'voice.mux.segment_ready')).toBeUndefined()
+
+      // Push enough to cross the floor.
+      handle.push(bytes(500, 0x22))
+      await settle(10)
+      // Now segment_ready and segment_writing should fire.
+      expect(
+        events.find((e) => e.type === 'voice.mux.segment_ready'),
+      ).toBeDefined()
+      expect(
+        events.find((e) => e.type === 'voice.mux.segment_writing'),
+      ).toBeDefined()
+      expect(sink.concatenated().length).toBeGreaterThan(0)
+
+      handle.end()
+      slowMux.endOfSegments()
+      await settle(10)
+      slowMux.stop()
+    })
+
+    it('emits voice.mux.handoff_stall when seg N drains but seg N+1 has not met the floor', async () => {
+      const stallMux = new PcmMultiplexer({
+        playbackId: 'stall',
+        onEvent: (e) => events.push(e),
+        sinkFactory,
+        prebufferFloorBytes: 500,
+      })
+      const seg0 = bytes(200, 0xaa)
+      const seg1Handle = manualStream()
+
+      stallMux.start()
+      stallMux.addSegment(0, streamFromChunks([seg0]))
+      stallMux.addSegment(1, seg1Handle.stream)
+
+      // seg 0 streams fully and drains; seg 1 still empty.
+      await settle(10)
+      expect(
+        events.find(
+          (e) =>
+            e.type === 'voice.mux.segment_drained' &&
+            'sequence' in e &&
+            e.sequence === 0,
+        ),
+      ).toBeDefined()
+      // No handoff stall event yet — it fires on RESOLUTION of the stall.
+      expect(
+        events.find((e) => e.type === 'voice.mux.handoff_stall'),
+      ).toBeUndefined()
+
+      // Wait a brief moment so waitMs > 0.
+      await new Promise((r) => setTimeout(r, 10))
+
+      // Now feed seg 1 enough to cross the floor.
+      seg1Handle.push(bytes(500, 0xbb))
+      await settle(10)
+
+      const stall = events.find((e) => e.type === 'voice.mux.handoff_stall')
+      expect(stall).toBeDefined()
+      if (stall && stall.type === 'voice.mux.handoff_stall') {
+        expect(stall.sequence).toBe(1)
+        expect(stall.waitMs).toBeGreaterThan(0)
+      }
+
+      seg1Handle.end()
+      stallMux.endOfSegments()
+      await settle(10)
+      stallMux.stop()
+    })
+  })
+
+  describe('underrun forwarding', () => {
+    it('forwards voice.playback.underrun from the sink as voice.mux.underrun', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(200, 0x99)]))
+      await settle(10)
+      // Synthetic underrun signal from the sink (PcmStreamPlayer would
+      // fire this when its scheduling clock falls behind playback).
+      sink.forceUnderrun('post-source-end')
+      const ur = events.find((e) => e.type === 'voice.mux.underrun')
+      expect(ur).toBeDefined()
+      if (ur && ur.type === 'voice.mux.underrun') {
+        expect(ur.phase).toBe('post-source-end')
+        // Sequence should be the currently-writing or next-expected.
+        expect(ur.sequence).toBe(0)
+      }
+      mux.endOfSegments()
+      await settle(10)
+    })
+  })
+
+  describe('completion signal', () => {
+    it('emits voice.mux.complete after endOfSegments and all segments drain', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x33)]))
+      mux.addSegment(1, streamFromChunks([bytes(100, 0x44)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const complete = events.find((e) => e.type === 'voice.mux.complete')
+      expect(complete).toBeDefined()
+    })
+
+    it('emits voice.mux.first_audio once after the first bytes reach the sink', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x55)]))
+      mux.addSegment(1, streamFromChunks([bytes(100, 0x66)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const firstAudios = events.filter((e) => e.type === 'voice.mux.first_audio')
+      expect(firstAudios).toHaveLength(1)
+    })
+  })
+
+  describe('stop() teardown', () => {
+    it('is idempotent — calling stop() twice does not throw', () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x77)]))
+      mux.stop()
+      expect(() => mux.stop()).not.toThrow()
+    })
+
+    it('stops the sink and clears segments', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x77)]))
+      await settle(2)
+      mux.stop()
+      expect(sink.stopCalled).toBe(true)
+    })
+
+    it('addSegment after stop() is a no-op', () => {
+      mux.start()
+      mux.stop()
+      // Should not throw, should not emit voice.mux.segment_added.
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x88)]))
+      expect(
+        events.find((e) => e.type === 'voice.mux.segment_added'),
+      ).toBeUndefined()
+    })
+  })
+
+  describe('diagnostic enrichment on lifecycle events', () => {
+    it('voice.mux.segment_writing carries bytesStaged and positionInPipeline=first for the first segment', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(300, 0x11)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const writing = events.find(
+        (e) => e.type === 'voice.mux.segment_writing',
+      )
+      expect(writing).toBeDefined()
+      if (writing && writing.type === 'voice.mux.segment_writing') {
+        expect(writing.sequence).toBe(0)
+        expect(writing.bytesStaged).toBe(300)
+        expect(writing.positionInPipeline).toBe('first')
+      }
+    })
+
+    it('voice.mux.segment_writing reports positionInPipeline=middle for subsequent segments', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(200, 0xaa)]))
+      mux.addSegment(1, streamFromChunks([bytes(200, 0xbb)]))
+      mux.endOfSegments()
+      await settle(30)
+
+      const writes = events.filter(
+        (e) => e.type === 'voice.mux.segment_writing',
+      )
+      expect(writes).toHaveLength(2)
+      if (writes[0].type === 'voice.mux.segment_writing') {
+        expect(writes[0].positionInPipeline).toBe('first')
+      }
+      if (writes[1].type === 'voice.mux.segment_writing') {
+        expect(writes[1].positionInPipeline).toBe('middle')
+      }
+    })
+
+    it('voice.mux.segment_drained carries bytesEnqueued and positionInPipeline=last when the final segment drains after endOfSegments', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(150, 0xcc)]))
+      mux.addSegment(1, streamFromChunks([bytes(250, 0xdd)]))
+      mux.endOfSegments()
+      await settle(30)
+
+      const drains = events.filter(
+        (e) => e.type === 'voice.mux.segment_drained',
+      )
+      expect(drains).toHaveLength(2)
+      if (drains[0].type === 'voice.mux.segment_drained') {
+        expect(drains[0].sequence).toBe(0)
+        expect(drains[0].bytesEnqueued).toBe(150)
+        expect(drains[0].positionInPipeline).toBe('first')
+      }
+      if (drains[1].type === 'voice.mux.segment_drained') {
+        expect(drains[1].sequence).toBe(1)
+        expect(drains[1].bytesEnqueued).toBe(250)
+        expect(drains[1].positionInPipeline).toBe('last')
+      }
+    })
+
+    it('voice.mux.segment_drained reports last for a single-segment turn', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x55)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const drain = events.find(
+        (e) => e.type === 'voice.mux.segment_drained',
+      )
+      expect(drain).toBeDefined()
+      if (drain && drain.type === 'voice.mux.segment_drained') {
+        expect(drain.positionInPipeline).toBe('last')
+      }
+    })
+
+    it('bytesEnqueued reflects post-alignment byte count (odd-byte segment loses 1)', async () => {
+      // 7-byte segment → mux drops 1 trailing byte → 6 bytes enqueued.
+      mux.start()
+      mux.addSegment(0, streamFromChunks([new Uint8Array([1, 2, 3, 4, 5, 6, 99])]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const drain = events.find(
+        (e) => e.type === 'voice.mux.segment_drained',
+      )
+      expect(drain).toBeDefined()
+      if (drain && drain.type === 'voice.mux.segment_drained') {
+        expect(drain.bytesEnqueued).toBe(6)
+      }
+    })
+  })
+
+  describe('error surfaces', () => {
+    it('rejects duplicate sequence numbers with a voice.mux.error event', () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x01)]))
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x02)]))
+      const errs = events.filter((e) => e.type === 'voice.mux.error')
+      expect(errs.length).toBeGreaterThanOrEqual(1)
+      const dup = errs.find(
+        (e) => e.type === 'voice.mux.error' && e.phase === 'add_segment',
+      )
+      expect(dup).toBeDefined()
+    })
+  })
+
+  /**
+   * Regression tests for the live-discovered byte-misalignment bug.
+   *
+   * The pipeline is int16LE PCM at 24kHz: every audio sample is exactly 2
+   * bytes. If the multiplexer ever emits a per-segment byte count that is
+   * odd, every int16 sample reconstructed downstream from the seam onward
+   * is half-bytes from two different samples — i.e. white noise.
+   *
+   * Real-world ElevenLabs response bodies can have odd total byte counts
+   * (network truncation, partial-sample close, framing artifacts). The
+   * multiplexer must enforce that what it enqueues per segment is even,
+   * holding any trailing odd byte as a carry within the segment and
+   * dropping a leftover carry at segment end (it's an incomplete sample).
+   *
+   * Original mux tests passed because they all used even-byte synthetic
+   * streams. These tests fail against the unpatched mux and pass after
+   * the fix.
+   */
+  describe('int16 sample alignment at segment seams (regression for live static-noise bug)', () => {
+    it('drops a trailing odd byte at the end of an odd-byte segment', async () => {
+      // Single segment with 7 bytes (odd). Expected: 6 bytes emitted
+      // (trailing byte dropped as an incomplete sample).
+      const seg0 = new Uint8Array([1, 2, 3, 4, 5, 6, 99])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([seg0]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(6)
+      expect(out.length % 2).toBe(0)
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6])
+    })
+
+    it('preserves seam alignment when segment 0 has odd bytes and segment 1 has even bytes', async () => {
+      // seg 0: 7 bytes (odd) → mux drops trailing byte → 6 bytes emitted.
+      // seg 1: 4 bytes (even, 2 samples) → emitted as-is.
+      // Total: 10 bytes, all aligned. seg 1 starts at even offset 6.
+      const seg0 = new Uint8Array([1, 2, 3, 4, 5, 6, 99])
+      const seg1 = new Uint8Array([10, 20, 30, 40])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([seg0]))
+      mux.addSegment(1, streamFromChunks([seg1]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(10)
+      expect(out.length % 2).toBe(0)
+      // First 6 bytes are seg0 minus its odd tail byte.
+      expect(Array.from(out.slice(0, 6))).toEqual([1, 2, 3, 4, 5, 6])
+      // Next 4 bytes are seg1 in full, starting at an even offset.
+      expect(Array.from(out.slice(6, 10))).toEqual([10, 20, 30, 40])
+    })
+
+    it('preserves alignment across multiple odd-byte segments in sequence', async () => {
+      // Three segments, all odd → each drops its trailing byte.
+      const seg0 = new Uint8Array([1, 2, 3]) // 3 → 2 bytes
+      const seg1 = new Uint8Array([4, 5, 6, 7, 8]) // 5 → 4 bytes
+      const seg2 = new Uint8Array([9, 10, 11, 12, 13, 14, 15]) // 7 → 6 bytes
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([seg0]))
+      mux.addSegment(1, streamFromChunks([seg1]))
+      mux.addSegment(2, streamFromChunks([seg2]))
+      mux.endOfSegments()
+      await settle(30)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(12)
+      expect(out.length % 2).toBe(0)
+      // seg0 contribution: bytes 0-1.
+      expect(Array.from(out.slice(0, 2))).toEqual([1, 2])
+      // seg1 contribution: bytes 2-5.
+      expect(Array.from(out.slice(2, 6))).toEqual([4, 5, 6, 7])
+      // seg2 contribution: bytes 6-11.
+      expect(Array.from(out.slice(6, 12))).toEqual([9, 10, 11, 12, 13, 14])
+    })
+
+    it('carries an odd byte across multiple small chunks within one segment', async () => {
+      // Segment delivered as three odd-sized chunks: 3 + 5 + 1 = 9 bytes.
+      // Cumulative is odd → mux drops the final trailing byte.
+      // Output should be the first 8 bytes in order.
+      const chunkA = new Uint8Array([1, 2, 3])
+      const chunkB = new Uint8Array([4, 5, 6, 7, 8])
+      const chunkC = new Uint8Array([9])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([chunkA, chunkB, chunkC]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(8)
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    })
+
+    it('handles odd-then-odd chunk sequence whose CUMULATIVE total is even (no drop)', async () => {
+      // 3 + 5 = 8 bytes, cumulative even → no byte dropped at end.
+      // Within the segment, the mux still has to carry the trailing odd
+      // byte between chunks; the seam test is that no byte is LOST.
+      const chunkA = new Uint8Array([1, 2, 3])
+      const chunkB = new Uint8Array([4, 5, 6, 7, 8])
+
+      mux.start()
+      mux.addSegment(0, streamFromChunks([chunkA, chunkB]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const out = sink.concatenated()
+      expect(out.length).toBe(8)
+      expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    })
+
+    it('emits voice.mux.alignment_correction when a trailing odd byte is dropped', async () => {
+      // Surface the correction for observability — segments should be
+      // even-byte in production; if one isn't, we want to see it.
+      mux.start()
+      mux.addSegment(0, streamFromChunks([new Uint8Array([1, 2, 3, 4, 5, 6, 99])]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const correction = events.find(
+        (e) => e.type === 'voice.mux.alignment_correction',
+      )
+      expect(correction).toBeDefined()
+      if (correction && correction.type === 'voice.mux.alignment_correction') {
+        expect(correction.sequence).toBe(0)
+        expect(correction.droppedBytes).toBe(1)
+      }
+    })
+
+    it('does NOT emit alignment_correction for even-byte segments', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(200, 0xaa)]))
+      mux.addSegment(1, streamFromChunks([bytes(150, 0xbb)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const correction = events.find(
+        (e) => e.type === 'voice.mux.alignment_correction',
+      )
+      expect(correction).toBeUndefined()
+    })
+  })
+})
