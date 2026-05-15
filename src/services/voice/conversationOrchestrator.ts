@@ -17,6 +17,14 @@ export interface RunConversationTurnInput {
   connectionContext: string
   nodeContent: string
   messages: ConversationMessage[]
+  /**
+   * Aborts the underlying SSE fetch. Without this, calling abort() on a
+   * downstream controller only causes the for-await loop to exit between
+   * yields — the SSE connection itself stays open, which lets Claude keep
+   * generating after the user has clicked Stop. Threading the signal here
+   * closes the connection at the network layer.
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -35,7 +43,7 @@ export interface RunConversationTurnInput {
 export async function* runConversationTurn(
   input: RunConversationTurnInput,
 ): AsyncGenerator<string, void, unknown> {
-  const { connectionContext, nodeContent, messages } = input
+  const { connectionContext, nodeContent, messages, signal } = input
 
   const hasPriorAssistant = messages.some((m) => m.role === 'assistant')
   const cadence = hasPriorAssistant ? cadenceFollowupText : cadenceOpeningText
@@ -69,6 +77,7 @@ export async function* runConversationTurn(
       messages,
       stream: true,
     }),
+    signal,
   })
 
   if (!response.ok) {

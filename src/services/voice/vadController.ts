@@ -8,8 +8,10 @@
  *   - Translates worklet messages into voiceSessionStore actions.
  *   - Owns the 1.5s silence timer that decides when the user is done.
  *   - On user-turn completion: assembles WAV, calls /api/stt, hands the
- *     transcript to the conversation orchestrator, fetches /api/tts-stream,
- *     and pipes the response into PcmStreamPlayer.
+ *     transcript to the conversation orchestrator, segments Claude's
+ *     streamed response into sentences as it arrives, fires one
+ *     /api/tts-stream per sentence (capped concurrency), and feeds the
+ *     resulting PCM streams to a PcmMultiplexer for gapless playback.
  *   - Owns conversation history (messages[]) for the session.
  *   - Idempotent teardownSession() called from every error and idle exit.
  *
@@ -20,11 +22,12 @@
  * action to call from which state.
  */
 
-import { PcmStreamPlayer, type PlaybackEvent } from '../pcmStreamPlayer'
+import { PcmMultiplexer, type MuxEvent } from './pcmMultiplexer'
 import {
   runConversationTurn,
   type ConversationMessage,
 } from './conversationOrchestrator'
+import { createSentenceSegmenter } from './sentenceSegmenter'
 import { transcribeAudio, type TranscribeAudioOutput } from './sttClient'
 import { fetchTtsStream } from './ttsStreamClient'
 import { encodeWav } from './wavEncode'
@@ -48,6 +51,19 @@ const VAD_MIN_SPEECH_DURATION_MS = 200
 const VAD_PRE_ROLL_MS = 300
 const STT_MIN_DURATION_MS = 500
 const STT_MIN_WORDS = 2
+
+/**
+ * Cap on concurrent in-flight TTS work for a single turn. "In flight" =
+ * fetched/fetching but the segment hasn't yet drained in the multiplexer
+ * (drain = mux has finished enqueuing the segment's PCM to the shared
+ * stream, which is when the ElevenLabs response body fully closes).
+ *
+ * Bounds: ElevenLabs concurrent connections per turn, plus wasted work
+ * if the user clicks Stop. The mux's write-coordinator enforces playback
+ * order regardless, so this is purely a throttle. 3 deep gives plenty of
+ * head start for the cascade.
+ */
+const MAX_INFLIGHT_TTS = 3
 
 type WorkletInbound =
   | { type: 'ready'; sampleRate: number }
@@ -139,7 +155,7 @@ export class VadController {
   private lastSequence = -1
 
   private currentTurnAbort: AbortController | null = null
-  private pcmPlayer: PcmStreamPlayer | null = null
+  private pcmMultiplexer: PcmMultiplexer | null = null
 
   private messages: ConversationMessage[] = []
 
@@ -223,17 +239,15 @@ export class VadController {
       )
       void this.processUserTurn()
     } else if (state.status === 'assistant_speaking') {
-      // Abort any in-flight Claude/TTS work for this turn. Critical for
-      // the opening, where Claude may still be streaming when the user
-      // clicks Stop — without the abort, the for-await loop would keep
-      // accumulating and then start TTS into a session that's already
-      // returned to listening.
+      // Order matters: abort producers (Claude SSE + N in-flight TTS
+      // fetches all share the same turn-level signal) BEFORE stopping
+      // the multiplexer, so no new PCM arrives mid-teardown.
       if (this.currentTurnAbort) {
         this.currentTurnAbort.abort()
         this.currentTurnAbort = null
       }
-      this.pcmPlayer?.stop()
-      this.pcmPlayer = null
+      this.pcmMultiplexer?.stop()
+      this.pcmMultiplexer = null
       this.store.userClickedStop()
       this.rearmWorklet()
       this.logger.event(
@@ -735,75 +749,54 @@ export class VadController {
       return
     }
 
-    // Claude phase
+    // Claude → segmenter → N TTS fetches → multiplexer (sentence-chunked).
+    // setSubstep('claude') first so the substep telemetry covers the
+    // Claude-streaming portion of the cascade; setSubstep('tts') flips
+    // once the first sentence has been emitted to TTS (driven from the
+    // helper, see below).
     this.store.setSubstep('claude')
     this.messages.push({ role: 'user', content: transcript })
 
-    let assistantText = ''
     try {
-      for await (const chunk of runConversationTurn({
-        connectionContext: this.opts.connectionContext,
-        nodeContent: this.opts.nodeContent,
-        messages: this.messages,
-      })) {
-        if (abort.signal.aborted) return
-        assistantText += chunk
-      }
-    } catch (err) {
-      if (abort.signal.aborted) return
-      const vErr = toVoiceError(err, 'claude_failed', 'claude')
-      this.logger.event(
-        'voice.turn.claude_failed',
-        'failed',
-        { error: vErr.message },
+      await this.runSentenceChunkedSpeech({
+        turnId,
+        abort,
+        claudeMessages: this.messages,
+        isOpening: false,
         correlationIds,
-      )
-      this.store.claudeFailed(vErr)
-      this.teardownSession()
-      return
-    }
-    this.messages.push({ role: 'assistant', content: assistantText })
-
-    // TTS phase
-    this.store.setSubstep('tts')
-    try {
-      const ttsStream = await fetchTtsStream({
-        text: assistantText,
-        playbackId: turnId,
-        signal: abort.signal,
       })
-      if (abort.signal.aborted) return
-
-      const player = new PcmStreamPlayer({
-        onEvent: (e) => this.handlePlaybackEvent(e, correlationIds),
-      })
-      this.pcmPlayer = player
-      await player.start(ttsStream, { playbackId: turnId })
     } catch (err) {
       if (abort.signal.aborted) return
       const vErr = toVoiceError(err, 'tts_failed', 'tts')
-      this.logger.event(
-        'voice.turn.tts_failed',
-        'failed',
-        { error: vErr.message },
-        correlationIds,
-      )
-      this.store.ttsFailed(vErr)
+      if (vErr.kind === 'claude_failed') {
+        this.logger.event(
+          'voice.turn.claude_failed',
+          'failed',
+          { error: vErr.message },
+          correlationIds,
+        )
+        this.store.claudeFailed(vErr)
+      } else {
+        this.logger.event(
+          'voice.turn.tts_failed',
+          'failed',
+          { error: vErr.message },
+          correlationIds,
+        )
+        this.store.ttsFailed(vErr)
+      }
       this.teardownSession()
     }
   }
 
   /**
-   * Drive the opening turn: empty messages → Claude opens (cadence
-   * picks opening prompt automatically when there is no prior
-   * assistant message) → TTS → playback. State is already
-   * `assistant_speaking` from initComplete; the `firstAudio` event
-   * from PcmStreamPlayer no longer drives a store transition for this
-   * path, but does emit a latency-tagged log.
+   * Drive the opening turn through the sentence-chunked cascade. State
+   * is already `assistant_speaking` from initComplete; the helper's
+   * voice.mux.first_audio handler is a no-op for that state.
    *
-   * Failures use fatalError because Claude/TTS-failure store actions
-   * (claudeFailed/ttsFailed) require processing_user_turn state, which
-   * the opening never enters.
+   * Failures use handleFatal because the opening never enters
+   * processing_user_turn, so claudeFailed/ttsFailed (which require it)
+   * would throw.
    */
   private async runOpeningTurn(): Promise<void> {
     const initialState = this.store.getState()
@@ -816,53 +809,28 @@ export class VadController {
     const abort = new AbortController()
     this.currentTurnAbort = abort
 
-    let assistantText = ''
     try {
       // Anthropic Messages API rejects an empty messages array. Send a
       // synthetic "Begin." user turn as a programmatic trigger; role.txt
       // tells Claude to ignore it and open with its observation. The
       // orchestrator's hasPriorAssistant check stays false (no assistant
       // message yet), so cadence-opening.txt still drives the response.
-      for await (const chunk of runConversationTurn({
-        connectionContext: this.opts.connectionContext,
-        nodeContent: this.opts.nodeContent,
-        messages: [{ role: 'user', content: 'Begin.' }],
-      })) {
-        if (abort.signal.aborted) return
-        assistantText += chunk
-      }
-    } catch (err) {
-      if (abort.signal.aborted) return
-      const vErr = toVoiceError(err, 'claude_failed', 'claude')
-      this.logger.event(
-        'voice.turn.claude_failed',
-        'failed',
-        { error: vErr.message, isOpening: true },
+      await this.runSentenceChunkedSpeech({
+        turnId,
+        abort,
+        claudeMessages: [{ role: 'user', content: 'Begin.' }],
+        isOpening: true,
         correlationIds,
-      )
-      this.handleFatal(vErr)
-      return
-    }
-    this.messages.push({ role: 'assistant', content: assistantText })
-
-    try {
-      const ttsStream = await fetchTtsStream({
-        text: assistantText,
-        playbackId: turnId,
-        signal: abort.signal,
       })
-      if (abort.signal.aborted) return
-
-      const player = new PcmStreamPlayer({
-        onEvent: (e) => this.handlePlaybackEvent(e, correlationIds),
-      })
-      this.pcmPlayer = player
-      await player.start(ttsStream, { playbackId: turnId })
     } catch (err) {
       if (abort.signal.aborted) return
       const vErr = toVoiceError(err, 'tts_failed', 'tts')
+      const phase =
+        vErr.kind === 'claude_failed'
+          ? 'voice.turn.claude_failed'
+          : 'voice.turn.tts_failed'
       this.logger.event(
-        'voice.turn.tts_failed',
+        phase,
         'failed',
         { error: vErr.message, isOpening: true },
         correlationIds,
@@ -871,62 +839,330 @@ export class VadController {
     }
   }
 
-  private handlePlaybackEvent(
-    event: PlaybackEvent,
-    correlationIds: { correlationId: string; parentCorrelationId: string },
-  ): void {
-    const state = this.store.getState()
-    switch (event.type) {
-      case 'voice.playback.firstAudio': {
-        if (state.status === 'processing_user_turn') {
-          this.store.firstAudioChunkArrived()
-          this.logger.event(
-            'voice.turn.processing_complete',
-            'success',
-            {
-              scheduledLatencyMs: event.scheduledLatencyMs,
-              audibleLatencyMs: event.audibleLatencyMs,
-            },
-            correlationIds,
-          )
-        } else if (state.status === 'assistant_speaking') {
-          // Opening turn: state is already assistant_speaking from
-          // initComplete — no store transition, but emit the latency
-          // log so first-audio telemetry covers both paths.
-          this.logger.event(
-            'voice.turn.processing_complete',
-            'success',
-            {
-              scheduledLatencyMs: event.scheduledLatencyMs,
-              audibleLatencyMs: event.audibleLatencyMs,
-              isOpening: true,
-            },
-            correlationIds,
-          )
-        }
-        return
+  /**
+   * Sentence-chunked speech pipeline. Replaces the old
+   * accumulate-then-fire-one-TTS waterfall.
+   *
+   * Flow:
+   *   1. Create a per-turn segmenter and PcmMultiplexer; start the mux.
+   *   2. Stream Claude (with abort signal threaded into the fetch).
+   *   3. For each chunk: push into segmenter; for every complete sentence,
+   *      queue it; the firing pump drains the queue under MAX_INFLIGHT_TTS
+   *      concurrency. Each fired sentence's PCM stream is handed to the
+   *      mux via addSegment(seq, stream).
+   *   4. When Claude completes: segmenter.flush() emits the final sentence
+   *      (whose terminating period had no trailing whitespace, so the
+   *      segmenter held it back). Critical — without flush(), every turn
+   *      silently drops its last sentence.
+   *   5. Wait for the pending queue + all fetches to settle, then signal
+   *      mux.endOfSegments() so it knows when to fire voice.mux.complete.
+   *   6. Await muxPromise (sink consume loop finishes when the merged
+   *      stream closes).
+   *
+   * Abort: the turn-level AbortController is threaded into every fetch
+   * (Claude SSE + N fetchTtsStream calls). One abort() cascades to all.
+   * mux.stop() is the caller's responsibility (teardownSession does it).
+   *
+   * Failure: any TTS fetch error or voice.mux.error sets storedError,
+   * triggers abort(), and the helper throws after the drain unblocks.
+   * Caller dispatches the store transition.
+   */
+  private async runSentenceChunkedSpeech(args: {
+    turnId: string
+    abort: AbortController
+    claudeMessages: ConversationMessage[]
+    isOpening: boolean
+    correlationIds: { correlationId: string; parentCorrelationId: string }
+  }): Promise<void> {
+    const { turnId, abort, claudeMessages, isOpening, correlationIds } = args
+
+    const segmenter = createSentenceSegmenter()
+    const pending: string[] = []
+    const activeSegments = new Set<number>()
+    let nextSeq = 0
+    let storedError: VoiceError | null = null
+    let claudeComplete = false
+    let ttsSubstepEntered = false
+
+    let drainResolve: (() => void) | null = null
+    const drainPromise = new Promise<void>((resolve) => {
+      drainResolve = resolve
+    })
+
+    const unblockDrain = (): void => {
+      if (drainResolve) {
+        const r = drainResolve
+        drainResolve = null
+        r()
       }
-      case 'voice.playback.ended': {
-        if (this.store.getState().status === 'assistant_speaking') {
-          this.store.playbackEndedNaturally()
-          this.logger.event(
-            'voice.turn.completed',
-            'success',
-            undefined,
-            correlationIds,
-          )
-          this.pcmPlayer = null
-          this.rearmWorklet()
-        }
-        return
-      }
-      case 'voice.playback.error': {
-        // The player throws too; processUserTurn's catch handles it.
-        return
-      }
-      default:
-        return
     }
+
+    const checkDrain = (): void => {
+      if (
+        claudeComplete &&
+        pending.length === 0 &&
+        activeSegments.size === 0
+      ) {
+        unblockDrain()
+      }
+    }
+
+    const recordTtsFailure = (seq: number, err: unknown): void => {
+      if (storedError !== null) return
+      const message = err instanceof Error ? err.message : String(err)
+      storedError = new VoiceError('tts_failed', message, true, 'tts')
+      this.logger.event(
+        'voice.tts.segment_failed',
+        'failed',
+        { sequence: seq, error: message },
+        correlationIds,
+      )
+      abort.abort()
+      unblockDrain()
+    }
+
+    const fireTts = async (seq: number, text: string): Promise<void> => {
+      // Flip the substep telemetry once we know TTS work is active.
+      // (Follow-up turn only — the opening doesn't track substeps.)
+      if (!isOpening && !ttsSubstepEntered) {
+        ttsSubstepEntered = true
+        this.store.setSubstep('tts')
+      }
+      this.logger.event(
+        'voice.tts.segment_requested',
+        'success',
+        { sequence: seq, textLength: text.length },
+        correlationIds,
+      )
+      try {
+        const stream = await fetchTtsStream({
+          text,
+          playbackId: turnId,
+          signal: abort.signal,
+        })
+        if (abort.signal.aborted) {
+          activeSegments.delete(seq)
+          checkDrain()
+          return
+        }
+        mux.addSegment(seq, stream)
+        // activeSegments stays — removed on voice.mux.segment_drained.
+      } catch (err) {
+        activeSegments.delete(seq)
+        if (abort.signal.aborted) {
+          checkDrain()
+          return
+        }
+        recordTtsFailure(seq, err)
+        checkDrain()
+      }
+    }
+
+    const tryFireNext = (): void => {
+      while (
+        pending.length > 0 &&
+        activeSegments.size < MAX_INFLIGHT_TTS &&
+        storedError === null &&
+        !abort.signal.aborted
+      ) {
+        const sentence = pending.shift()!
+        const seq = nextSeq++
+        activeSegments.add(seq)
+        void fireTts(seq, sentence)
+      }
+    }
+
+    const handleMuxEvent = (event: MuxEvent): void => {
+      switch (event.type) {
+        case 'voice.mux.first_audio': {
+          // Follow-up: drives processing_user_turn → assistant_speaking.
+          // Opening: state is already assistant_speaking — no transition.
+          if (this.store.getState().status === 'processing_user_turn') {
+            this.store.firstAudioChunkArrived()
+          }
+          this.logger.event(
+            'voice.turn.processing_complete',
+            'success',
+            {
+              scheduledLatencyMs: event.scheduledLatencyMs,
+              audibleLatencyMs: event.audibleLatencyMs,
+              isOpening,
+            },
+            correlationIds,
+          )
+          return
+        }
+        case 'voice.mux.complete': {
+          if (this.store.getState().status === 'assistant_speaking') {
+            this.store.playbackEndedNaturally()
+            this.logger.event(
+              'voice.turn.completed',
+              'success',
+              { isOpening },
+              correlationIds,
+            )
+            this.pcmMultiplexer = null
+            this.rearmWorklet()
+          }
+          return
+        }
+        case 'voice.mux.segment_drained': {
+          activeSegments.delete(event.sequence)
+          tryFireNext()
+          checkDrain()
+          return
+        }
+        case 'voice.mux.underrun': {
+          // Fail-loud: indicates the sink ran out of samples mid-playback
+          // with segments still pending. Should never happen on the normal
+          // path; if it fires, the pipeline starved.
+          this.logger.event(
+            'voice.mux.underrun',
+            'failed',
+            { sequence: event.sequence, phase: event.phase },
+            correlationIds,
+          )
+          return
+        }
+        case 'voice.mux.handoff_stall': {
+          // Fail-loud: previous segment drained but the next wasn't yet at
+          // the prebuffer floor — Claude/ElevenLabs was slow. Audio gapped.
+          this.logger.event(
+            'voice.mux.handoff_stall',
+            'failed',
+            { sequence: event.sequence, waitMs: event.waitMs },
+            correlationIds,
+          )
+          return
+        }
+        case 'voice.mux.error': {
+          this.logger.event(
+            'voice.mux.error',
+            'failed',
+            {
+              sequence: event.sequence,
+              phase: event.phase,
+              error: event.error,
+            },
+            correlationIds,
+          )
+          if (storedError === null) {
+            storedError = new VoiceError(
+              'tts_failed',
+              event.error || event.phase,
+              true,
+              'tts',
+            )
+            abort.abort()
+            unblockDrain()
+          }
+          return
+        }
+        // segment_added / segment_ready / segment_writing — internal
+        // lifecycle; intentionally not logged at the controller level.
+        default:
+          return
+      }
+    }
+
+    const abortListener = (): void => unblockDrain()
+    abort.signal.addEventListener('abort', abortListener, { once: true })
+    const cleanupAbortListener = (): void => {
+      abort.signal.removeEventListener('abort', abortListener)
+    }
+
+    const mux = new PcmMultiplexer({
+      playbackId: turnId,
+      onEvent: handleMuxEvent,
+    })
+    this.pcmMultiplexer = mux
+    const muxPromise = mux.start()
+    // We await muxPromise at the end of the success path; mark it handled
+    // pre-emptively so a rejection during the Claude phase doesn't trip
+    // an unhandled-rejection warning. The actual throw still surfaces via
+    // the later await.
+    muxPromise.catch(() => {
+      /* swallowed here; re-surfaced via await below or via storedError */
+    })
+
+    let assistantText = ''
+    try {
+      for await (const chunk of runConversationTurn({
+        connectionContext: this.opts.connectionContext,
+        nodeContent: this.opts.nodeContent,
+        messages: claudeMessages,
+        signal: abort.signal,
+      })) {
+        if (abort.signal.aborted) break
+        assistantText += chunk
+        const sentences = segmenter.push(chunk)
+        if (sentences.length > 0) {
+          pending.push(...sentences)
+          tryFireNext()
+        }
+      }
+    } catch (err) {
+      cleanupAbortListener()
+      if (storedError !== null) throw storedError
+      if (abort.signal.aborted) return
+      const message = err instanceof Error ? err.message : String(err)
+      throw new VoiceError('claude_failed', message, true, 'claude')
+    }
+
+    // Claude stream completed (or aborted with no stored TTS error).
+    // Persist the assistant message before the late checks so that, as
+    // today, a TTS failure that lands after Claude finished still leaves
+    // the assistant turn in conversation history.
+    if (assistantText.length > 0) {
+      this.messages.push({ role: 'assistant', content: assistantText })
+    }
+
+    if (storedError !== null) {
+      cleanupAbortListener()
+      throw storedError
+    }
+    if (abort.signal.aborted) {
+      cleanupAbortListener()
+      return
+    }
+
+    // CRITICAL: flush() emits the final sentence the segmenter has held
+    // back because its terminating period had no trailing whitespace to
+    // confirm the boundary. Without this, the last sentence of every
+    // turn would be silently dropped.
+    const trailing = segmenter.flush()
+    if (trailing.length > 0) {
+      pending.push(...trailing)
+    }
+    claudeComplete = true
+    tryFireNext()
+    checkDrain()
+
+    await drainPromise
+
+    if (storedError !== null) {
+      cleanupAbortListener()
+      throw storedError
+    }
+    if (abort.signal.aborted) {
+      cleanupAbortListener()
+      return
+    }
+
+    mux.endOfSegments()
+
+    try {
+      await muxPromise
+    } catch (err) {
+      cleanupAbortListener()
+      if (storedError !== null) throw storedError
+      if (abort.signal.aborted) return
+      const message = err instanceof Error ? err.message : String(err)
+      throw new VoiceError('tts_failed', message, true, 'tts')
+    }
+
+    cleanupAbortListener()
+    if (storedError !== null) throw storedError
   }
 
   // ------- helpers -------
@@ -1014,13 +1250,13 @@ export class VadController {
       this.currentTurnAbort = null
     }
 
-    if (this.pcmPlayer) {
+    if (this.pcmMultiplexer) {
       try {
-        this.pcmPlayer.stop()
+        this.pcmMultiplexer.stop()
       } catch {
         // ignore
       }
-      this.pcmPlayer = null
+      this.pcmMultiplexer = null
     }
 
     if (this.workletNode) {
