@@ -146,16 +146,21 @@ If a session crashes mid-conversation, the processing_log is lost but utterances
 
 ### RLS
 
-Standard pattern, confirmed by Claude Code against the recent Auth RLS cutover:
+Standard pattern, matching the post-014 convention of four explicit policies per table (SELECT / INSERT / UPDATE / DELETE) rather than a single `FOR ALL`. Migration 014 superseded the original single-policy style from migration 008; new tables follow the four-policy form.
 
 ```sql
 ALTER TABLE voice_sessions ENABLE ROW LEVEL SECURITY;
-CREATE POLICY voice_sessions_authenticated ON voice_sessions
-  FOR ALL TO authenticated
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
 
--- Same pattern for voice_utterances
+CREATE POLICY voice_sessions_select_own ON voice_sessions
+  FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY voice_sessions_insert_own ON voice_sessions
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY voice_sessions_update_own ON voice_sessions
+  FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY voice_sessions_delete_own ON voice_sessions
+  FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- Same four-policy pattern for voice_utterances.
 ```
 
 ### `utterance_index` assignment
