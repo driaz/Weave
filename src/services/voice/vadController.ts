@@ -882,6 +882,16 @@ export class VadController {
     let nextSeq = 0
     let storedError: VoiceError | null = null
     let claudeComplete = false
+    /**
+     * Per-sequence diagnostic metadata for log enrichment ONLY. Lets us
+     * surface the actual sentence text and fire timestamp on mux events
+     * (mux itself sees bytes, not text). Pure logging state — does not
+     * influence control flow.
+     */
+    const segMeta = new Map<number, { sentence: string; fireTs: number }>()
+    /** Truncate sentence text for log output. */
+    const truncateForLog = (s: string): string =>
+      s.length > 200 ? `${s.slice(0, 200)}...` : s
     let ttsSubstepEntered = false
 
     let drainResolve: (() => void) | null = null
@@ -928,10 +938,20 @@ export class VadController {
         ttsSubstepEntered = true
         this.store.setSubstep('tts')
       }
+      const fireTs = performance.now()
+      segMeta.set(seq, { sentence: text, fireTs })
       this.logger.event(
         'voice.tts.segment_requested',
         'success',
-        { sequence: seq, textLength: text.length },
+        {
+          sequence: seq,
+          sentence: truncateForLog(text),
+          textLength: text.length,
+          queueDepthAtFire: pending.length,
+          // Note: activeSegments.add(seq) already happened in tryFireNext
+          // before this call, so activeSegments.size reflects "after fire".
+          activeCountAfterFire: activeSegments.size,
+        },
         correlationIds,
       )
       try {
@@ -972,6 +992,61 @@ export class VadController {
       }
     }
 
+    /**
+     * Wraps segmenter.push / segmenter.flush emissions with diagnostic
+     * logging. Pure logging — the body is identical to inline
+     * `pending.push(...sentences); tryFireNext()`, just with structured
+     * events around it.
+     *
+     * Sentences emitted by the segmenter get a `candidateSequence`
+     * (what they WILL receive at fire time) — sequences are actually
+     * assigned by tryFireNext / fireTts. After firing, anything still
+     * in `pending` is "queued because the cap is full" and gets its own
+     * voice.tts.segment_queued event.
+     */
+    const ingestSentences = (
+      sentences: string[],
+      sourceCallType: 'push' | 'flush',
+    ): void => {
+      if (sentences.length === 0) return
+      for (let i = 0; i < sentences.length; i++) {
+        this.logger.event(
+          'voice.segmenter.emitted',
+          'success',
+          {
+            sentence: truncateForLog(sentences[i]),
+            candidateSequence: nextSeq + pending.length + i,
+            sourceCallType,
+            batchIndex: i,
+          },
+          correlationIds,
+        )
+      }
+      pending.push(...sentences)
+      tryFireNext()
+      // Anything in pending after tryFireNext that came from this batch
+      // is queued-because-the-cap-was-full. Because tryFireNext fires
+      // from the front of `pending`, the still-queued sentences from
+      // THIS batch occupy the last `queuedCount` positions of `pending`.
+      const queuedCount = Math.min(sentences.length, pending.length)
+      const firedFromBatch = sentences.length - queuedCount
+      for (let i = 0; i < queuedCount; i++) {
+        const sentence = sentences[firedFromBatch + i]
+        const positionInPending = pending.length - queuedCount + i
+        this.logger.event(
+          'voice.tts.segment_queued',
+          'success',
+          {
+            sentence: truncateForLog(sentence),
+            candidateSequence: nextSeq + positionInPending,
+            queueDepth: pending.length,
+            activeCount: activeSegments.size,
+          },
+          correlationIds,
+        )
+      }
+    }
+
     const handleMuxEvent = (event: MuxEvent): void => {
       switch (event.type) {
         case 'voice.mux.first_audio': {
@@ -1006,8 +1081,52 @@ export class VadController {
           }
           return
         }
+        case 'voice.mux.segment_added': {
+          const meta = segMeta.get(event.sequence)
+          const timeSinceFire =
+            meta !== undefined ? performance.now() - meta.fireTs : null
+          this.logger.event(
+            'voice.mux.segment_added',
+            'success',
+            {
+              sequence: event.sequence,
+              sentence: meta ? truncateForLog(meta.sentence) : null,
+              timeSinceFire,
+            },
+            correlationIds,
+          )
+          return
+        }
+        case 'voice.mux.segment_writing': {
+          const meta = segMeta.get(event.sequence)
+          this.logger.event(
+            'voice.mux.segment_writing',
+            'success',
+            {
+              sequence: event.sequence,
+              sentence: meta ? truncateForLog(meta.sentence) : null,
+              bytesStaged: event.bytesStaged,
+              positionInPipeline: event.positionInPipeline,
+            },
+            correlationIds,
+          )
+          return
+        }
         case 'voice.mux.segment_drained': {
+          const meta = segMeta.get(event.sequence)
+          this.logger.event(
+            'voice.mux.segment_drained',
+            'success',
+            {
+              sequence: event.sequence,
+              sentence: meta ? truncateForLog(meta.sentence) : null,
+              bytesEnqueued: event.bytesEnqueued,
+              positionInPipeline: event.positionInPipeline,
+            },
+            correlationIds,
+          )
           activeSegments.delete(event.sequence)
+          segMeta.delete(event.sequence)
           tryFireNext()
           checkDrain()
           return
@@ -1071,8 +1190,10 @@ export class VadController {
           }
           return
         }
-        // segment_added / segment_ready / segment_writing — internal
-        // lifecycle; intentionally not logged at the controller level.
+        // segment_ready — intermediate "prebuffer floor met" signal,
+        // less load-bearing than added/writing/drained. Not surfaced
+        // through the logger; the segment_writing log immediately after
+        // captures the same info plus byte counts.
         default:
           return
       }
@@ -1108,11 +1229,7 @@ export class VadController {
       })) {
         if (abort.signal.aborted) break
         assistantText += chunk
-        const sentences = segmenter.push(chunk)
-        if (sentences.length > 0) {
-          pending.push(...sentences)
-          tryFireNext()
-        }
+        ingestSentences(segmenter.push(chunk), 'push')
       }
     } catch (err) {
       cleanupAbortListener()
@@ -1143,11 +1260,11 @@ export class VadController {
     // back because its terminating period had no trailing whitespace to
     // confirm the boundary. Without this, the last sentence of every
     // turn would be silently dropped.
-    const trailing = segmenter.flush()
-    if (trailing.length > 0) {
-      pending.push(...trailing)
-    }
+    ingestSentences(segmenter.flush(), 'flush')
     claudeComplete = true
+    // ingestSentences already called tryFireNext; do one extra after
+    // claudeComplete flips so checkDrain can fire if there's nothing
+    // left at all (zero-segment edge case for very short Claude replies).
     tryFireNext()
     checkDrain()
 

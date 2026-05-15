@@ -30,6 +30,12 @@ const VERBOSE_ONLY_PHASES = new Set<string>([
   'voice.vad.chunk_received',
   'voice.vad.config_applied',
   'voice.vad.worklet_ready',
+  // High-volume per-turn diagnostic events for sentence-chunked TTS.
+  // Each Claude push that emits N sentences fires N segmenter.emitted;
+  // segment_queued fires for each sentence held back by the concurrency
+  // cap. Visible only under localStorage weave.voice.logLevel='verbose'.
+  'voice.segmenter.emitted',
+  'voice.tts.segment_queued',
 ])
 
 const WEAVE_EVENTS_PHASES = new Set<string>([

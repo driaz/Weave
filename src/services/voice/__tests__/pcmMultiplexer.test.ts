@@ -469,6 +469,98 @@ describe('PcmMultiplexer', () => {
     })
   })
 
+  describe('diagnostic enrichment on lifecycle events', () => {
+    it('voice.mux.segment_writing carries bytesStaged and positionInPipeline=first for the first segment', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(300, 0x11)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const writing = events.find(
+        (e) => e.type === 'voice.mux.segment_writing',
+      )
+      expect(writing).toBeDefined()
+      if (writing && writing.type === 'voice.mux.segment_writing') {
+        expect(writing.sequence).toBe(0)
+        expect(writing.bytesStaged).toBe(300)
+        expect(writing.positionInPipeline).toBe('first')
+      }
+    })
+
+    it('voice.mux.segment_writing reports positionInPipeline=middle for subsequent segments', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(200, 0xaa)]))
+      mux.addSegment(1, streamFromChunks([bytes(200, 0xbb)]))
+      mux.endOfSegments()
+      await settle(30)
+
+      const writes = events.filter(
+        (e) => e.type === 'voice.mux.segment_writing',
+      )
+      expect(writes).toHaveLength(2)
+      if (writes[0].type === 'voice.mux.segment_writing') {
+        expect(writes[0].positionInPipeline).toBe('first')
+      }
+      if (writes[1].type === 'voice.mux.segment_writing') {
+        expect(writes[1].positionInPipeline).toBe('middle')
+      }
+    })
+
+    it('voice.mux.segment_drained carries bytesEnqueued and positionInPipeline=last when the final segment drains after endOfSegments', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(150, 0xcc)]))
+      mux.addSegment(1, streamFromChunks([bytes(250, 0xdd)]))
+      mux.endOfSegments()
+      await settle(30)
+
+      const drains = events.filter(
+        (e) => e.type === 'voice.mux.segment_drained',
+      )
+      expect(drains).toHaveLength(2)
+      if (drains[0].type === 'voice.mux.segment_drained') {
+        expect(drains[0].sequence).toBe(0)
+        expect(drains[0].bytesEnqueued).toBe(150)
+        expect(drains[0].positionInPipeline).toBe('first')
+      }
+      if (drains[1].type === 'voice.mux.segment_drained') {
+        expect(drains[1].sequence).toBe(1)
+        expect(drains[1].bytesEnqueued).toBe(250)
+        expect(drains[1].positionInPipeline).toBe('last')
+      }
+    })
+
+    it('voice.mux.segment_drained reports last for a single-segment turn', async () => {
+      mux.start()
+      mux.addSegment(0, streamFromChunks([bytes(100, 0x55)]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const drain = events.find(
+        (e) => e.type === 'voice.mux.segment_drained',
+      )
+      expect(drain).toBeDefined()
+      if (drain && drain.type === 'voice.mux.segment_drained') {
+        expect(drain.positionInPipeline).toBe('last')
+      }
+    })
+
+    it('bytesEnqueued reflects post-alignment byte count (odd-byte segment loses 1)', async () => {
+      // 7-byte segment → mux drops 1 trailing byte → 6 bytes enqueued.
+      mux.start()
+      mux.addSegment(0, streamFromChunks([new Uint8Array([1, 2, 3, 4, 5, 6, 99])]))
+      mux.endOfSegments()
+      await settle(20)
+
+      const drain = events.find(
+        (e) => e.type === 'voice.mux.segment_drained',
+      )
+      expect(drain).toBeDefined()
+      if (drain && drain.type === 'voice.mux.segment_drained') {
+        expect(drain.bytesEnqueued).toBe(6)
+      }
+    })
+  })
+
   describe('error surfaces', () => {
     it('rejects duplicate sequence numbers with a voice.mux.error event', () => {
       mux.start()

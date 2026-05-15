@@ -64,11 +64,28 @@ export type MuxEvent =
   | {
       type: 'voice.mux.segment_writing'
       sequence: number
+      /** Total bytes staged for this segment at the moment writing began. */
+      bytesStaged: number
+      /**
+       * Whether this segment is the FIRST to enter writing across the
+       * turn, or a 'middle' transition. 'last' is never reported here —
+       * it can't be known until segment-drained / endOfSegments time.
+       */
+      positionInPipeline: 'first' | 'middle'
       ts: number
     }
   | {
       type: 'voice.mux.segment_drained'
       sequence: number
+      /** Total bytes the mux enqueued to the shared stream for this segment. */
+      bytesEnqueued: number
+      /**
+       * 'first' if no earlier segment had drained; 'last' if
+       * endOfSegments has been called and no other non-drained segment
+       * remains; 'middle' otherwise. For a single-segment turn 'last'
+       * takes precedence over 'first'.
+       */
+      positionInPipeline: 'first' | 'middle' | 'last'
       ts: number
     }
   | {
@@ -201,6 +218,9 @@ export class PcmMultiplexer {
    * tag forwarded underrun events meaningfully even after a drain.
    */
   private lastActiveSequence: number | null = null
+  /** Counters for positionInPipeline on segment_writing / segment_drained. */
+  private writeTransitionCount = 0
+  private drainCount = 0
 
   constructor(opts: PcmMultiplexerOptions) {
     this.playbackId = opts.playbackId
@@ -438,9 +458,14 @@ export class PcmMultiplexer {
           })
           this.stallStartTs = null
         }
+        const writingPosition: 'first' | 'middle' =
+          this.writeTransitionCount === 0 ? 'first' : 'middle'
+        this.writeTransitionCount++
         this.emit({
           type: 'voice.mux.segment_writing',
           sequence: active.sequence,
+          bytesStaged: active.stagedBytes,
+          positionInPipeline: writingPosition,
           ts: performance.now(),
         })
       }
@@ -491,17 +516,29 @@ export class PcmMultiplexer {
           })
         }
         active.state = 'drained'
+        // Determine positionInPipeline. 'last' takes precedence (a
+        // single-segment turn is "last" rather than "first" — it
+        // semantically marks the end of playback).
+        const next = this.segments.find(
+          (s) => s.state !== 'drained' && s.state !== 'errored',
+        )
+        const isLast = this.endOfSegmentsCalled && !next
+        const drainPosition: 'first' | 'middle' | 'last' = isLast
+          ? 'last'
+          : this.drainCount === 0
+            ? 'first'
+            : 'middle'
+        this.drainCount++
         this.emit({
           type: 'voice.mux.segment_drained',
           sequence: active.sequence,
+          bytesEnqueued: active.consumedBytes,
+          positionInPipeline: drainPosition,
           ts: performance.now(),
         })
         // If a next segment exists and isn't ready, mark the start of a
         // handoff stall. Cleared (and emitted) when that segment reaches
         // writing state.
-        const next = this.segments.find(
-          (s) => s.state !== 'drained' && s.state !== 'errored',
-        )
         if (next && next.state !== 'ready') {
           this.stallStartTs = performance.now()
         }
