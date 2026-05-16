@@ -140,6 +140,46 @@ export interface VadControllerOptions {
   store?: VoiceSessionStore
 }
 
+/**
+ * Phase 8 turn-boundary timestamps for the most recently completed
+ * (or in-progress) turn. Wall-clock ISO strings, suitable for direct
+ * use in voice_utterances.started_at / ended_at.
+ *
+ * Lifecycle:
+ *   - `user.speechStartedAt` is set when VAD transitions
+ *     listening → user_speaking (a brand-new user turn). Re-triggers
+ *     within an existing user_speaking turn don't overwrite it.
+ *   - `user.speechEndedAt` is set when the 1.5s silence timer
+ *     expires OR when the user clicks Stop while speaking. It's the
+ *     moment the system commits to ending the turn (just before
+ *     handing audio to STT).
+ *   - `assistant.firstAudioAt` is set when voice.mux.first_audio
+ *     fires — the moment the user begins hearing the response. Set
+ *     on every assistant turn (opening and follow-up); each new turn
+ *     clears `playbackEndedAt`.
+ *   - `assistant.playbackEndedAt` is set when voice.mux.complete
+ *     fires — the moment playback finishes naturally. Not set on
+ *     interrupted playback (Stop during assistant_speaking).
+ *
+ * Read contract for Prompt B2:
+ *   - User utterance: read `user` after STT returns transcript and
+ *     before recordUtterance — both fields are guaranteed populated
+ *     (speech_started fired earlier in this turn; speech_ended fired
+ *     just before processUserTurn began).
+ *   - Assistant utterance: read `assistant` inside the
+ *     voice.mux.complete handler (or immediately after) — by then
+ *     both fields are populated for the just-completed turn. Reading
+ *     later risks the next user-speech-start firing first, but in
+ *     practice rearmWorklet defers that to the next event loop tick.
+ *
+ * Each side is `null` when no boundary has fired for that role yet
+ * in the session.
+ */
+export interface TurnTimestamps {
+  user: { speechStartedAt: string; speechEndedAt: string } | null
+  assistant: { firstAudioAt: string; playbackEndedAt: string } | null
+}
+
 export class VadController {
   private readonly store: VoiceSessionStore
   private readonly opts: VadControllerOptions
@@ -161,6 +201,25 @@ export class VadController {
 
   private teardownInProgress = false
 
+  // ------- Phase 8 turn-boundary timestamps -------
+  //
+  // Wall-clock ISO timestamps captured at four boundaries Prompt B2's
+  // voiceSessionController consumes for voice_utterances.started_at /
+  // ended_at. Kept separate from the performance.now() ts fields on
+  // logger / mux events; those drive latency math and stay unchanged.
+  //
+  // Lifetime of each pair is one user/assistant turn — set when the
+  // boundary fires, never overwritten mid-turn (re-triggers within
+  // user_speaking are ignored), reset implicitly when the next turn
+  // begins. Reading them between turns sees the most recent completed
+  // turn; B2 reads at the moment of recordUtterance and the values are
+  // valid because the next-turn writer hasn't fired yet (see contract
+  // in voiceSessionController.ts).
+  private currentUserSpeechStartedAt: string | null = null
+  private currentUserSpeechEndedAt: string | null = null
+  private currentAssistantFirstAudioAt: string | null = null
+  private currentAssistantPlaybackEndedAt: string | null = null
+
   constructor(opts: VadControllerOptions) {
     this.opts = opts
     this.store = opts.store ?? voiceSessionStore
@@ -174,6 +233,29 @@ export class VadController {
         content: opts.initialAssistantMessage,
       })
     }
+  }
+
+  /**
+   * Snapshot of the four Phase 8 turn-boundary timestamps. Pure read
+   * — does not clear or mutate internal state. See TurnTimestamps
+   * for the lifecycle and read contract.
+   */
+  getTurnTimestamps(): TurnTimestamps {
+    const user =
+      this.currentUserSpeechStartedAt && this.currentUserSpeechEndedAt
+        ? {
+            speechStartedAt: this.currentUserSpeechStartedAt,
+            speechEndedAt: this.currentUserSpeechEndedAt,
+          }
+        : null
+    const assistant =
+      this.currentAssistantFirstAudioAt && this.currentAssistantPlaybackEndedAt
+        ? {
+            firstAudioAt: this.currentAssistantFirstAudioAt,
+            playbackEndedAt: this.currentAssistantPlaybackEndedAt,
+          }
+        : null
+    return { user, assistant }
   }
 
   /**
@@ -224,6 +306,9 @@ export class VadController {
   userClickedStop(): void {
     const state = this.store.getState()
     if (state.status === 'user_speaking') {
+      // Phase 8 boundary: user-initiated end-of-speech, same role as
+      // the silence-timer expiry. Captured before the state mutation.
+      this.currentUserSpeechEndedAt = new Date().toISOString()
       this.cancelSilenceTimer()
       this.sendToWorklet({ type: 'stop' })
       this.store.userClickedStop()
@@ -512,6 +597,10 @@ export class VadController {
     this.cancelSilenceTimer()
     const state = this.store.getState()
     if (state.status === 'listening') {
+      // Capture the user turn's start timestamp before any state mutates.
+      // Phase 8: consumed by voiceSessionController in Prompt B2.
+      this.currentUserSpeechStartedAt = new Date().toISOString()
+      this.currentUserSpeechEndedAt = null
       this.store.vadSpeechStarted()
       this.chunkAccumulator = []
       this.lastSequence = -1
@@ -621,6 +710,11 @@ export class VadController {
       this.silenceTimer = null
       const state = this.store.getState()
       if (state.status !== 'user_speaking') return
+      // Phase 8 boundary: the moment the system commits to ending the
+      // user's turn. Captured before the state machine transition so a
+      // reader can rely on it being set by the time STT processing
+      // starts.
+      this.currentUserSpeechEndedAt = new Date().toISOString()
       this.logger.event(
         'voice.vad.silence_timer_expired',
         'success',
@@ -1050,6 +1144,15 @@ export class VadController {
     const handleMuxEvent = (event: MuxEvent): void => {
       switch (event.type) {
         case 'voice.mux.first_audio': {
+          // Phase 8 boundary: the moment the user begins hearing the
+          // assistant's response. Captured here on every assistant
+          // turn (opening and follow-up). The previous turn's value
+          // is overwritten — see the contract note in
+          // voiceSessionController.ts: Prompt B2 reads at the
+          // playback-end moment, when both first_audio and
+          // playback_end are guaranteed to belong to the same turn.
+          this.currentAssistantFirstAudioAt = new Date().toISOString()
+          this.currentAssistantPlaybackEndedAt = null
           // Follow-up: drives processing_user_turn → assistant_speaking.
           // Opening: state is already assistant_speaking — no transition.
           if (this.store.getState().status === 'processing_user_turn') {
@@ -1069,6 +1172,8 @@ export class VadController {
         }
         case 'voice.mux.complete': {
           if (this.store.getState().status === 'assistant_speaking') {
+            // Phase 8 boundary: assistant utterance is fully audible.
+            this.currentAssistantPlaybackEndedAt = new Date().toISOString()
             this.store.playbackEndedNaturally()
             this.logger.event(
               'voice.turn.completed',

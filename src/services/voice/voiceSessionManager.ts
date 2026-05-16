@@ -10,7 +10,11 @@
  * gate on the store status before invoking.
  */
 
-import { VadController, type VadControllerOptions } from './vadController'
+import {
+  VadController,
+  type TurnTimestamps,
+  type VadControllerOptions,
+} from './vadController'
 import { voiceSessionStore } from './voiceSessionStore'
 
 let activeController: VadController | null = null
@@ -41,4 +45,15 @@ export function voiceUserClickedClose(): void {
 
 export function voiceUserClickedRetry(): Promise<void> {
   return activeController?.userClickedRetry() ?? Promise.resolve()
+}
+
+/**
+ * Phase 8: read the current turn-boundary timestamps from the active
+ * VAD controller. Returns `null` when no session is active. Prompt
+ * B2 calls this from the voiceSessionController integration to
+ * stamp voice_utterances rows. See TurnTimestamps in vadController.ts
+ * for the read contract.
+ */
+export function voiceGetTurnTimestamps(): TurnTimestamps | null {
+  return activeController?.getTurnTimestamps() ?? null
 }
