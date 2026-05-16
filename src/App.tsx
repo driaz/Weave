@@ -690,6 +690,8 @@ export function App() {
               node2={nodes.find(
                 (n) => n.id === popupEdge.connection.to.replace(/^node-/, ''),
               )}
+              boardNodes={nodes}
+              boardConnections={connections}
               onClose={closeEdgeDetail}
             />
           )}

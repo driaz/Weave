@@ -41,6 +41,8 @@ import {
   createVoiceSessionLogger,
   type VoiceSessionLogger,
 } from './voiceSessionLogger'
+import { voiceSessionController } from './voiceSessionController'
+import type { EndReason } from '../../persistence'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -294,7 +296,7 @@ export class VadController {
         { correlationId: sessionId },
       )
       this.store.initFailed(vErr)
-      this.teardownSession()
+      this.teardownSession('error')
     }
   }
 
@@ -359,6 +361,11 @@ export class VadController {
     }
     if (state.status === 'idle') return
 
+    // Capture the persistence end reason before the state transition
+    // erases the pre-close status. Dismissing the error UI ends the
+    // session for the reason that actually closed it — the error.
+    const endReason: EndReason = state.status === 'error' ? 'error' : 'user_closed'
+
     if (state.status === 'initializing') {
       this.store.userClickedCancel()
     } else if (state.status === 'error') {
@@ -368,7 +375,7 @@ export class VadController {
     }
 
     this.logger.event('voice.session.ended', 'success', undefined, correlationIds)
-    this.teardownSession()
+    this.teardownSession(endReason)
   }
 
   /** User clicked retry on the error UI. Re-runs initialization. */
@@ -396,7 +403,7 @@ export class VadController {
         { correlationId: sessionId },
       )
       this.store.initFailed(vErr)
-      this.teardownSession()
+      this.teardownSession('error')
     }
   }
 
@@ -797,7 +804,7 @@ export class VadController {
         correlationIds,
       )
       this.store.sttFailed(vErr)
-      this.teardownSession()
+      this.teardownSession('error')
       return
     }
 
@@ -849,6 +856,30 @@ export class VadController {
     // once the first sentence has been emitted to TTS (driven from the
     // helper, see below).
     this.store.setSubstep('claude')
+    // Phase 8: persist the user utterance. Fire-and-forget so the
+    // Claude call doesn't wait on a Supabase round-trip; the controller
+    // logs insert failures to processing_log and the session keeps
+    // going. Timestamps come from B1's instrumentation — both fields
+    // are populated by now (speech-start fired earlier in this turn,
+    // speech-end fired just before processUserTurn began).
+    if (voiceSessionController.isActive()) {
+      const ts = this.getTurnTimestamps()
+      if (ts.user) {
+        void voiceSessionController
+          .recordUtterance({
+            speaker: 'user',
+            text: transcript,
+            startedAt: ts.user.speechStartedAt,
+            endedAt: ts.user.speechEndedAt,
+          })
+          .catch((err) =>
+            console.error(
+              '[VadController] voiceSessionController.recordUtterance(user) failed:',
+              err,
+            ),
+          )
+      }
+    }
     this.messages.push({ role: 'user', content: transcript })
 
     try {
@@ -879,7 +910,7 @@ export class VadController {
         )
         this.store.ttsFailed(vErr)
       }
-      this.teardownSession()
+      this.teardownSession('error')
     }
   }
 
@@ -1181,6 +1212,31 @@ export class VadController {
               { isOpening },
               correlationIds,
             )
+            // Phase 8: record the just-completed assistant utterance.
+            // assistantText is the full accumulated Claude response
+            // (captured in this closure). Fire-and-forget so the
+            // rearm doesn't wait on Supabase. Interrupted turns (Stop
+            // during assistant_speaking) take the userClickedStop
+            // branch and never reach this code — they're intentionally
+            // not recorded.
+            if (voiceSessionController.isActive() && assistantText.length > 0) {
+              const ts = this.getTurnTimestamps()
+              if (ts.assistant) {
+                void voiceSessionController
+                  .recordUtterance({
+                    speaker: 'assistant',
+                    text: assistantText,
+                    startedAt: ts.assistant.firstAudioAt,
+                    endedAt: ts.assistant.playbackEndedAt,
+                  })
+                  .catch((err) =>
+                    console.error(
+                      '[VadController] voiceSessionController.recordUtterance(assistant) failed:',
+                      err,
+                    ),
+                  )
+              }
+            }
             this.pcmMultiplexer = null
             this.rearmWorklet()
           }
@@ -1436,7 +1492,7 @@ export class VadController {
       // If we're somehow in a state that doesn't accept fatalError,
       // fall back to a synthetic init failure so the UI shows the error.
     }
-    this.teardownSession()
+    this.teardownSession('error')
   }
 
   private handleMicLost(): void {
@@ -1474,9 +1530,22 @@ export class VadController {
     }
   }
 
-  private teardownSession(): void {
+  private teardownSession(endReason: EndReason = 'user_closed'): void {
     if (this.teardownInProgress) return
     this.teardownInProgress = true
+
+    // Phase 8: flush the persistence session before destroying any
+    // ephemeral pipeline state. The controller captures its buffer +
+    // session id synchronously and clears its own internal state
+    // before awaiting the Supabase round-trip, so this is safe to
+    // fire-and-forget — close UI returns to idle immediately.
+    if (voiceSessionController.isActive()) {
+      voiceSessionController
+        .endSession({ endReason })
+        .catch((err) =>
+          console.error('[VadController] voiceSessionController.endSession failed:', err),
+        )
+    }
 
     this.cancelSilenceTimer()
 
