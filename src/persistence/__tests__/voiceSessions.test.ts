@@ -4,44 +4,52 @@ import { createTestUser, hasServiceRole, type TestUser } from './setup'
 
 describe.skipIf(!hasServiceRole())('persistence.voiceSessions', () => {
   let user: TestUser
-  let boardId: string
 
   beforeAll(async () => {
-    user = await createTestUser('voice')
-    const board = await persistence.boards.create({
-      name: `__persistence_test_voice_${Date.now()}__`,
-    })
-    boardId = board.id
+    user = await createTestUser('voice-sessions')
   })
 
   afterAll(async () => {
-    await persistence.boards.delete(boardId).catch(() => {})
+    // Cleanup deletes the test user, which cascades through user_id FKs
+    // on every voice_sessions and voice_utterances row owned by them.
     await user.cleanup()
   })
 
-  it('creates, reads, updates, and deletes a voice session', async () => {
-    const session = await persistence.voiceSessions.create({
-      board_id: boardId,
-      connection_context: { foo: 'bar' },
+  it('creates, fetches, and ends a voice session', async () => {
+    const created = await persistence.voiceSessions.createSession({
+      anchor_edge_id: null,
+      board_snapshot: {
+        nodes: [],
+        edges: [],
+        captured_at: new Date().toISOString(),
+      } as unknown as never,
       started_at: new Date().toISOString(),
+      processing_log: [] as unknown as never,
+      end_reason: null,
+      ended_at: null,
+      summary: null,
     })
-    expect(session.user_id).toBe(user.userId)
-    expect(session.board_id).toBe(boardId)
+    expect(created.user_id).toBe(user.userId)
+    expect(created.ended_at).toBeNull()
+    expect(created.end_reason).toBeNull()
 
-    const fetched = await persistence.voiceSessions.get(session.id)
-    expect(fetched?.id).toBe(session.id)
+    const fetched = await persistence.voiceSessions.getSession(created.id)
+    expect(fetched?.id).toBe(created.id)
 
-    const ended = await persistence.voiceSessions.update(session.id, {
+    const ended = await persistence.voiceSessions.endSession(created.id, {
       ended_at: new Date().toISOString(),
-      transcript: [{ role: 'user', text: 'hi' }],
+      end_reason: 'user_closed',
+      processing_log: [
+        { phase: 'voice.session.test', outcome: 'success', ts: new Date().toISOString() },
+      ],
     })
     expect(ended.ended_at).toBeTruthy()
+    expect(ended.end_reason).toBe('user_closed')
+    expect(Array.isArray(ended.processing_log)).toBe(true)
+  })
 
-    const list = await persistence.voiceSessions.listByBoard(boardId)
-    expect(list.some((v) => v.id === session.id)).toBe(true)
-
-    await persistence.voiceSessions.delete(session.id)
-    const gone = await persistence.voiceSessions.get(session.id)
+  it('getSession returns null for unknown ids', async () => {
+    const gone = await persistence.voiceSessions.getSession(crypto.randomUUID())
     expect(gone).toBeNull()
   })
 })

@@ -258,3 +258,30 @@ export function embedNodeAsync(
     }
   })
 }
+
+/**
+ * Embed a plain text string and return the raw 3072-dim vector. Same
+ * Gemini call as `embedNode` (model + taskType + dimensionality) so
+ * board-node and voice-utterance embeddings live in a single vector
+ * space and unified retrieval (Phase 10) can compare them directly.
+ *
+ * Throws on any failure (no Gemini client configured, empty text,
+ * Gemini returns no embedding). Callers handle the failure — for
+ * voice this means logging an `embedding_failed` event to the
+ * session's processing_log and leaving the utterance row's embedding
+ * column null.
+ */
+export async function embedText(text: string): Promise<number[]> {
+  if (!ai) throw new Error('Gemini client not configured (VITE_GEMINI_API_KEY missing)')
+  if (!text.trim()) throw new Error('embedText: empty text')
+
+  const response = await ai.models.embedContent({
+    model: 'gemini-embedding-2-preview',
+    contents: { parts: [{ text }] },
+    config: { taskType: 'SEMANTIC_SIMILARITY' },
+  })
+
+  const embedding = response.embeddings?.[0]?.values
+  if (!embedding) throw new Error('embedText: Gemini returned no embedding')
+  return embedding
+}

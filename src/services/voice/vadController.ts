@@ -41,6 +41,8 @@ import {
   createVoiceSessionLogger,
   type VoiceSessionLogger,
 } from './voiceSessionLogger'
+import { voiceSessionController } from './voiceSessionController'
+import type { EndReason } from '../../persistence'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -140,6 +142,46 @@ export interface VadControllerOptions {
   store?: VoiceSessionStore
 }
 
+/**
+ * Phase 8 turn-boundary timestamps for the most recently completed
+ * (or in-progress) turn. Wall-clock ISO strings, suitable for direct
+ * use in voice_utterances.started_at / ended_at.
+ *
+ * Lifecycle:
+ *   - `user.speechStartedAt` is set when VAD transitions
+ *     listening → user_speaking (a brand-new user turn). Re-triggers
+ *     within an existing user_speaking turn don't overwrite it.
+ *   - `user.speechEndedAt` is set when the 1.5s silence timer
+ *     expires OR when the user clicks Stop while speaking. It's the
+ *     moment the system commits to ending the turn (just before
+ *     handing audio to STT).
+ *   - `assistant.firstAudioAt` is set when voice.mux.first_audio
+ *     fires — the moment the user begins hearing the response. Set
+ *     on every assistant turn (opening and follow-up); each new turn
+ *     clears `playbackEndedAt`.
+ *   - `assistant.playbackEndedAt` is set when voice.mux.complete
+ *     fires — the moment playback finishes naturally. Not set on
+ *     interrupted playback (Stop during assistant_speaking).
+ *
+ * Read contract for Prompt B2:
+ *   - User utterance: read `user` after STT returns transcript and
+ *     before recordUtterance — both fields are guaranteed populated
+ *     (speech_started fired earlier in this turn; speech_ended fired
+ *     just before processUserTurn began).
+ *   - Assistant utterance: read `assistant` inside the
+ *     voice.mux.complete handler (or immediately after) — by then
+ *     both fields are populated for the just-completed turn. Reading
+ *     later risks the next user-speech-start firing first, but in
+ *     practice rearmWorklet defers that to the next event loop tick.
+ *
+ * Each side is `null` when no boundary has fired for that role yet
+ * in the session.
+ */
+export interface TurnTimestamps {
+  user: { speechStartedAt: string; speechEndedAt: string } | null
+  assistant: { firstAudioAt: string; playbackEndedAt: string } | null
+}
+
 export class VadController {
   private readonly store: VoiceSessionStore
   private readonly opts: VadControllerOptions
@@ -161,6 +203,25 @@ export class VadController {
 
   private teardownInProgress = false
 
+  // ------- Phase 8 turn-boundary timestamps -------
+  //
+  // Wall-clock ISO timestamps captured at four boundaries Prompt B2's
+  // voiceSessionController consumes for voice_utterances.started_at /
+  // ended_at. Kept separate from the performance.now() ts fields on
+  // logger / mux events; those drive latency math and stay unchanged.
+  //
+  // Lifetime of each pair is one user/assistant turn — set when the
+  // boundary fires, never overwritten mid-turn (re-triggers within
+  // user_speaking are ignored), reset implicitly when the next turn
+  // begins. Reading them between turns sees the most recent completed
+  // turn; B2 reads at the moment of recordUtterance and the values are
+  // valid because the next-turn writer hasn't fired yet (see contract
+  // in voiceSessionController.ts).
+  private currentUserSpeechStartedAt: string | null = null
+  private currentUserSpeechEndedAt: string | null = null
+  private currentAssistantFirstAudioAt: string | null = null
+  private currentAssistantPlaybackEndedAt: string | null = null
+
   constructor(opts: VadControllerOptions) {
     this.opts = opts
     this.store = opts.store ?? voiceSessionStore
@@ -174,6 +235,29 @@ export class VadController {
         content: opts.initialAssistantMessage,
       })
     }
+  }
+
+  /**
+   * Snapshot of the four Phase 8 turn-boundary timestamps. Pure read
+   * — does not clear or mutate internal state. See TurnTimestamps
+   * for the lifecycle and read contract.
+   */
+  getTurnTimestamps(): TurnTimestamps {
+    const user =
+      this.currentUserSpeechStartedAt && this.currentUserSpeechEndedAt
+        ? {
+            speechStartedAt: this.currentUserSpeechStartedAt,
+            speechEndedAt: this.currentUserSpeechEndedAt,
+          }
+        : null
+    const assistant =
+      this.currentAssistantFirstAudioAt && this.currentAssistantPlaybackEndedAt
+        ? {
+            firstAudioAt: this.currentAssistantFirstAudioAt,
+            playbackEndedAt: this.currentAssistantPlaybackEndedAt,
+          }
+        : null
+    return { user, assistant }
   }
 
   /**
@@ -212,7 +296,7 @@ export class VadController {
         { correlationId: sessionId },
       )
       this.store.initFailed(vErr)
-      this.teardownSession()
+      this.teardownSession('error')
     }
   }
 
@@ -224,6 +308,9 @@ export class VadController {
   userClickedStop(): void {
     const state = this.store.getState()
     if (state.status === 'user_speaking') {
+      // Phase 8 boundary: user-initiated end-of-speech, same role as
+      // the silence-timer expiry. Captured before the state mutation.
+      this.currentUserSpeechEndedAt = new Date().toISOString()
       this.cancelSilenceTimer()
       this.sendToWorklet({ type: 'stop' })
       this.store.userClickedStop()
@@ -274,6 +361,11 @@ export class VadController {
     }
     if (state.status === 'idle') return
 
+    // Capture the persistence end reason before the state transition
+    // erases the pre-close status. Dismissing the error UI ends the
+    // session for the reason that actually closed it — the error.
+    const endReason: EndReason = state.status === 'error' ? 'error' : 'user_closed'
+
     if (state.status === 'initializing') {
       this.store.userClickedCancel()
     } else if (state.status === 'error') {
@@ -283,7 +375,7 @@ export class VadController {
     }
 
     this.logger.event('voice.session.ended', 'success', undefined, correlationIds)
-    this.teardownSession()
+    this.teardownSession(endReason)
   }
 
   /** User clicked retry on the error UI. Re-runs initialization. */
@@ -311,7 +403,7 @@ export class VadController {
         { correlationId: sessionId },
       )
       this.store.initFailed(vErr)
-      this.teardownSession()
+      this.teardownSession('error')
     }
   }
 
@@ -512,6 +604,10 @@ export class VadController {
     this.cancelSilenceTimer()
     const state = this.store.getState()
     if (state.status === 'listening') {
+      // Capture the user turn's start timestamp before any state mutates.
+      // Phase 8: consumed by voiceSessionController in Prompt B2.
+      this.currentUserSpeechStartedAt = new Date().toISOString()
+      this.currentUserSpeechEndedAt = null
       this.store.vadSpeechStarted()
       this.chunkAccumulator = []
       this.lastSequence = -1
@@ -621,6 +717,11 @@ export class VadController {
       this.silenceTimer = null
       const state = this.store.getState()
       if (state.status !== 'user_speaking') return
+      // Phase 8 boundary: the moment the system commits to ending the
+      // user's turn. Captured before the state machine transition so a
+      // reader can rely on it being set by the time STT processing
+      // starts.
+      this.currentUserSpeechEndedAt = new Date().toISOString()
       this.logger.event(
         'voice.vad.silence_timer_expired',
         'success',
@@ -703,7 +804,7 @@ export class VadController {
         correlationIds,
       )
       this.store.sttFailed(vErr)
-      this.teardownSession()
+      this.teardownSession('error')
       return
     }
 
@@ -755,6 +856,30 @@ export class VadController {
     // once the first sentence has been emitted to TTS (driven from the
     // helper, see below).
     this.store.setSubstep('claude')
+    // Phase 8: persist the user utterance. Fire-and-forget so the
+    // Claude call doesn't wait on a Supabase round-trip; the controller
+    // logs insert failures to processing_log and the session keeps
+    // going. Timestamps come from B1's instrumentation — both fields
+    // are populated by now (speech-start fired earlier in this turn,
+    // speech-end fired just before processUserTurn began).
+    if (voiceSessionController.isActive()) {
+      const ts = this.getTurnTimestamps()
+      if (ts.user) {
+        void voiceSessionController
+          .recordUtterance({
+            speaker: 'user',
+            text: transcript,
+            startedAt: ts.user.speechStartedAt,
+            endedAt: ts.user.speechEndedAt,
+          })
+          .catch((err) =>
+            console.error(
+              '[VadController] voiceSessionController.recordUtterance(user) failed:',
+              err,
+            ),
+          )
+      }
+    }
     this.messages.push({ role: 'user', content: transcript })
 
     try {
@@ -785,7 +910,7 @@ export class VadController {
         )
         this.store.ttsFailed(vErr)
       }
-      this.teardownSession()
+      this.teardownSession('error')
     }
   }
 
@@ -1050,6 +1175,15 @@ export class VadController {
     const handleMuxEvent = (event: MuxEvent): void => {
       switch (event.type) {
         case 'voice.mux.first_audio': {
+          // Phase 8 boundary: the moment the user begins hearing the
+          // assistant's response. Captured here on every assistant
+          // turn (opening and follow-up). The previous turn's value
+          // is overwritten — see the contract note in
+          // voiceSessionController.ts: Prompt B2 reads at the
+          // playback-end moment, when both first_audio and
+          // playback_end are guaranteed to belong to the same turn.
+          this.currentAssistantFirstAudioAt = new Date().toISOString()
+          this.currentAssistantPlaybackEndedAt = null
           // Follow-up: drives processing_user_turn → assistant_speaking.
           // Opening: state is already assistant_speaking — no transition.
           if (this.store.getState().status === 'processing_user_turn') {
@@ -1069,6 +1203,8 @@ export class VadController {
         }
         case 'voice.mux.complete': {
           if (this.store.getState().status === 'assistant_speaking') {
+            // Phase 8 boundary: assistant utterance is fully audible.
+            this.currentAssistantPlaybackEndedAt = new Date().toISOString()
             this.store.playbackEndedNaturally()
             this.logger.event(
               'voice.turn.completed',
@@ -1076,6 +1212,31 @@ export class VadController {
               { isOpening },
               correlationIds,
             )
+            // Phase 8: record the just-completed assistant utterance.
+            // assistantText is the full accumulated Claude response
+            // (captured in this closure). Fire-and-forget so the
+            // rearm doesn't wait on Supabase. Interrupted turns (Stop
+            // during assistant_speaking) take the userClickedStop
+            // branch and never reach this code — they're intentionally
+            // not recorded.
+            if (voiceSessionController.isActive() && assistantText.length > 0) {
+              const ts = this.getTurnTimestamps()
+              if (ts.assistant) {
+                void voiceSessionController
+                  .recordUtterance({
+                    speaker: 'assistant',
+                    text: assistantText,
+                    startedAt: ts.assistant.firstAudioAt,
+                    endedAt: ts.assistant.playbackEndedAt,
+                  })
+                  .catch((err) =>
+                    console.error(
+                      '[VadController] voiceSessionController.recordUtterance(assistant) failed:',
+                      err,
+                    ),
+                  )
+              }
+            }
             this.pcmMultiplexer = null
             this.rearmWorklet()
           }
@@ -1331,7 +1492,7 @@ export class VadController {
       // If we're somehow in a state that doesn't accept fatalError,
       // fall back to a synthetic init failure so the UI shows the error.
     }
-    this.teardownSession()
+    this.teardownSession('error')
   }
 
   private handleMicLost(): void {
@@ -1369,9 +1530,22 @@ export class VadController {
     }
   }
 
-  private teardownSession(): void {
+  private teardownSession(endReason: EndReason = 'user_closed'): void {
     if (this.teardownInProgress) return
     this.teardownInProgress = true
+
+    // Phase 8: flush the persistence session before destroying any
+    // ephemeral pipeline state. The controller captures its buffer +
+    // session id synchronously and clears its own internal state
+    // before awaiting the Supabase round-trip, so this is safe to
+    // fire-and-forget — close UI returns to idle immediately.
+    if (voiceSessionController.isActive()) {
+      voiceSessionController
+        .endSession({ endReason })
+        .catch((err) =>
+          console.error('[VadController] voiceSessionController.endSession failed:', err),
+        )
+    }
 
     this.cancelSilenceTimer()
 

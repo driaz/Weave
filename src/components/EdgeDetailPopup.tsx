@@ -13,6 +13,7 @@ import {
   buildConnectionContext,
   buildNodeContent,
 } from '../services/voice/voiceContext'
+import { buildBoardSnapshot } from '../services/voice/boardSnapshot'
 
 type ModeMeta = {
   label: string
@@ -447,6 +448,9 @@ type EdgeDetailPopupProps = {
   connectionNumber?: number
   node1?: Node
   node2?: Node
+  /** Full board state — passed through to buildBoardSnapshot at modal open. */
+  boardNodes: Node[]
+  boardConnections: Connection[]
   onClose: () => void
 }
 
@@ -456,6 +460,8 @@ export function EdgeDetailPopup({
   connectionNumber,
   node1,
   node2,
+  boardNodes,
+  boardConnections,
   onClose,
 }: EdgeDetailPopupProps) {
   const popupRef = useRef<HTMLDivElement>(null)
@@ -518,12 +524,28 @@ export function EdgeDetailPopup({
   const handleSpeak = useCallback(() => {
     if (!node1 || !node2) return
     if (voiceSessionActive) return
+    // Phase 8: snapshot the board at the moment Speak is clicked.
+    // anchorEdgeId is null today — the Connection object doesn't carry
+    // the database edge uuid. Wiring that through is a separate change.
     void beginVoiceSession({
       boardId,
       connectionContext: buildConnectionContext(connection),
       nodeContent: buildNodeContent(node1, node2),
+      anchorEdgeId: null,
+      boardSnapshot: buildBoardSnapshot({
+        nodes: boardNodes,
+        connections: boardConnections,
+      }),
     })
-  }, [boardId, connection, node1, node2, voiceSessionActive])
+  }, [
+    boardId,
+    connection,
+    node1,
+    node2,
+    voiceSessionActive,
+    boardNodes,
+    boardConnections,
+  ])
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {

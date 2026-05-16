@@ -188,44 +188,88 @@ export type Database = {
       }
       voice_sessions: {
         Row: {
-          audio_url: string | null
-          board_id: string
-          connection_context: Json
-          created_at: string
+          anchor_edge_id: string | null
+          board_snapshot: Json
+          end_reason: string | null
           ended_at: string | null
           id: string
-          started_at: string | null
-          transcript: Json | null
+          processing_log: Json
+          started_at: string
+          summary: string | null
           user_id: string
         }
         Insert: {
-          audio_url?: string | null
-          board_id: string
-          connection_context?: Json
-          created_at?: string
+          anchor_edge_id?: string | null
+          board_snapshot?: Json
+          end_reason?: string | null
           ended_at?: string | null
           id?: string
-          started_at?: string | null
-          transcript?: Json | null
+          processing_log?: Json
+          started_at?: string
+          summary?: string | null
           user_id: string
         }
         Update: {
-          audio_url?: string | null
-          board_id?: string
-          connection_context?: Json
-          created_at?: string
+          anchor_edge_id?: string | null
+          board_snapshot?: Json
+          end_reason?: string | null
           ended_at?: string | null
           id?: string
-          started_at?: string | null
-          transcript?: Json | null
+          processing_log?: Json
+          started_at?: string
+          summary?: string | null
           user_id?: string
         }
         Relationships: [
           {
-            foreignKeyName: "voice_sessions_board_id_fkey"
-            columns: ["board_id"]
+            foreignKeyName: "voice_sessions_anchor_edge_id_fkey"
+            columns: ["anchor_edge_id"]
             isOneToOne: false
-            referencedRelation: "boards"
+            referencedRelation: "edges"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      voice_utterances: {
+        Row: {
+          embedding: unknown
+          ended_at: string
+          id: string
+          session_id: string
+          speaker: string
+          started_at: string
+          text: string
+          user_id: string
+          utterance_index: number
+        }
+        Insert: {
+          embedding?: unknown
+          ended_at: string
+          id?: string
+          session_id: string
+          speaker: string
+          started_at: string
+          text: string
+          user_id: string
+          utterance_index: number
+        }
+        Update: {
+          embedding?: unknown
+          ended_at?: string
+          id?: string
+          session_id?: string
+          speaker?: string
+          started_at?: string
+          text?: string
+          user_id?: string
+          utterance_index?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "voice_utterances_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "voice_sessions"
             referencedColumns: ["id"]
           },
         ]
@@ -236,7 +280,7 @@ export type Database = {
           board_id: string
           content_summary: string | null
           created_at: string
-          embedding: string | null
+          embedding: unknown
           id: string
           metadata: Json | null
           node_id: string
@@ -248,7 +292,7 @@ export type Database = {
           board_id: string
           content_summary?: string | null
           created_at?: string
-          embedding?: string | null
+          embedding?: unknown
           id?: string
           metadata?: Json | null
           node_id: string
@@ -260,7 +304,7 @@ export type Database = {
           board_id?: string
           content_summary?: string | null
           created_at?: string
-          embedding?: string | null
+          embedding?: unknown
           id?: string
           metadata?: Json | null
           node_id?: string
@@ -381,6 +425,15 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      append_processing_log: {
+        Args: {
+          p_board_id: string
+          p_client_id: string
+          p_entry: Json
+          p_user_id: string
+        }
+        Returns: undefined
+      }
       patch_node_data: {
         Args: {
           p_board_id: string

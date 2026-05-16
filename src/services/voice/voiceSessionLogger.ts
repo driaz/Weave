@@ -1,6 +1,6 @@
 /**
  * Voice-specific logger wrapper. Sits on top of createNodeLogger and
- * adds two voice-only policies:
+ * adds three voice-only policies:
  *
  *   1. Verbosity gating. Some events are noisy and should only fire
  *      when the user has explicitly opted in via
@@ -8,9 +8,14 @@
  *      Default (no flag set) suppresses them.
  *
  *   2. weave_events persistence for session lifecycle events
- *      (voice.session.started / .ended). Everything else is console
- *      only in Phase 5; per-turn operational events will route to
- *      voice_sessions.processing_log in Phase 8.
+ *      (voice.session.started / .ended).
+ *
+ *   3. Phase 8: every event emitted (after the verbose gate) is also
+ *      appended to the active voiceSessionController's in-memory
+ *      processing_log, which flushes to voice_sessions.processing_log
+ *      on session end. The mirror is a no-op when no session is
+ *      active, so existing call sites (which fire all the time) are
+ *      safe.
  *
  * Verbosity policy is hard-coded here rather than added to the shared
  * logger because it's a voice concern; the shared logger's audit
@@ -23,6 +28,7 @@ import {
   type Outcome,
 } from '../../utils/logger'
 import { trackEvent } from '../eventTracker'
+import { voiceSessionController } from './voiceSessionController'
 
 const VERBOSE_ONLY_PHASES = new Set<string>([
   'voice.vad.speech_started',
@@ -87,6 +93,22 @@ export function createVoiceSessionLogger(
             parentCorrelationId: correlationIds?.parentCorrelationId,
             outcome,
           },
+        })
+      }
+
+      // Phase 8: mirror to the active session's in-memory processing_log
+      // buffer. Same payload shape as the console / weave_events sinks
+      // above; differs only in clock — durable ts (wall-clock ISO)
+      // instead of performance.now() so the row reads correctly when
+      // played back later. No-op when no session is active.
+      if (voiceSessionController.isActive()) {
+        voiceSessionController.logEvent({
+          phase,
+          outcome,
+          ts: new Date().toISOString(),
+          detail,
+          correlationId: correlationIds?.correlationId,
+          parentCorrelationId: correlationIds?.parentCorrelationId,
         })
       }
     },
