@@ -131,7 +131,7 @@ If a session crashes mid-conversation, the processing_log is lost but utterances
 | `user_id` | `uuid` | RLS scope; denormalized for policy speed |
 | `speaker` | `text` | `'user'` or `'assistant'`; consider a check constraint or enum |
 | `text` | `text` | Transcript content; sentinel-stripped for the opening user utterance |
-| `embedding` | `vector(3072)` | Gemini Embedding 2, same task type as board nodes for future unified retrieval |
+| `embedding` | `halfvec(3072)` | Nullable. Gemini Embedding 2, same task type as board nodes for future unified retrieval. Halfvec column because pgvector's HNSW cosine ops cap `vector` at 2000 dims; halfvec lifts the cap to 4000 at half the storage cost with negligible precision loss. Populated asynchronously by a fire-and-forget Gemini call after the row is inserted, so the conversation never blocks on the embedding API. A failed embedding leaves the column null forever; that row simply doesn't surface in retrieval (HNSW skips nulls) and is recoverable by re-embedding from `text` if needed. The failure is logged to `processing_log`. See migrations 022 (initial schema), 023 (halfvec conversion + HNSW indexes), 024 (drop NOT NULL). |
 | `utterance_index` | `int` | Monotonic within session, no gaps, client-assigned |
 | `started_at` | `timestamptz` | NOT NULL |
 | `ended_at` | `timestamptz` | NOT NULL |
@@ -169,8 +169,8 @@ Client-assigned. The mic-modal session controller maintains a counter that incre
 
 ### Write pattern
 
-- **Session start:** `INSERT INTO voice_sessions (id, user_id, anchor_edge_id, anchor_node_ids, board_snapshot, started_at) VALUES (...)` — single row, `processing_log` defaults to `'[]'`.
-- **Per utterance:** `INSERT INTO voice_utterances (...)` with embedding generated client-side (or via the Fly proxy) before insert. Sentinel stripped for the opening user utterance per the rule above.
+- **Session start:** `INSERT INTO voice_sessions (id, user_id, anchor_edge_id, board_snapshot, started_at) VALUES (...)` — single row, `processing_log` defaults to `'[]'`.
+- **Per utterance:** `INSERT INTO voice_utterances (...)` with `embedding = null`. Sentinel stripped for the opening user utterance per the rule above. After the insert returns, the controller fires a background Gemini call and issues an UPDATE on the embedding column when it resolves. Embedding failures log to `processing_log` but never retry or block the conversation.
 - **Session end:** `UPDATE voice_sessions SET ended_at = ..., end_reason = ..., processing_log = ... WHERE id = ?`. Single update with the accumulated event array.
 
 ---

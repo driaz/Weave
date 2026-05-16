@@ -2,6 +2,7 @@ import * as boards from './boards'
 import * as nodes from './nodes'
 import * as edges from './edges'
 import * as voiceSessions from './voiceSessions'
+import * as voiceUtterances from './voiceUtterances'
 import * as media from './media'
 
 /**
@@ -41,11 +42,14 @@ export const persistence = {
     deleteByBoard: edges.deleteByBoard,
   },
   voiceSessions: {
-    listByBoard: voiceSessions.listByBoard,
-    get: voiceSessions.get,
-    create: voiceSessions.create,
-    update: voiceSessions.update,
-    delete: voiceSessions.remove,
+    createSession: voiceSessions.createSession,
+    endSession: voiceSessions.endSession,
+    getSession: voiceSessions.getSession,
+  },
+  voiceUtterances: {
+    writeUtterance: voiceUtterances.writeUtterance,
+    updateUtteranceEmbedding: voiceUtterances.updateUtteranceEmbedding,
+    listUtterancesBySession: voiceUtterances.listUtterancesBySession,
   },
   media: {
     upload: media.upload,
@@ -54,15 +58,26 @@ export const persistence = {
   },
 }
 
+export { detectSentinel } from './voiceUtterances'
+
 export type {
   Board,
   Node,
   Edge,
   VoiceSession,
+  VoiceUtterance,
   NewBoardInput,
   NewNodeInput,
   NewEdgeInput,
   NewVoiceSessionInput,
+  NewVoiceUtteranceInput,
+  Speaker,
+  EndReason,
+  VoiceSessionEndPatch,
+  WriteUtteranceContext,
+  WriteUtteranceResult,
+  SentinelEvent,
+  BoardSnapshot,
 } from './types'
 
 export {

@@ -1,10 +1,11 @@
 # Persistence
 
 Pure CRUD wrapper around Supabase for Weave's canvas data: **boards**,
-**nodes**, **edges**, **voice sessions**, and **media**. React-agnostic
-— no hooks, no stateful caches. Consumed by `useBoardStorage`, which
-treats Supabase as the sole source of truth and uses `cache.ts` as a
-downstream read cache for fast cold starts.
+**nodes**, **edges**, **voice sessions**, **voice utterances**, and
+**media**. React-agnostic — no hooks, no stateful caches. Consumed by
+`useBoardStorage` (canvas) and the voice session controller (voice),
+which treat Supabase as the sole source of truth and use `cache.ts`
+as a downstream read cache for fast cold starts.
 
 The module does two things the generic Supabase client does not:
 
@@ -33,16 +34,22 @@ const url   = await persistence.media.getSignedUrl(`${userId}/${board.id}/x.png`
 | `boards`         | `list`, `get`, `create`, `update`, `delete`                                                      |
 | `nodes`          | `listByBoard`, `get`, `create`, `update`, `delete`, `batchCreate`, `batchUpdate`                 |
 | `edges`          | `listByBoard`, `create`, `update`, `delete`, `batchCreate`, `deleteByBoard`                      |
-| `voiceSessions`  | `listByBoard`, `get`, `create`, `update`, `delete` *(Phase 2 — API exists, not wired up yet)*    |
+| `voiceSessions`  | `createSession`, `endSession`, `getSession`                                                      |
+| `voiceUtterances`| `writeUtterance`, `updateUtteranceEmbedding`, `listUtterancesBySession`                          |
 | `media`          | `upload`, `getSignedUrl`, `delete`                                                               |
 
 ### Types
 
-- `Board`, `Node`, `Edge`, `VoiceSession` — row types from the
-  generated schema (`src/types/database.ts`).
+- `Board`, `Node`, `Edge`, `VoiceSession`, `VoiceUtterance` — row
+  types from the generated schema (`src/types/database.ts`).
 - `NewBoardInput`, `NewNodeInput`, `NewEdgeInput`,
-  `NewVoiceSessionInput` — insert shapes with server-generated fields
-  (`id`, `user_id`, `created_at`, `updated_at`) omitted.
+  `NewVoiceSessionInput`, `NewVoiceUtteranceInput` — insert shapes
+  with server-generated fields (`id`, `user_id`, `created_at`,
+  `updated_at`) omitted. `NewVoiceUtteranceInput` additionally narrows
+  `speaker` from the generated `string` to `'user' | 'assistant'`.
+- `Speaker`, `EndReason`, `VoiceSessionEndPatch`,
+  `WriteUtteranceContext`, `WriteUtteranceResult`, `SentinelEvent`,
+  `BoardSnapshot` — supporting types for the voice-session controller.
 - Update paths take `Partial<Row>`. The module silently drops
   `id`, `user_id`, `board_id`, and `created_at` from patches to prevent
   cross-row mutations.
@@ -144,6 +151,36 @@ skips integration tests.
   statement, so it fans out one HTTP request per row. Partial
   failures are surfaced as the first rejection. If you need
   atomicity, use `deleteByBoard` + `batchCreate` instead.
-- **`voiceSessions` is a Phase 2 placeholder.** The API and migrations
-  exist so consumers can start writing voice features, but no call
-  site uses it yet.
+
+## Phase 8 voice persistence
+
+`voiceSessions` and `voiceUtterances` back the durable voice memory
+introduced in Phase 8. The intended caller is
+`src/services/voice/voiceSessionController.ts`, which owns the
+in-memory `processing_log` buffer, the per-session `utterance_index`
+counter, and the `assistantHasSpokenInSession` flag; the persistence
+layer stays stateless.
+
+**Session lifecycle.** `createSession` inserts a new `voice_sessions`
+row when the mic modal opens. `endSession` issues the single UPDATE
+that stamps `ended_at`, `end_reason`, and the flushed
+`processing_log` array on close. `getSession` is for inspector /
+debugging reads.
+
+**Per-utterance writes.** `writeUtterance` inserts a single
+`voice_utterances` row with `embedding = null`. The caller passes a
+`WriteUtteranceContext` carrying `assistantHasSpokenInSession` so
+the module can apply the **sentinel-strip rule** centrally — see
+[`docs/voice-persistence-design.md`](../../docs/voice-persistence-design.md)
+for the rationale. When the rule fires, the row is intentionally not
+written (no phantom row at `utterance_index = 0`); when it
+near-matches, the row is written as-is and a degraded warning event
+is returned so the controller can log it. The pure helper
+`detectSentinel` is exported for unit testing.
+
+**Async embedding.** Embeddings are populated after the row exists
+via `updateUtteranceEmbedding`. The controller fires
+`embedText(text)` from `services/embeddingService.ts` and calls
+`updateUtteranceEmbedding(id, vec)` on success. Failures stay null —
+HNSW skips them so retrieval simply doesn't return the row — and are
+recoverable by re-embedding from `text`.
