@@ -525,13 +525,20 @@ export function EdgeDetailPopup({
     if (!node1 || !node2) return
     if (voiceSessionActive) return
     // Phase 8: snapshot the board at the moment Speak is clicked.
-    // anchorEdgeId is null today — the Connection object doesn't carry
-    // the database edge uuid. Wiring that through is a separate change.
+    // anchorEdgeId comes from connection.id — populated during
+    // hydration (connectionFromEdge). On freshly-Claude-derived
+    // connections that haven't survived a save → hydrate yet,
+    // connection.id is undefined; fall through to null. The
+    // empty-string guard exists because anchor_edge_id is a uuid
+    // column and Postgres rejects empty strings — null is the only
+    // safe sentinel.
+    const anchorEdgeId =
+      connection.id && connection.id.length > 0 ? connection.id : null
     void beginVoiceSession({
       boardId,
       connectionContext: buildConnectionContext(connection),
       nodeContent: buildNodeContent(node1, node2),
-      anchorEdgeId: null,
+      anchorEdgeId,
       boardSnapshot: buildBoardSnapshot({
         nodes: boardNodes,
         connections: boardConnections,

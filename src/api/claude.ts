@@ -166,6 +166,16 @@ Guidelines:
 ${JSON_FORMAT_INSTRUCTIONS}`
 
 export type Connection = {
+  /**
+   * Database uuid for the edges row this connection corresponds to.
+   * Populated during hydration (connectionFromEdge). Absent on
+   * Claude-derived connections until the next save → hydrate round
+   * trip writes the row and reads it back. Consumers that need a
+   * stable cross-session id (e.g. voice_sessions.anchor_edge_id)
+   * should treat undefined as "no anchor available" rather than
+   * fabricating one.
+   */
+  id?: string
   from: string
   to: string
   label: string
