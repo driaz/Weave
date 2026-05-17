@@ -722,4 +722,205 @@ describe('PcmMultiplexer', () => {
       expect(correction).toBeUndefined()
     })
   })
+
+  /**
+   * Reservation-ordered promotion (out-of-order TTS response race fix).
+   *
+   * The controller assigns sequences in order and fires TTS requests
+   * eagerly. ElevenLabs returns the responses in nondeterministic order.
+   * Without reservations, the multiplexer can promote a higher-sequence
+   * segment to writer while a lower-sequence segment is still in flight
+   * (it doesn't know the lower one is coming), causing out-of-order
+   * playback ("Claude tripping over himself").
+   *
+   * The fix: the controller calls expectSegment(seq) BEFORE the TTS
+   * fetch begins; the multiplexer's write-coordinator refuses to
+   * promote a delivered segment whose sequence is HIGHER than any
+   * still-reserved sequence. These tests reproduce the production
+   * race pattern; they fail against pre-fix code.
+   */
+  describe('reservation-ordered promotion (out-of-order race fix)', () => {
+    it('Out-of-order arrival respects reservation order', async () => {
+      mux.start()
+
+      // Controller side: announce all three sequences before any TTS
+      // response could arrive.
+      mux.expectSegment(0)
+      mux.expectSegment(1)
+      mux.expectSegment(2)
+
+      const seg0 = bytes(120, 0xa0)
+      const seg1 = bytes(120, 0xa1)
+      const seg2 = bytes(120, 0xa2)
+
+      // Deliver out of order: 2 first, then 0, then 1 — the exact
+      // production-incident pattern.
+      mux.addSegment(2, streamFromChunks([seg2]))
+      await settle(10)
+
+      // Pre-fix: seg 2 would have been promoted here, writing 0xA2
+      // bytes first. Post-fix: blocked by reservation 0, no bytes yet.
+      expect(sink.concatenated().length).toBe(0)
+      const blockedAfter2 = events.find(
+        (e) =>
+          e.type === 'voice.mux.promotion_blocked' &&
+          'candidateSequence' in e &&
+          e.candidateSequence === 2 &&
+          e.blockingReservedSequence === 0,
+      )
+      expect(blockedAfter2).toBeDefined()
+      if (blockedAfter2 && blockedAfter2.type === 'voice.mux.promotion_blocked') {
+        expect(blockedAfter2.reservedSequences).toEqual([0, 1])
+      }
+
+      mux.addSegment(0, streamFromChunks([seg0]))
+      await settle(10)
+      mux.addSegment(1, streamFromChunks([seg1]))
+      mux.endOfSegments()
+      await settle(30)
+
+      // Writing order must match sequence order, not arrival order.
+      const writes = events
+        .filter((e) => e.type === 'voice.mux.segment_writing')
+        .map((e) => (e.type === 'voice.mux.segment_writing' ? e.sequence : -1))
+      expect(writes).toEqual([0, 1, 2])
+
+      // Concatenated bytes are 0xA0 × 120, 0xA1 × 120, 0xA2 × 120.
+      const out = sink.concatenated()
+      expect(out.length).toBe(360)
+      for (let i = 0; i < 120; i++) expect(out[i]).toBe(0xa0)
+      for (let i = 0; i < 120; i++) expect(out[120 + i]).toBe(0xa1)
+      for (let i = 0; i < 120; i++) expect(out[240 + i]).toBe(0xa2)
+    })
+
+    it('Reservation cancellation unblocks promotion', async () => {
+      mux.start()
+      mux.expectSegment(0)
+      mux.expectSegment(1)
+
+      const seg1 = bytes(120, 0xb1)
+      mux.addSegment(1, streamFromChunks([seg1]))
+      await settle(10)
+
+      // Blocked by reservation 0 — seg 1 has not been promoted.
+      const blocked = events.find(
+        (e) =>
+          e.type === 'voice.mux.promotion_blocked' &&
+          'candidateSequence' in e &&
+          e.candidateSequence === 1 &&
+          e.blockingReservedSequence === 0,
+      )
+      expect(blocked).toBeDefined()
+      expect(
+        events.find((e) => e.type === 'voice.mux.segment_writing'),
+      ).toBeUndefined()
+      expect(sink.concatenated().length).toBe(0)
+
+      // Releasing the reservation unblocks promotion.
+      mux.cancelReservation(0)
+      mux.endOfSegments()
+      await settle(20)
+
+      const writes = events.filter(
+        (e) => e.type === 'voice.mux.segment_writing',
+      )
+      expect(writes).toHaveLength(1)
+      if (writes[0].type === 'voice.mux.segment_writing') {
+        expect(writes[0].sequence).toBe(1)
+      }
+      expect(sink.concatenated().length).toBe(120)
+    })
+
+    it('No reservation = backward compatible behavior (warns but works)', async () => {
+      const warn = console.warn
+      const warnings: string[] = []
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map((a) => String(a)).join(' '))
+      }
+      try {
+        mux.start()
+        // No expectSegment call — addSegment runs the legacy path.
+        mux.addSegment(0, streamFromChunks([bytes(150, 0xcc)]))
+        mux.endOfSegments()
+        await settle(20)
+
+        // Segment promoted normally despite the missing reservation.
+        const writing = events.find(
+          (e) => e.type === 'voice.mux.segment_writing',
+        )
+        expect(writing).toBeDefined()
+        if (writing && writing.type === 'voice.mux.segment_writing') {
+          expect(writing.sequence).toBe(0)
+        }
+        expect(sink.concatenated().length).toBe(150)
+        // And no promotion_blocked event was emitted.
+        expect(
+          events.find((e) => e.type === 'voice.mux.promotion_blocked'),
+        ).toBeUndefined()
+        // Warning surfaced so the gap is visible.
+        expect(
+          warnings.some((w) => w.includes('without prior expectSegment')),
+        ).toBe(true)
+      } finally {
+        console.warn = warn
+      }
+    })
+
+    it('Reservation lower than delivered: blocks promotion correctly', async () => {
+      const warn = console.warn
+      console.warn = () => {
+        /* silence the seg 0 backward-compat warning */
+      }
+      try {
+        mux.start()
+
+        // Seg 0 delivered with no reservation (legacy path) — promotes.
+        mux.addSegment(0, streamFromChunks([bytes(100, 0xd0)]))
+        await settle(20)
+
+        // Now the controller-style flow: reserve, deliver out of order.
+        mux.expectSegment(1)
+        mux.expectSegment(2)
+        mux.addSegment(2, streamFromChunks([bytes(100, 0xd2)]))
+        await settle(10)
+
+        // Seg 2 is blocked by reservation 1.
+        const blocked = events.find(
+          (e) =>
+            e.type === 'voice.mux.promotion_blocked' &&
+            'candidateSequence' in e &&
+            e.candidateSequence === 2 &&
+            e.blockingReservedSequence === 1,
+        )
+        expect(blocked).toBeDefined()
+        // Seg 0 already wrote; seg 2 must NOT have written yet.
+        const writesBefore = events
+          .filter((e) => e.type === 'voice.mux.segment_writing')
+          .map((e) =>
+            e.type === 'voice.mux.segment_writing' ? e.sequence : -1,
+          )
+        expect(writesBefore).toEqual([0])
+
+        mux.addSegment(1, streamFromChunks([bytes(100, 0xd1)]))
+        mux.endOfSegments()
+        await settle(30)
+
+        // Final write order: 0, 1, 2.
+        const writes = events
+          .filter((e) => e.type === 'voice.mux.segment_writing')
+          .map((e) =>
+            e.type === 'voice.mux.segment_writing' ? e.sequence : -1,
+          )
+        expect(writes).toEqual([0, 1, 2])
+
+        const out = sink.concatenated()
+        expect(out.length).toBe(300)
+        for (let i = 0; i < 100; i++) expect(out[i]).toBe(0xd0)
+        for (let i = 0; i < 100; i++) expect(out[100 + i]).toBe(0xd1)
+        for (let i = 0; i < 100; i++) expect(out[200 + i]).toBe(0xd2)
+      } finally {
+        console.warn = warn
+      }
+    })
+  })
 })

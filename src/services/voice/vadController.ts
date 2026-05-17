@@ -1086,6 +1086,10 @@ export class VadController {
           signal: abort.signal,
         })
         if (abort.signal.aborted) {
+          // Release the mux reservation — without this the
+          // write-coordinator would wait forever for a segment that
+          // will never arrive.
+          mux.cancelReservation(seq)
           activeSegments.delete(seq)
           checkDrain()
           return
@@ -1093,6 +1097,7 @@ export class VadController {
         mux.addSegment(seq, stream)
         // activeSegments stays — removed on voice.mux.segment_drained.
       } catch (err) {
+        mux.cancelReservation(seq)
         activeSegments.delete(seq)
         if (abort.signal.aborted) {
           checkDrain()
@@ -1113,6 +1118,10 @@ export class VadController {
         const sentence = pending.shift()!
         const seq = nextSeq++
         activeSegments.add(seq)
+        // Announce the reservation to the mux BEFORE any later-sequence
+        // segment can be delivered. This is what prevents an out-of-order
+        // TTS response from overtaking the writer slot.
+        mux.expectSegment(seq)
         void fireTts(seq, sentence)
       }
     }
@@ -1311,6 +1320,24 @@ export class VadController {
             'voice.mux.handoff_stall',
             'failed',
             { sequence: event.sequence, waitMs: event.waitMs },
+            correlationIds,
+          )
+          return
+        }
+        case 'voice.mux.promotion_blocked': {
+          // The mux deferred promoting a delivered segment because a
+          // lower-sequence reservation is still in flight. Evidence the
+          // ordering guard caught an out-of-order TTS response that would
+          // otherwise have caused audible mis-sequencing. Rare in normal
+          // operation; informational.
+          this.logger.event(
+            'voice.mux.promotion_blocked',
+            'success',
+            {
+              candidateSequence: event.candidateSequence,
+              blockingReservedSequence: event.blockingReservedSequence,
+              reservedSequences: event.reservedSequences,
+            },
             correlationIds,
           )
           return
