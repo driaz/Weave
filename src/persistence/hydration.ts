@@ -174,6 +174,12 @@ function connectionFromEdge(
 
   const blob = (edge.data ?? {}) as Record<string, unknown>
   return {
+    // Carry the database uuid through so downstream consumers (e.g.
+    // voice_sessions.anchor_edge_id) can reference the edge row
+    // without a separate lookup. The id stays stable across saves —
+    // migration 018 upserts edges keyed on (source, target, label),
+    // so the row (and its id) survives unchanged when the triple does.
+    id: edge.id,
     from,
     to,
     label: edge.relationship_label ?? '',
