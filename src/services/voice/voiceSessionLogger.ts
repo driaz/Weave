@@ -87,6 +87,13 @@ export function createVoiceSessionLogger(
       if (WEAVE_EVENTS_PHASES.has(phase)) {
         trackEvent(phase, {
           boardId: opts.boardId,
+          // voice_sessions.id when a session is active. The start
+          // event fires after startSession resolves; the end event
+          // fires while the session is still active because the
+          // teardown order is logger → endSession. Falls through to
+          // null if the lifecycle ever decouples in either direction
+          // — the column is nullable by design.
+          voiceSessionId: voiceSessionController.getSessionId(),
           metadata: {
             ...detail,
             correlationId: correlationIds?.correlationId,

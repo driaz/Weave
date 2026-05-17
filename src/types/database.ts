@@ -324,6 +324,7 @@ export type Database = {
           target_id: string | null
           timestamp: string
           user_id: string
+          voice_session_id: string | null
         }
         Insert: {
           board_id: string
@@ -335,6 +336,7 @@ export type Database = {
           target_id?: string | null
           timestamp?: string
           user_id?: string
+          voice_session_id?: string | null
         }
         Update: {
           board_id?: string
@@ -346,6 +348,7 @@ export type Database = {
           target_id?: string | null
           timestamp?: string
           user_id?: string
+          voice_session_id?: string | null
         }
         Relationships: []
       }

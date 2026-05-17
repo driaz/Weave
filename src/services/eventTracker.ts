@@ -15,6 +15,12 @@ type TrackEventOptions = {
    * the user clicked the button.
    */
   timestamp?: string
+  /**
+   * voice_sessions.id (Postgres uuid) for events emitted from a voice
+   * session context. Distinct from `session_id` which holds the
+   * browser-session correlation id. Omit / null for non-voice events.
+   */
+  voiceSessionId?: string | null
 }
 
 /**
@@ -34,6 +40,7 @@ export function trackEvent(
     session_id: sessionId,
     duration_ms: options.durationMs ?? null,
     metadata: options.metadata ?? null,
+    voice_session_id: options.voiceSessionId ?? null,
   }
   if (options.timestamp) row.timestamp = options.timestamp
 
