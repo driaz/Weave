@@ -109,6 +109,32 @@ export type MuxEvent =
       ts: number
     }
   | {
+      /**
+       * Fired when the write-coordinator would have promoted the lowest
+       * delivered segment to writer, but a still-undelivered RESERVED
+       * sequence with a lower number is in flight. The promotion is
+       * deferred until either the lower sequence's addSegment arrives or
+       * its reservation is cancelled. Closes the out-of-order race where
+       * a faster later-sequence TTS response would otherwise overtake a
+       * slower earlier-sequence response at the writer slot.
+       *
+       * Deduped per (candidateSequence, blockingReservedSequence) pair —
+       * each unique block is reported once. Rare in normal operation:
+       * frequent emissions = controller is firing TTS in tight bursts
+       * with reordering at the TTS provider.
+       */
+      type: 'voice.mux.promotion_blocked'
+      /** segments[0]'s sequence — the one we WOULD have promoted. */
+      candidateSequence: number
+      /** Lowest reserved sequence that's blocking promotion. */
+      blockingReservedSequence: number
+      /** Sorted snapshot of all currently reserved sequences. */
+      reservedSequences: number[]
+      /** performance.now() when this specific block was first detected. */
+      waitStartedAtTs: number
+      ts: number
+    }
+  | {
       type: 'voice.mux.underrun'
       sequence: number
       phase: 'pre-schedule' | 'post-source-end'
@@ -195,6 +221,22 @@ export class PcmMultiplexer {
   private readonly prebufferFloorBytes: number
 
   private segments: Segment[] = []
+  /**
+   * Sequences the controller has announced via expectSegment() but whose
+   * addSegment() hasn't yet arrived. The write-coordinator refuses to
+   * promote a delivered segment whose sequence is HIGHER than any value
+   * in this set — that prevents a faster later-sequence TTS response
+   * from overtaking a still-in-flight earlier-sequence response.
+   * Cleared per-sequence by addSegment / cancelReservation / stop.
+   */
+  private reservedSequences = new Set<number>()
+  /**
+   * Dedupe state for promotion_blocked emission. Tracks the (candidate,
+   * blocker) pair we most recently emitted for; cleared on any successful
+   * promotion. Prevents drive() — which can be called many times per
+   * staging chunk — from spamming the same blocked event.
+   */
+  private blockedFor: { candidate: number; blocker: number } | null = null
   private endOfSegmentsCalled = false
   private stopped = false
   private started = false
@@ -258,6 +300,39 @@ export class PcmMultiplexer {
   }
 
   /**
+   * Announce that a producer for `sequence` will arrive via addSegment()
+   * later. Called by the controller after assigning the sequence number
+   * but BEFORE the TTS fetch begins, so the mux knows about every
+   * in-flight sequence before any of them can be delivered.
+   *
+   * Reservation is the load-bearing fix for the out-of-order playback
+   * race: without it, the mux can promote a higher-sequence segment to
+   * writer while a lower-sequence segment is still in flight.
+   *
+   * Tolerant: no-op if the mux is stopped or the sequence is already
+   * reserved. Out-of-order calls are allowed but the controller calls
+   * in ascending order in practice.
+   */
+  expectSegment(sequence: number): void {
+    if (this.stopped) return
+    this.reservedSequences.add(sequence)
+  }
+
+  /**
+   * Release a reservation made via expectSegment() without delivering a
+   * segment. Called by the controller when a TTS fetch fails or aborts —
+   * if the reservation isn't cancelled, the write-coordinator will wait
+   * forever for a segment that will never arrive.
+   *
+   * Tolerant: no-op for sequences that aren't reserved.
+   */
+  cancelReservation(sequence: number): void {
+    if (!this.reservedSequences.has(sequence)) return
+    this.reservedSequences.delete(sequence)
+    this.drive()
+  }
+
+  /**
    * Register a producer. The multiplexer starts reading the stream
    * immediately into staging; it will be written to the shared sink in
    * sequence order once it has met the prebuffer floor (or its stream
@@ -266,9 +341,20 @@ export class PcmMultiplexer {
    * Sequences must be unique. Out-of-order addSegment is allowed (e.g.
    * addSegment(1) before addSegment(0)) — the mux waits for the missing
    * lower sequence before writing.
+   *
+   * Expected to be paired with a prior expectSegment(sequence); if the
+   * reservation isn't present we log a warning and proceed normally for
+   * backward compatibility with any caller that hasn't been updated.
    */
   addSegment(sequence: number, stream: ReadableStream<Uint8Array>): void {
     if (this.stopped) return
+    if (this.reservedSequences.has(sequence)) {
+      this.reservedSequences.delete(sequence)
+    } else {
+      console.warn(
+        `[PcmMultiplexer] addSegment(${sequence}) without prior expectSegment — ordering guarantees apply only to reserved sequences`,
+      )
+    }
     if (this.segments.some((s) => s.sequence === sequence)) {
       this.emit({
         type: 'voice.mux.error',
@@ -327,6 +413,8 @@ export class PcmMultiplexer {
       }
     }
     this.segments = []
+    this.reservedSequences.clear()
+    this.blockedFor = null
 
     if (this.sharedController && !this.controllerClosed) {
       try {
@@ -444,8 +532,35 @@ export class PcmMultiplexer {
       // if this wait was triggered by a previous segment draining.
       if (active.state === 'streaming') break
 
-      // ready → writing
+      // ready → writing: gate on reservations. A delivered segment with
+      // sequence N cannot promote while any RESERVED-BUT-NOT-DELIVERED
+      // sequence < N is in flight. This is the load-bearing check that
+      // prevents a faster later-sequence TTS response from overtaking a
+      // slower earlier-sequence one.
       if (active.state === 'ready') {
+        const blocker = this.lowestReservedBelow(active.sequence)
+        if (blocker !== null) {
+          if (
+            !this.blockedFor ||
+            this.blockedFor.candidate !== active.sequence ||
+            this.blockedFor.blocker !== blocker
+          ) {
+            this.blockedFor = { candidate: active.sequence, blocker }
+            const now = performance.now()
+            this.emit({
+              type: 'voice.mux.promotion_blocked',
+              candidateSequence: active.sequence,
+              blockingReservedSequence: blocker,
+              reservedSequences: Array.from(this.reservedSequences).sort(
+                (a, b) => a - b,
+              ),
+              waitStartedAtTs: now,
+              ts: now,
+            })
+          }
+          break
+        }
+        this.blockedFor = null
         active.state = 'writing'
         this.lastActiveSequence = active.sequence
         if (this.stallStartTs !== null) {
@@ -619,6 +734,20 @@ export class PcmMultiplexer {
       default:
         return
     }
+  }
+
+  /**
+   * Returns the lowest reserved sequence strictly less than `seq`, or
+   * `null` if no reservation blocks promotion of `seq`. Reservations
+   * is typically small (≤ MAX_INFLIGHT_TTS), so the linear scan is
+   * fast enough that a sorted index isn't worth the bookkeeping.
+   */
+  private lowestReservedBelow(seq: number): number | null {
+    let lowest: number | null = null
+    for (const r of this.reservedSequences) {
+      if (r < seq && (lowest === null || r < lowest)) lowest = r
+    }
+    return lowest
   }
 
   private emit(event: MuxEvent): void {
