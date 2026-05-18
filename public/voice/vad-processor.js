@@ -14,7 +14,8 @@
  *         isPreRoll, sequence }
  *     { type: 'error', message, fatal }
  *   Inbound:
- *     { type: 'configure', rmsThreshold, minSpeechDurationMs, preRollMs }
+ *     { type: 'configure', rmsThreshold, minSpeechDurationMs,
+ *         minSilenceDurationMs, preRollMs }
  *     { type: 'start' }
  *     { type: 'stop' }
  *
@@ -22,8 +23,9 @@
  *   - isArmed   — set true by 'start', false by 'stop'. While false, the
  *                 ring buffer fills and EMA updates but no events fire.
  *   - isSpeaking — true between the speech_started edge and the next
- *                  silence_started edge. Debounced by minSpeechDurationMs
- *                  on the rising edge; falls immediately on dip.
+ *                  silence_started edge. Debounced symmetrically by
+ *                  minSpeechDurationMs on the rising edge and
+ *                  minSilenceDurationMs on the falling edge.
  *   - isStreaming — true from speech_started through the next 'stop'.
  *                   Drives per-quantum accumulation into speakingBuffer
  *                   so we keep capturing audio across brief silence dips
@@ -50,11 +52,13 @@ class VadProcessor extends AudioWorkletProcessor {
     this.configured = false;
     this.linearThreshold = 0;
     this.minSpeechSamples = 0;
+    this.minSilenceSamples = 0;
 
     this.isArmed = false;
     this.isSpeaking = false;
     this.isStreaming = false;
     this.aboveThresholdSampleCount = 0;
+    this.belowThresholdSampleCount = 0;
 
     this.speakingBuffer = new Float32Array(SPEAKING_BUFFER_SIZE);
     this.speakingBufferPos = 0;
@@ -71,7 +75,8 @@ class VadProcessor extends AudioWorkletProcessor {
       case 'configure': {
         if (
           typeof msg.rmsThreshold !== 'number' ||
-          typeof msg.minSpeechDurationMs !== 'number'
+          typeof msg.minSpeechDurationMs !== 'number' ||
+          typeof msg.minSilenceDurationMs !== 'number'
         ) {
           this.port.postMessage({
             type: 'error',
@@ -84,6 +89,10 @@ class VadProcessor extends AudioWorkletProcessor {
         this.minSpeechSamples = Math.max(
           1,
           Math.ceil((msg.minSpeechDurationMs / 1000) * sampleRate),
+        );
+        this.minSilenceSamples = Math.max(
+          1,
+          Math.ceil((msg.minSilenceDurationMs / 1000) * sampleRate),
         );
         this.configured = true;
         break;
@@ -101,6 +110,7 @@ class VadProcessor extends AudioWorkletProcessor {
         this.isSpeaking = false;
         this.isStreaming = false;
         this.aboveThresholdSampleCount = 0;
+        this.belowThresholdSampleCount = 0;
         this.speakingBufferPos = 0;
         this.speakingSequence = 0;
         break;
@@ -110,6 +120,7 @@ class VadProcessor extends AudioWorkletProcessor {
         this.isSpeaking = false;
         this.isStreaming = false;
         this.aboveThresholdSampleCount = 0;
+        this.belowThresholdSampleCount = 0;
         this.speakingBufferPos = 0;
         break;
       }
@@ -143,6 +154,7 @@ class VadProcessor extends AudioWorkletProcessor {
     if (!this.configured || !this.isArmed) return true;
 
     if (this.rmsEma > this.linearThreshold) {
+      this.belowThresholdSampleCount = 0;
       if (!this.isSpeaking) {
         this.aboveThresholdSampleCount += len;
         if (this.aboveThresholdSampleCount >= this.minSpeechSamples) {
@@ -177,12 +189,18 @@ class VadProcessor extends AudioWorkletProcessor {
     } else {
       this.aboveThresholdSampleCount = 0;
       if (this.isSpeaking) {
-        this.isSpeaking = false;
-        this.port.postMessage({
-          type: 'silence_started',
-          timestamp: currentTime * 1000,
-          rms: this.rmsEma,
-        });
+        this.belowThresholdSampleCount += len;
+        if (this.belowThresholdSampleCount >= this.minSilenceSamples) {
+          const debouncedForMs =
+            (this.belowThresholdSampleCount / sampleRate) * 1000;
+          this.isSpeaking = false;
+          this.port.postMessage({
+            type: 'silence_started',
+            timestamp: currentTime * 1000,
+            rms: this.rmsEma,
+            debouncedForMs,
+          });
+        }
       }
     }
 

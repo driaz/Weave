@@ -50,6 +50,7 @@ const WORKLET_READY_TIMEOUT_MS = 1000
 const SILENCE_TIMER_MS = 1500
 const VAD_RMS_THRESHOLD = 0.02
 const VAD_MIN_SPEECH_DURATION_MS = 200
+const VAD_MIN_SILENCE_DURATION_MS = 200
 const VAD_PRE_ROLL_MS = 300
 const STT_MIN_DURATION_MS = 500
 const STT_MIN_WORDS = 2
@@ -70,7 +71,12 @@ const MAX_INFLIGHT_TTS = 3
 type WorkletInbound =
   | { type: 'ready'; sampleRate: number }
   | { type: 'speech_started'; timestamp: number; rms: number }
-  | { type: 'silence_started'; timestamp: number; rms: number }
+  | {
+      type: 'silence_started'
+      timestamp: number
+      rms: number
+      debouncedForMs: number
+    }
   | {
       type: 'audio_chunk'
       samples: Float32Array
@@ -513,6 +519,7 @@ export class VadController {
       type: 'configure',
       rmsThreshold: VAD_RMS_THRESHOLD,
       minSpeechDurationMs: VAD_MIN_SPEECH_DURATION_MS,
+      minSilenceDurationMs: VAD_MIN_SILENCE_DURATION_MS,
       preRollMs: VAD_PRE_ROLL_MS,
     })
     this.logger.event(
@@ -521,6 +528,7 @@ export class VadController {
       {
         rmsThreshold: VAD_RMS_THRESHOLD,
         minSpeechDurationMs: VAD_MIN_SPEECH_DURATION_MS,
+        minSilenceDurationMs: VAD_MIN_SILENCE_DURATION_MS,
         preRollMs: VAD_PRE_ROLL_MS,
       },
       { correlationId: this.store.getState().sessionId ?? undefined },
@@ -583,7 +591,7 @@ export class VadController {
         this.handleSpeechStarted(msg.rms)
         return
       case 'silence_started':
-        this.handleSilenceStarted(msg.rms)
+        this.handleSilenceStarted(msg.rms, msg.debouncedForMs)
         return
       case 'audio_chunk':
         this.handleAudioChunk(msg.samples, msg.isPreRoll, msg.sequence)
@@ -647,14 +655,14 @@ export class VadController {
     // anyway; if a message slips through, ignore it.
   }
 
-  private handleSilenceStarted(rms: number): void {
+  private handleSilenceStarted(rms: number, debouncedForMs: number): void {
     const state = this.store.getState()
     if (state.status !== 'user_speaking') return
     this.startSilenceTimer()
     this.logger.event(
       'voice.vad.silence_started',
       'success',
-      { rms },
+      { rms, debouncedForMs },
       {
         correlationId: state.turnId ?? undefined,
         parentCorrelationId: state.sessionId ?? undefined,
