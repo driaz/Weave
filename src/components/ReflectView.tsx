@@ -14,11 +14,12 @@ type Snapshot = {
   node_count: number
   clusters: SnapshotCluster[] | null
   narrative: string | null
+  generation_metadata: { title?: string } | null
 }
 
 type Reflection = {
   id: string
-  title: string
+  title?: string
   /** Pre-formatted, e.g. "APRIL 17". */
   shortDate: string
   /** Pre-formatted, e.g. "APRIL 17, 2026 · 10:52 PM". */
@@ -34,7 +35,6 @@ type Reflection = {
 
 const HARDCODED_REFLECTION: Reflection = {
   id: 'seed-clarity-as-cost',
-  title: 'Clarity as cost, not reward',
   shortDate: 'APRIL 17',
   longDate: 'APRIL 17, 2026 · 10:52 PM',
   threadCount: 11,
@@ -106,13 +106,7 @@ function reflectionFromSnapshot(snap: Snapshot): Reflection | null {
     .filter((t): t is string => !!t && t.length > 0)
   const pieceCount = clusters.reduce((sum, c) => sum + (c.size ?? 0), 0)
 
-  // Title comes from the first sentence of paragraph one if no explicit title
-  // is stored on the snapshot row yet. Cap to ~60 chars for the headline.
-  const firstSentence = paragraphs[0].split(/(?<=[.!?])\s/)[0] ?? paragraphs[0]
-  const title =
-    firstSentence.length > 64
-      ? firstSentence.slice(0, 61).trimEnd() + '…'
-      : firstSentence
+  const title = snap.generation_metadata?.title ?? ''
 
   return {
     id: snap.id,
@@ -144,7 +138,7 @@ export function ReflectView({ onBack, boardName }: ReflectViewProps) {
     async function load() {
       const { data, error } = await supabase!
         .from('weave_profile_snapshots')
-        .select('id, created_at, node_count, clusters, narrative')
+        .select('id, created_at, node_count, clusters, narrative, generation_metadata')
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle()
@@ -290,18 +284,20 @@ export function ReflectView({ onBack, boardName }: ReflectViewProps) {
                   transition: 'opacity 200ms ease, border-color 200ms ease',
                 }}
               >
-                <div
-                  style={{
-                    fontFamily: 'var(--w-font-display)',
-                    fontStyle: 'italic',
-                    fontSize: 13,
-                    color: 'var(--w-ink)',
-                    lineHeight: 1.25,
-                    marginBottom: 4,
-                  }}
-                >
-                  {r.title}
-                </div>
+                {r.title && (
+                  <div
+                    style={{
+                      fontFamily: 'var(--w-font-display)',
+                      fontStyle: 'italic',
+                      fontSize: 13,
+                      color: 'var(--w-ink)',
+                      lineHeight: 1.25,
+                      marginBottom: 4,
+                    }}
+                  >
+                    {r.title}
+                  </div>
+                )}
                 <div
                   style={{
                     fontFamily: 'var(--w-font-mono)',
@@ -349,20 +345,22 @@ export function ReflectView({ onBack, boardName }: ReflectViewProps) {
           </span>
         </div>
 
-        <h1
-          style={{
-            margin: 0,
-            marginBottom: 32,
-            fontFamily: 'var(--w-font-display)',
-            fontSize: 38,
-            fontWeight: 400,
-            letterSpacing: '-0.5px',
-            lineHeight: 1.1,
-            color: 'var(--w-ink)',
-          }}
-        >
-          {reflection.title}
-        </h1>
+        {reflection.title && (
+          <h1
+            style={{
+              margin: 0,
+              marginBottom: 32,
+              fontFamily: 'var(--w-font-display)',
+              fontSize: 38,
+              fontWeight: 400,
+              letterSpacing: '-0.5px',
+              lineHeight: 1.1,
+              color: 'var(--w-ink)',
+            }}
+          >
+            {reflection.title}
+          </h1>
+        )}
 
         {reflection.paragraphs.map((para, i) => {
           if (i === 0) {

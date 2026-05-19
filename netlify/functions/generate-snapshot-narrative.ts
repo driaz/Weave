@@ -11,8 +11,17 @@ import { createClient } from '@supabase/supabase-js'
 // ---------------------------------------------------------------------------
 
 const CLAUDE_MODEL = 'claude-opus-4-7'
+const TITLE_MODEL = 'claude-sonnet-4-6'
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages'
 const CLAUDE_MAX_TOKENS = 2048
+const TITLE_MAX_TOKENS = 150
+const TITLE_MAX_LENGTH = 64
+
+const TITLE_PROMPT_TEMPLATE = `Below is a snapshot narrative. Find the phrase within it that would best serve as the headline — the line that captures what the piece is doing. Under 64 characters. Must be a complete phrase, not a sentence fragment. Return only the phrase, nothing else.
+
+---
+
+`
 
 const SYSTEM_PROMPT = `You are looking at a set of thematic observations about one person's curated content — tweets, videos, images, articles they've collected on a spatial canvas over time. Each observation describes a structural thread found across a cluster of related pieces. Your job is to synthesize these observations into a short reflective narrative about the person behind the curation.
 
@@ -63,6 +72,7 @@ async function callClaude(
   apiKey: string,
   systemPrompt: string,
   userPrompt: string,
+  options: { model?: string; maxTokens?: number } = {},
 ): Promise<{ text: string; error: null } | { text: null; error: string }> {
   try {
     const response = await fetch(CLAUDE_API_URL, {
@@ -73,8 +83,8 @@ async function callClaude(
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: CLAUDE_MODEL,
-        max_tokens: CLAUDE_MAX_TOKENS,
+        model: options.model ?? CLAUDE_MODEL,
+        max_tokens: options.maxTokens ?? CLAUDE_MAX_TOKENS,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       }),
@@ -232,15 +242,53 @@ export default async (req: Request) => {
     )
 
     // ------------------------------------------------------------------
+    // Step 4b: Generate headline title from narrative (best-effort).
+    // Failure here must not block the narrative write.
+    // ------------------------------------------------------------------
+    let title: string | null = null
+    try {
+      const titleResult = await callClaude(
+        anthropicKey,
+        '',
+        `${TITLE_PROMPT_TEMPLATE}${narrative}`,
+        { model: TITLE_MODEL, maxTokens: TITLE_MAX_TOKENS },
+      )
+
+      if (titleResult.error) {
+        console.error(
+          `[Narrative] phase=title_generation failed: ${titleResult.error}`,
+        )
+      } else {
+        const candidate = (titleResult.text ?? '').trim()
+        if (!candidate || candidate.length > TITLE_MAX_LENGTH) {
+          console.error(
+            `[Narrative] phase=title_validation rejected value=${JSON.stringify(candidate)}`,
+          )
+        } else {
+          title = candidate
+        }
+      }
+    } catch (err) {
+      console.error(
+        `[Narrative] phase=title_generation threw: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+
+    // ------------------------------------------------------------------
     // Step 5: Update snapshot row
     // ------------------------------------------------------------------
     const existingMetadata =
       (snapshot.generation_metadata as Record<string, unknown>) ?? {}
-    const updatedMetadata = {
+    const updatedMetadata: Record<string, unknown> = {
       ...existingMetadata,
       narrative_model: CLAUDE_MODEL,
       narrative_timing_ms: claudeTiming,
       narrative_input_themes: clustersWithThemes.length,
+    }
+    if (title) {
+      updatedMetadata.title = title
     }
 
     const { error: updateErr } = await supabase
