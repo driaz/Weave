@@ -22,11 +22,14 @@
  * action to call from which state.
  */
 
+import roleText from '../../../prompts/role.txt?raw'
+import cadenceOpeningText from '../../../prompts/cadence-opening.txt?raw'
 import { PcmMultiplexer, type MuxEvent } from './pcmMultiplexer'
 import {
   runConversationTurn,
   type ConversationMessage,
 } from './conversationOrchestrator'
+import { buildSystemPrompt } from './buildSystemPrompt'
 import { createSentenceSegmenter } from './sentenceSegmenter'
 import { transcribeAudio, type TranscribeAudioOutput } from './sttClient'
 import { fetchTtsStream } from './ttsStreamClient'
@@ -43,6 +46,8 @@ import {
 } from './voiceSessionLogger'
 import { voiceSessionController } from './voiceSessionController'
 import type { EndReason } from '../../persistence'
+import { getLatestProfileSnapshot } from '../../persistence/profileSnapshots'
+import { requireClient } from '../../persistence/session'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -292,7 +297,7 @@ export class VadController {
         { sampleRate: this.audioContext?.sampleRate ?? null },
         { correlationId: sessionId },
       )
-      this.kickOffOpeningTurn()
+      void this.kickOffOpeningTurn()
     } catch (err) {
       const vErr = toVoiceError(err, 'unknown')
       this.logger.event(
@@ -399,7 +404,7 @@ export class VadController {
     try {
       await this.setupAudioPipeline()
       this.store.initComplete()
-      this.kickOffOpeningTurn()
+      void this.kickOffOpeningTurn()
     } catch (err) {
       const vErr = toVoiceError(err, 'unknown')
       this.logger.event(
@@ -414,23 +419,54 @@ export class VadController {
   }
 
   /**
-   * Log voice.turn.started for the opening (initComplete just generated
-   * the turnId) and fire-and-forget the opening turn. Shared by start()
-   * and userClickedRetry() so retry doesn't accidentally diverge.
+   * Fetch the latest profile snapshot (Phase 9), assemble the opening
+   * system prompt, log voice.turn.started with the assembled prompt and
+   * snapshot fields, and fire-and-forget the opening turn. Shared by
+   * start() and userClickedRetry() so retry doesn't accidentally diverge.
+   *
+   * The snapshot fetch is best-effort: any failure (including a missing
+   * Supabase client) is swallowed so the opening turn still proceeds
+   * with the four-section prompt. Latency is recorded even on failure.
    */
-  private kickOffOpeningTurn(): void {
+  private async kickOffOpeningTurn(): Promise<void> {
     const state = this.store.getState()
     const correlationIds = {
       correlationId: state.turnId ?? undefined,
       parentCorrelationId: state.sessionId ?? undefined,
     }
+
+    let snapshot: { id: string; narrative: string } | null = null
+    const fetchStartedAt = performance.now()
+    try {
+      snapshot = await getLatestProfileSnapshot(requireClient())
+    } catch (err) {
+      console.warn(
+        '[VadController] profile snapshot fetch failed; opening turn will proceed without recentThinking:',
+        err,
+      )
+    }
+    const snapshotFetchLatencyMs = Math.round(performance.now() - fetchStartedAt)
+
+    const assembledSystemPrompt = buildSystemPrompt({
+      role: roleText,
+      cadence: cadenceOpeningText,
+      recentThinking: snapshot?.narrative,
+      connectionContext: this.opts.connectionContext,
+      nodeContent: this.opts.nodeContent,
+    })
+
     this.logger.event(
       'voice.turn.started',
       'success',
-      { isOpening: true },
+      {
+        isOpening: true,
+        snapshotId: snapshot?.id ?? null,
+        assembledSystemPrompt,
+        snapshotFetchLatencyMs,
+      },
       correlationIds,
     )
-    void this.runOpeningTurn()
+    void this.runOpeningTurn(assembledSystemPrompt)
   }
 
   // ------- setup -------
@@ -931,7 +967,7 @@ export class VadController {
    * processing_user_turn, so claudeFailed/ttsFailed (which require it)
    * would throw.
    */
-  private async runOpeningTurn(): Promise<void> {
+  private async runOpeningTurn(systemPrompt: string): Promise<void> {
     const initialState = this.store.getState()
     if (initialState.status !== 'assistant_speaking') return
 
@@ -954,6 +990,7 @@ export class VadController {
         claudeMessages: [{ role: 'user', content: 'Begin.' }],
         isOpening: true,
         correlationIds,
+        systemPrompt,
       })
     } catch (err) {
       if (abort.signal.aborted) return
@@ -1006,8 +1043,15 @@ export class VadController {
     claudeMessages: ConversationMessage[]
     isOpening: boolean
     correlationIds: { correlationId: string; parentCorrelationId: string }
+    /**
+     * Phase 9: opening turn passes the pre-assembled prompt (assembled
+     * upstream in kickOffOpeningTurn so the snapshot fetch can run and
+     * the assembled string can be logged on voice.turn.started). Absent
+     * on follow-up turns; the orchestrator assembles those itself.
+     */
+    systemPrompt?: string
   }): Promise<void> {
-    const { turnId, abort, claudeMessages, isOpening, correlationIds } = args
+    const { turnId, abort, claudeMessages, isOpening, correlationIds, systemPrompt } = args
 
     const segmenter = createSentenceSegmenter()
     const pending: string[] = []
@@ -1422,6 +1466,7 @@ export class VadController {
         nodeContent: this.opts.nodeContent,
         messages: claudeMessages,
         signal: abort.signal,
+        systemPrompt,
       })) {
         if (abort.signal.aborted) break
         assistantText += chunk

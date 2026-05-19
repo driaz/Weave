@@ -3,6 +3,7 @@ import * as nodes from './nodes'
 import * as edges from './edges'
 import * as voiceSessions from './voiceSessions'
 import * as voiceUtterances from './voiceUtterances'
+import * as profileSnapshots from './profileSnapshots'
 import * as media from './media'
 
 /**
@@ -50,6 +51,9 @@ export const persistence = {
     writeUtterance: voiceUtterances.writeUtterance,
     updateUtteranceEmbedding: voiceUtterances.updateUtteranceEmbedding,
     listUtterancesBySession: voiceUtterances.listUtterancesBySession,
+  },
+  profileSnapshots: {
+    getLatest: profileSnapshots.getLatestProfileSnapshot,
   },
   media: {
     upload: media.upload,
