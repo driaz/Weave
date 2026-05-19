@@ -25,6 +25,17 @@ export interface RunConversationTurnInput {
    * closes the connection at the network layer.
    */
   signal?: AbortSignal
+  /**
+   * Phase 9 pre-assembled system prompt override. When provided, the
+   * orchestrator sends this verbatim and skips its own buildSystemPrompt
+   * call (so `connectionContext` / `nodeContent` are ignored). The
+   * caller is responsible for selecting cadence-opening vs
+   * cadence-followup when assembling. Opening turns use this so the
+   * fetched profile snapshot can be folded into the prompt upstream and
+   * the assembled string can be logged alongside voice.turn.started.
+   * Follow-up turns omit it and let the orchestrator assemble as before.
+   */
+  systemPrompt?: string
 }
 
 /**
@@ -43,17 +54,21 @@ export interface RunConversationTurnInput {
 export async function* runConversationTurn(
   input: RunConversationTurnInput,
 ): AsyncGenerator<string, void, unknown> {
-  const { connectionContext, nodeContent, messages, signal } = input
+  const { connectionContext, nodeContent, messages, signal, systemPrompt } = input
 
-  const hasPriorAssistant = messages.some((m) => m.role === 'assistant')
-  const cadence = hasPriorAssistant ? cadenceFollowupText : cadenceOpeningText
-
-  const system = buildSystemPrompt({
-    role: roleText,
-    cadence,
-    connectionContext,
-    nodeContent,
-  })
+  let system: string
+  if (systemPrompt && systemPrompt.length > 0) {
+    system = systemPrompt
+  } else {
+    const hasPriorAssistant = messages.some((m) => m.role === 'assistant')
+    const cadence = hasPriorAssistant ? cadenceFollowupText : cadenceOpeningText
+    system = buildSystemPrompt({
+      role: roleText,
+      cadence,
+      connectionContext,
+      nodeContent,
+    })
+  }
 
   if (!supabase) {
     throw new Error(
