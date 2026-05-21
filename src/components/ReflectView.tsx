@@ -1,21 +1,10 @@
-import { useEffect, useState, useMemo } from 'react'
-import { supabase } from '../services/supabaseClient'
+import { useMemo } from 'react'
+import { useProfileSnapshot } from '../hooks/useProfileSnapshot'
+import type {
+  ProfileSnapshot,
+  SnapshotCluster,
+} from '../persistence/profileSnapshots'
 import type { WeaveMode } from '../types/board'
-
-type SnapshotCluster = {
-  cluster_id: string
-  size: number
-  theme_description: string | null
-}
-
-type Snapshot = {
-  id: string
-  created_at: string
-  node_count: number
-  clusters: SnapshotCluster[] | null
-  narrative: string | null
-  generation_metadata: { title?: string } | null
-}
 
 type Reflection = {
   id: string
@@ -33,39 +22,14 @@ type Reflection = {
   mode: WeaveMode
 }
 
-const HARDCODED_REFLECTION: Reflection = {
-  id: 'seed-clarity-as-cost',
-  shortDate: 'APRIL 17',
-  longDate: 'APRIL 17, 2026 · 10:52 PM',
-  threadCount: 11,
-  pieceCount: 37,
-  mode: 'weave',
-  paragraphs: [
-    'There is a recurring figure across this entire collection: someone who sees through the machinery and is worse off for it. It appears in the venture capital threads, where stripping away mythology leaves you holding an emptier thing than you started with. It appears in the life-script cluster, where understanding that the goalposts dissolved doesn’t give you new goalposts. It appears in the Norm Macdonald clip, where the person stating the universal truth watches it fail to land on the person standing right there. And it appears most explicitly in the largest thread, the one that asks whether heightened understanding separates you from ease rather than delivering you to it. The collection keeps arriving at the same structure from wildly different directions: clarity as cost, not reward. That this pattern spans VC critique, parenting disillusionment, comedy, and personal philosophy suggests it isn’t a position being argued so much as a gravitational tendency—a way of encountering the world that precedes any particular subject.',
-    'But set against this is something that cuts against resignation. The pieces about connection-as-subtraction, the scenes where a character stops performing and speaks a simple emotional truth, the twice-saved clip where someone converts damage into purpose—these are moments of arrival, not withdrawal. They don’t celebrate understanding; they celebrate the instant someone drops their understanding and says the plain thing. The curator is drawn to both modes almost equally: the lucidity that isolates and the vulnerability that connects. The tension isn’t hidden. The largest thread names it outright—the suspicion that meaning-seeking might itself be avoidance of simple presence. What’s striking is that the collection doesn’t resolve this suspicion. It holds court, gathering evidence on both sides, as if the act of curation itself is the deliberation.',
-    'There’s a second tension worth naming. Several threads are fascinated by moments where someone’s mask slips involuntarily—the public figure whose scripture indicts their own worship, the self-justifying monologue that’s half confession. But the threads about bold visual posts and about declarative emotional scenes are drawn to the opposite: moments where someone drops the mask on purpose, with full intention, and that act of deliberate exposure is what gives the moment its weight. The collection seems to be working out whether truth emerges despite people or because of them—whether the meaningful reveal is the one the speaker didn’t mean to make, or the one they chose to make at great cost. Both are collected with the same intensity, which suggests the curator isn’t sure either, and finds the question itself worth sitting inside.',
-    'What runs beneath all of it is an attention to the moment a shared script fails. The life scripts that collapsed. The VC mythology that dissolves under scrutiny. The hierarchies people impose that prevent the connection they claim to want. The political critique that crosses tribal lines precisely because the old lines stopped holding. Even the comedy and image-posting thread carries this: a fascination with people who declare something into a void where no shared framework guarantees it will land. The collection maps a landscape where the old agreements—about careers, about institutions, about how to be in relationships, about what intelligence or success even means—have quietly expired, and the people inside them are only now noticing. The curator isn’t mourning those agreements exactly, but they’re not celebrating the absence either. They’re watching, very carefully, for what happens in the gap.',
-  ],
-  themes: [
-    'clarity as burden',
-    'involuntary confession',
-    'connection through subtraction',
-    'scripts that expired',
-    'vulnerability as arrival',
-    'meaning-seeking as avoidance',
-    'institutional mythology',
-    'comedy as failed truth-delivery',
-    'deliberate exposure',
-    'the gap after agreement',
-    'presence vs. understanding',
-  ],
-}
-
 const MODE_ACCENT: Record<WeaveMode, string> = {
   weave: 'var(--w-standard-accent)',
   deeper: 'var(--w-deeper-accent)',
   tensions: 'var(--w-tensions-accent)',
 }
+
+const EMPTY_COPY =
+  'Add more to your canvas — Claude will reflect on it as patterns emerge.'
 
 function formatLongDate(iso: string): string {
   const d = new Date(iso)
@@ -89,10 +53,8 @@ function formatShortDate(iso: string): string {
   return `${month} ${d.getDate()}`
 }
 
-function reflectionFromSnapshot(snap: Snapshot): Reflection | null {
-  const narrative = snap.narrative?.trim()
-  if (!narrative) return null
-  const paragraphs = narrative
+function reflectionFromSnapshot(snap: ProfileSnapshot): Reflection | null {
+  const paragraphs = snap.narrative
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
@@ -115,8 +77,8 @@ function reflectionFromSnapshot(snap: Snapshot): Reflection | null {
     longDate: formatLongDate(snap.created_at),
     paragraphs,
     themes,
-    threadCount: clusters.length || HARDCODED_REFLECTION.threadCount,
-    pieceCount: pieceCount || HARDCODED_REFLECTION.pieceCount,
+    threadCount: clusters.length,
+    pieceCount,
     mode: 'weave',
   }
 }
@@ -127,39 +89,34 @@ type ReflectViewProps = {
 }
 
 export function ReflectView({ onBack, boardName }: ReflectViewProps) {
-  const [reflection, setReflection] = useState<Reflection>(HARDCODED_REFLECTION)
-  const [activeId, setActiveId] = useState<string>(HARDCODED_REFLECTION.id)
+  const { snapshot, loading, error } = useProfileSnapshot()
 
-  // Try to fetch the latest real snapshot; if narrative is present, swap in.
-  // If not, the hardcoded seed remains.
-  useEffect(() => {
-    if (!supabase) return
-    let cancelled = false
-    async function load() {
-      const { data, error } = await supabase!
-        .from('weave_profile_snapshots')
-        .select('id, created_at, node_count, clusters, narrative, generation_metadata')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      if (cancelled || error || !data) return
-      const real = reflectionFromSnapshot(data as Snapshot)
-      if (real) {
-        setReflection(real)
-        setActiveId(real.id)
-      }
-    }
-    void load()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const reflection = useMemo<Reflection | null>(
+    () => (snapshot ? reflectionFromSnapshot(snapshot) : null),
+    [snapshot],
+  )
 
-  const accent = MODE_ACCENT[reflection.mode]
-  const reflections: Reflection[] = useMemo(() => [reflection], [reflection])
+  // Render mode for the content area:
+  //   - 'snapshot': have a usable reflection
+  //   - 'loading' : no snapshot yet, refresh in flight
+  //   - 'empty'   : no snapshot, not loading (or refresh errored — silent)
+  const contentMode: 'snapshot' | 'loading' | 'empty' = reflection
+    ? 'snapshot'
+    : loading
+      ? 'loading'
+      : 'empty'
 
-  const [firstChar, ...firstRest] = reflection.paragraphs[0] ?? ['']
-  const firstParagraphRest = firstRest.join('')
+  // Empty / error both surface as the empty state. `error` is read so
+  // an explicit reference exists for future diagnostics; current UX
+  // matches the historical silent-error behavior.
+  void error
+
+  const accent = reflection
+    ? MODE_ACCENT[reflection.mode]
+    : MODE_ACCENT.weave
+
+  const firstChar = reflection?.paragraphs[0]?.[0] ?? ''
+  const firstParagraphRest = reflection?.paragraphs[0]?.slice(1) ?? ''
 
   return (
     <div
@@ -263,56 +220,47 @@ export function ReflectView({ onBack, boardName }: ReflectViewProps) {
         >
           Reflections
         </h2>
-        <nav className="flex flex-col">
-          {reflections.map((r) => {
-            const isActive = r.id === activeId
-            return (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => setActiveId(r.id)}
-                className="text-left cursor-pointer"
-                style={{
-                  display: 'block',
-                  padding: '10px 0 10px 14px',
-                  background: 'transparent',
-                  border: 'none',
-                  borderLeft: `2px solid ${
-                    isActive ? MODE_ACCENT[r.mode] : 'var(--w-line)'
-                  }`,
-                  opacity: isActive ? 1 : 0.55,
-                  transition: 'opacity 200ms ease, border-color 200ms ease',
-                }}
-              >
-                {r.title && (
-                  <div
-                    style={{
-                      fontFamily: 'var(--w-font-display)',
-                      fontStyle: 'italic',
-                      fontSize: 13,
-                      color: 'var(--w-ink)',
-                      lineHeight: 1.25,
-                      marginBottom: 4,
-                    }}
-                  >
-                    {r.title}
-                  </div>
-                )}
+        {reflection && (
+          <nav className="flex flex-col">
+            <div
+              className="text-left"
+              style={{
+                display: 'block',
+                padding: '10px 0 10px 14px',
+                background: 'transparent',
+                border: 'none',
+                borderLeft: `2px solid ${MODE_ACCENT[reflection.mode]}`,
+                opacity: 1,
+              }}
+            >
+              {reflection.title && (
                 <div
                   style={{
-                    fontFamily: 'var(--w-font-mono)',
-                    fontSize: 9.5,
-                    color: 'var(--w-ink-faint)',
-                    letterSpacing: 0.4,
-                    textTransform: 'uppercase',
+                    fontFamily: 'var(--w-font-display)',
+                    fontStyle: 'italic',
+                    fontSize: 13,
+                    color: 'var(--w-ink)',
+                    lineHeight: 1.25,
+                    marginBottom: 4,
                   }}
                 >
-                  {r.shortDate}
+                  {reflection.title}
                 </div>
-              </button>
-            )
-          })}
-        </nav>
+              )}
+              <div
+                style={{
+                  fontFamily: 'var(--w-font-mono)',
+                  fontSize: 9.5,
+                  color: 'var(--w-ink-faint)',
+                  letterSpacing: 0.4,
+                  textTransform: 'uppercase',
+                }}
+              >
+                {reflection.shortDate}
+              </div>
+            </div>
+          </nav>
+        )}
       </aside>
 
       {/* Reading column */}
@@ -327,148 +275,211 @@ export function ReflectView({ onBack, boardName }: ReflectViewProps) {
           zIndex: 1,
         }}
       >
-        <div
-          className="flex items-center"
-          style={{
-            gap: 20,
-            marginBottom: 18,
-            fontFamily: 'var(--w-font-mono)',
-            fontSize: 10.5,
-            letterSpacing: 0.8,
-            color: 'var(--w-ink-faint)',
-            textTransform: 'uppercase',
-          }}
-        >
-          <span>{reflection.longDate}</span>
-          <span style={{ color: accent }}>
-            {`● ${reflection.threadCount} THREADS · ${reflection.pieceCount} PIECES`}
-          </span>
-        </div>
+        {contentMode === 'snapshot' && reflection && (
+          <>
+            <div
+              className="flex items-center"
+              style={{
+                gap: 20,
+                marginBottom: 18,
+                fontFamily: 'var(--w-font-mono)',
+                fontSize: 10.5,
+                letterSpacing: 0.8,
+                color: 'var(--w-ink-faint)',
+                textTransform: 'uppercase',
+              }}
+            >
+              <span>{reflection.longDate}</span>
+              <span style={{ color: accent }}>
+                {`● ${reflection.threadCount} THREADS · ${reflection.pieceCount} PIECES`}
+              </span>
+            </div>
 
-        {reflection.title && (
-          <h1
-            style={{
-              margin: 0,
-              marginBottom: 32,
-              fontFamily: 'var(--w-font-display)',
-              fontSize: 38,
-              fontWeight: 400,
-              letterSpacing: '-0.5px',
-              lineHeight: 1.1,
-              color: 'var(--w-ink)',
-            }}
-          >
-            {reflection.title}
-          </h1>
-        )}
-
-        {reflection.paragraphs.map((para, i) => {
-          if (i === 0) {
-            return (
-              <p
-                key={i}
+            {reflection.title && (
+              <h1
                 style={{
                   margin: 0,
-                  marginBottom: 22,
+                  marginBottom: 32,
                   fontFamily: 'var(--w-font-display)',
-                  fontSize: 17.5,
-                  lineHeight: 1.65,
+                  fontSize: 38,
+                  fontWeight: 400,
+                  letterSpacing: '-0.5px',
+                  lineHeight: 1.1,
                   color: 'var(--w-ink)',
                 }}
               >
-                <span
+                {reflection.title}
+              </h1>
+            )}
+
+            {reflection.paragraphs.map((para, i) => {
+              if (i === 0) {
+                return (
+                  <p
+                    key={i}
+                    style={{
+                      margin: 0,
+                      marginBottom: 22,
+                      fontFamily: 'var(--w-font-display)',
+                      fontSize: 17.5,
+                      lineHeight: 1.65,
+                      color: 'var(--w-ink)',
+                    }}
+                  >
+                    <span
+                      style={{
+                        float: 'left',
+                        fontFamily: 'var(--w-font-display)',
+                        fontSize: 64,
+                        fontWeight: 500,
+                        lineHeight: 0.9,
+                        color: 'var(--w-standard-accent)',
+                        marginRight: 10,
+                        marginTop: 6,
+                        marginBottom: -6,
+                        letterSpacing: '-2px',
+                      }}
+                    >
+                      {firstChar}
+                    </span>
+                    {firstParagraphRest}
+                  </p>
+                )
+              }
+              return (
+                <p
+                  key={i}
                   style={{
-                    float: 'left',
+                    margin: 0,
+                    marginBottom: 22,
                     fontFamily: 'var(--w-font-display)',
-                    fontSize: 64,
-                    fontWeight: 500,
-                    lineHeight: 0.9,
-                    color: 'var(--w-standard-accent)',
-                    marginRight: 10,
-                    marginTop: 6,
-                    marginBottom: -6,
-                    letterSpacing: '-2px',
+                    fontSize: 17.5,
+                    lineHeight: 1.65,
+                    color: 'var(--w-ink)',
                   }}
                 >
-                  {firstChar}
-                </span>
-                {firstParagraphRest}
-              </p>
-            )
-          }
-          return (
-            <p
-              key={i}
-              style={{
-                margin: 0,
-                marginBottom: 22,
-                fontFamily: 'var(--w-font-display)',
-                fontSize: 17.5,
-                lineHeight: 1.65,
-                color: 'var(--w-ink)',
-              }}
-            >
-              {para}
-            </p>
-          )
-        })}
+                  {para}
+                </p>
+              )
+            })}
 
-        <div
-          className="flex items-center"
-          style={{ marginTop: 24, gap: 10 }}
-        >
-          <span
-            aria-hidden="true"
+            <div
+              className="flex items-center"
+              style={{ marginTop: 24, gap: 10 }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 24,
+                  height: 1,
+                  background: 'var(--w-line)',
+                }}
+              />
+              <span
+                style={{
+                  fontFamily: 'var(--w-font-mono)',
+                  fontSize: 11,
+                  color: 'var(--w-ink-faint)',
+                  letterSpacing: 0.5,
+                }}
+              >
+                woven from {reflection.threadCount} themes
+              </span>
+            </div>
+
+            <div
+              className="flex flex-wrap"
+              style={{ marginTop: 14, columnGap: 14, rowGap: 6 }}
+            >
+              {reflection.themes.map((theme, i) => (
+                <span
+                  key={`${theme}-${i}`}
+                  style={{
+                    fontFamily: 'var(--w-font-display)',
+                    fontStyle: 'italic',
+                    fontSize: 13.5,
+                    color: 'var(--w-ink-soft)',
+                  }}
+                >
+                  {theme}
+                  {i < reflection.themes.length - 1 && (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        color: 'var(--w-ink-faint)',
+                        marginLeft: 14,
+                      }}
+                    >
+                      {'·'}
+                    </span>
+                  )}
+                </span>
+              ))}
+            </div>
+
+            <div style={{ height: 60 }} />
+          </>
+        )}
+
+        {contentMode === 'loading' && <ReflectionSkeleton />}
+
+        {contentMode === 'empty' && (
+          <div
             style={{
-              width: 24,
-              height: 1,
-              background: 'var(--w-line)',
-            }}
-          />
-          <span
-            style={{
-              fontFamily: 'var(--w-font-mono)',
-              fontSize: 11,
-              color: 'var(--w-ink-faint)',
-              letterSpacing: 0.5,
+              fontFamily: 'var(--w-font-display)',
+              fontStyle: 'italic',
+              fontSize: 18,
+              lineHeight: 1.55,
+              color: 'var(--w-ink-soft)',
+              maxWidth: 520,
+              marginTop: 24,
             }}
           >
-            woven from {reflection.threadCount} themes
-          </span>
-        </div>
-
-        <div
-          className="flex flex-wrap"
-          style={{ marginTop: 14, columnGap: 14, rowGap: 6 }}
-        >
-          {reflection.themes.map((theme, i) => (
-            <span
-              key={`${theme}-${i}`}
-              style={{
-                fontFamily: 'var(--w-font-display)',
-                fontStyle: 'italic',
-                fontSize: 13.5,
-                color: 'var(--w-ink-soft)',
-              }}
-            >
-              {theme}
-              {i < reflection.themes.length - 1 && (
-                <span
-                  aria-hidden="true"
-                  style={{
-                    color: 'var(--w-ink-faint)',
-                    marginLeft: 14,
-                  }}
-                >
-                  {'·'}
-                </span>
-              )}
-            </span>
-          ))}
-        </div>
-
-        <div style={{ height: 60 }} />
+            {EMPTY_COPY}
+          </div>
+        )}
       </article>
+    </div>
+  )
+}
+
+function ReflectionSkeleton() {
+  const block = (height: number, width: string, marginBottom: number) => (
+    <div
+      style={{
+        height,
+        width,
+        marginBottom,
+        background:
+          'linear-gradient(90deg, var(--w-line) 0%, var(--w-bg-soft, rgba(0,0,0,0.04)) 50%, var(--w-line) 100%)',
+        backgroundSize: '200% 100%',
+        borderRadius: 3,
+        opacity: 0.55,
+        animation: 'reflectShimmer 1.6s ease-in-out infinite',
+      }}
+    />
+  )
+  return (
+    <div
+      role="status"
+      aria-label="Loading reflection"
+      style={{ marginTop: 4 }}
+    >
+      <style>{`
+        @keyframes reflectShimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      `}</style>
+      {block(11, '46%', 18)}
+      {block(34, '78%', 32)}
+      {block(14, '96%', 8)}
+      {block(14, '92%', 8)}
+      {block(14, '88%', 8)}
+      {block(14, '94%', 28)}
+      {block(14, '90%', 8)}
+      {block(14, '82%', 8)}
+      {block(14, '70%', 28)}
     </div>
   )
 }

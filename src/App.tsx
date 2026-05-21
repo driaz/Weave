@@ -38,6 +38,7 @@ import { SaveErrorToast } from './components/SaveErrorToast'
 import { VoiceSessionCard } from './components/voice/VoiceSessionCard'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
+import { useProfileSnapshotBootstrap } from './hooks/useProfileSnapshotBootstrap'
 import type { Connection } from './api/claude'
 import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
@@ -83,6 +84,8 @@ export function App() {
     rollbackSignal,
     hydrationRevision,
   } = useBoardStorage()
+
+  useProfileSnapshotBootstrap()
 
   const [view, setView] = useState<'canvas' | 'reflect'>('canvas')
 
