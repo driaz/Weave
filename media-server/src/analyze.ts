@@ -7,7 +7,7 @@ if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required')
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY })
 
-const MODEL = 'gemini-3.1-flash-lite-preview'
+const MODEL = 'gemini-3.1-flash-lite'
 
 const PROMPT_VIDEO_AUDIO = `You are analyzing audio and video for a content reasoning system.
 Your analysis will be stored as metadata and used by a separate AI
