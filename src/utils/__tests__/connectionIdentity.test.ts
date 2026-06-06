@@ -74,3 +74,72 @@ describe('dedupeConnectionsFirstWins', () => {
     expect(twice).toEqual(once)
   })
 })
+
+/**
+ * Regression guard for the client merge contract in App.tsx `onResult`
+ * (the WeaveButton result handler). That merge is, semantically,
+ * `dedupeConnectionsFirstWins([...existing, ...incoming])`: first-write-wins
+ * on the shared identity key, with existing state seeded before the incoming
+ * analyzeCanvas batch. The merge must dedup the incoming batch against BOTH
+ * existing state AND itself — a single analyzeCanvas run can return multiple
+ * genuinely-distinct same-(pair, mode) readings (confirmed by
+ * edges_dedup_backup_028), and on a sparse fresh board they all land on the
+ * one available pair. Without within-batch dedup, two same-(pair, mode)
+ * connections would both enter client state and render as a transient
+ * duplicate edge until a save/reload collapsed it.
+ *
+ * These cases lock that behavior so the dedup can't silently regress.
+ */
+describe('client merge contract (App onResult)', () => {
+  // Mirrors App.tsx onResult: existing wins, so seed prev first.
+  const merge = (prev: Connection[], incoming: Connection[]) =>
+    dedupeConnectionsFirstWins([...prev, ...incoming])
+
+  it('within-batch, fresh board: two same-(pair, mode) in one batch → one survives', () => {
+    // The literal observed symptom: two "deeper" readings on the same pair
+    // from a single analyzeCanvas run, prior state empty.
+    const out = merge(
+      [],
+      [
+        conn({ from: 'A', to: 'B', mode: 'deeper', label: 'first reading' }),
+        conn({ from: 'A', to: 'B', mode: 'deeper', label: 'second reading' }),
+      ],
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0].label).toBe('first reading')
+  })
+
+  it('within-batch: reversed direction in the same batch still collapses', () => {
+    const out = merge(
+      [],
+      [
+        conn({ from: 'A', to: 'B', mode: 'deeper', label: 'first' }),
+        conn({ from: 'B', to: 'A', mode: 'deeper', label: 'reversed dup' }),
+      ],
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0].label).toBe('first')
+  })
+
+  it('incoming-vs-existing: an incoming collision with existing state is dropped (existing wins)', () => {
+    const existing = [conn({ from: 'A', to: 'B', mode: 'deeper', label: 'on canvas' })]
+    const out = merge(existing, [
+      conn({ from: 'B', to: 'A', mode: 'deeper', label: 'incoming dup' }),
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].label).toBe('on canvas')
+  })
+
+  it('cross-mode siblings on the same pair coexist through the merge', () => {
+    const out = merge(
+      [conn({ from: 'A', to: 'B', mode: 'deeper', label: 'deeper edge' })],
+      [
+        conn({ from: 'A', to: 'B', mode: 'weave', label: 'weave edge' }),
+        conn({ from: 'A', to: 'B', mode: 'deeper', label: 'duplicate deeper' }),
+      ],
+    )
+    // weave sibling is added; the second deeper reading is dropped.
+    expect(out).toHaveLength(2)
+    expect(out.map((c) => c.mode).sort()).toEqual(['deeper', 'weave'])
+  })
+})
