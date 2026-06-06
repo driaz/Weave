@@ -40,11 +40,22 @@ When bootstrapping a new Supabase project, apply these in order. The pgvector ex
 | 029 | `029_edges_unique_directionless_mode.sql` | **(Edge uniqueness prep, 3/4.)** Unique index `edges_unique_directionless_mode` on the canonical expression `(board_id, coalesce(mode,''), least(src,tgt), greatest(src,tgt))`. Unique index on an EXPRESSION (not a column constraint) because direction is normalized via least/greatest. Edge uniqueness is now enforced by construction, not by model instruction. Requires 028 to have run first. |
 | 030 | `030_replace_board_contents_directionless_edges.sql` | **(Edge uniqueness prep, 4/4.)** Rewrites the edge upsert in `replace_board_contents` to key on the directionless, mode-aware identity instead of `(source, target, relationship_label)` (migration 018). Fixes two latent bugs: direction-sensitivity (B→A minted a second row for an existing A→B) and mode-blind label-keying (two real cross-mode connections sharing a label collapsed into one row). Writes the new `mode` column on insert; keeps `data.mode` for hydration. Nodes path unchanged from 018. |
 
-> **Apply status (2026-06-05):** Migrations 027–030 are applied to **Weave-Dev only** and fully verified there (96 → 93 rows, 3 reconciled).
+> **Apply status (2026-06-05): Migrations 027–030 are applied to BOTH Weave-Dev and Weave prod.**
 >
-> **Prod re-measured (2026-06-05, read-only, current `data->>'mode'` schema):** 243 edge rows, `rows_missing_mode = 0` (so `027`'s backfill is clean — no NULL-mode edge case), **5 duplicate groups / 8 excess rows**. All 8 discarded rows are *distinct readings* (different labels on the same pair+mode), not noise — including one `deeper` pair that keeps the oldest of 4 readings and drops 3 newer ones. Reviewed; **first-write-wins confirmed by the owner** as the keep-rule (it also preserves the longest-lived edge id, which voice/embedding anchors reference). The reconciliation in `028` is correct for prod **as written** — no change needed; the 8 rows are backed up to `edges_dedup_backup_028` and recoverable.
+> - **Dev:** applied via `supabase db push` and fully verified (96 → 93 rows, 3 reconciled).
+> - **Prod:** applied manually via terminal on 2026-06-05 (the local `.env` key is dev-only, so this was done out-of-band with prod service-role access). Verified against the **live prod database** (read-only queries, not this document):
+>   - `pg_indexes` on `edges` returns `edges_unique_directionless_mode`:
+>     `CREATE UNIQUE INDEX edges_unique_directionless_mode ON public.edges USING btree (board_id, COALESCE(mode, ''::text), LEAST(source_node_id, target_node_id), GREATEST(source_node_id, target_node_id))` → **029 live**.
+>   - `mode` exists as a column on `edges` → **027 applied**.
+>   - Post-reconcile measurement: `total_rows = 235, rows_missing_mode = 0, duplicate_groups = 0, excess_rows_to_delete = 0` → **028 ran** (the 8 excess rows reconciled, backed up to `edges_dedup_backup_028`).
 >
-> Prod `supabase db push` is still gated on **prod service-role access** (the local `.env` key is dev-only). Apply `027`–`030` to prod, in order, **before** merging/deploying this PR's code (schema-first rule).
+> Prod schema now matches dev and the client code (`src/utils/connectionIdentity.ts`): edge uniqueness is enforced by construction in prod, and `replace_board_contents` keys on the directionless, mode-aware identity (030).
+>
+> **Do NOT re-run 027–030 against prod** — they have already landed. The earlier "Weave-Dev only / apply to prod before deploying" note was removed because it no longer reflected reality and risked a duplicate prod apply.
+>
+> _Provenance note:_ prod state above is from read-only queries the owner ran against the live database; this file is not a substitute for querying prod. The prod service-role key is intentionally absent from the local `.env`, so any prod claim sourced only from files (including this one) is an inference — verify against the live DB before acting on it.
+>
+> **Prod re-measurement (2026-06-05, read-only, taken _before_ the prod apply, for the historical record):** 243 edge rows, `rows_missing_mode = 0`, **5 duplicate groups / 8 excess rows** — all *distinct readings* (different labels on the same pair+mode), not noise, including one `deeper` pair keeping the oldest of 4 readings and dropping 3 newer ones. **First-write-wins confirmed by the owner** as the keep-rule (it also preserves the longest-lived edge id, which voice/embedding anchors reference). `028` reconciled exactly these on the subsequent apply; the dropped rows are recoverable from `edges_dedup_backup_028`.
 
 ## Deferred cutovers tracked in migration comments
 
