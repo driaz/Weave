@@ -69,6 +69,7 @@ export type Database = {
           created_at: string
           data: Json
           id: string
+          mode: string | null
           relationship_label: string | null
           source_node_id: string
           target_node_id: string
@@ -80,6 +81,7 @@ export type Database = {
           created_at?: string
           data?: Json
           id?: string
+          mode?: string | null
           relationship_label?: string | null
           source_node_id: string
           target_node_id: string
@@ -91,6 +93,7 @@ export type Database = {
           created_at?: string
           data?: Json
           id?: string
+          mode?: string | null
           relationship_label?: string | null
           source_node_id?: string
           target_node_id?: string
@@ -120,6 +123,27 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      edges_dedup_backup_028: {
+        Row: {
+          backed_up_at: string
+          board_id: string | null
+          edge_id: string
+          row_data: Json
+        }
+        Insert: {
+          backed_up_at?: string
+          board_id?: string | null
+          edge_id: string
+          row_data: Json
+        }
+        Update: {
+          backed_up_at?: string
+          board_id?: string | null
+          edge_id?: string
+          row_data?: Json
+        }
+        Relationships: []
       }
       nodes: {
         Row: {

@@ -2,6 +2,7 @@ import { persistence } from './index'
 import { AuthError } from './errors'
 import { logHydrationSource } from './syncLogger'
 import { IMAGE_STORAGE_PATH_KEY } from './imageUpload'
+import { dedupeConnectionsFirstWins } from '../utils/connectionIdentity'
 import {
   getBoardCache,
   getBoardListCache,
@@ -214,9 +215,17 @@ async function boardFromSupabase(
   for (let i = 0; i < dbNodes.length; i++) {
     serverIdToClientId.set(dbNodes[i].id, nodes[i].id)
   }
-  const connections = dbEdges
-    .map((e) => connectionFromEdge(e, serverIdToClientId))
-    .filter((c): c is Connection => c !== null)
+  // Defensive first-write-wins dedup on the shared edge identity. Once the
+  // directionless unique index (migration 029) is applied the DB itself
+  // guarantees no duplicates load, making this a no-op — but it costs nothing
+  // and closes the window where new client code could run against a prod table
+  // that hasn't had the migration applied yet. listByBoard orders by
+  // created_at ascending, so the survivor here matches the DB's first-write-wins.
+  const connections = dedupeConnectionsFirstWins(
+    dbEdges
+      .map((e) => connectionFromEdge(e, serverIdToClientId))
+      .filter((c): c is Connection => c !== null),
+  )
 
   return {
     id: board.id,
