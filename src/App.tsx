@@ -42,6 +42,7 @@ import { useProfileSnapshotBootstrap } from './hooks/useProfileSnapshotBootstrap
 import type { Connection } from './api/claude'
 import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
+import { connectionIdentityKey } from './utils/connectionIdentity'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
@@ -672,7 +673,24 @@ export function App() {
                 from: c.from.replace(/^node-/, ''),
                 to: c.to.replace(/^node-/, ''),
               }))
-              setConnections((prev) => [...prev, ...normalised])
+              // First-write-wins dedup on the shared edge identity
+              // (directionless, mode-aware — see connectionIdentity.ts).
+              // Existing connections win; an incoming connection that
+              // collides with one already on the canvas (same canonical
+              // pair + mode, either direction) is dropped, not appended.
+              // This replaces a blind append and is the client-side
+              // mirror of the DB unique index (migration 029).
+              setConnections((prev) => {
+                const seen = new Set(prev.map(connectionIdentityKey))
+                const merged = [...prev]
+                for (const c of normalised) {
+                  const key = connectionIdentityKey(c)
+                  if (seen.has(key)) continue
+                  seen.add(key)
+                  merged.push(c)
+                }
+                return merged
+              })
               setActiveLayer(mode)
             }}
             onClear={() => {
