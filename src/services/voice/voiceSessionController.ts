@@ -58,6 +58,14 @@ export interface RecordUtteranceInput {
   text: string
   startedAt: string
   endedAt: string
+  /**
+   * Phase 10B double-duty embed. When the caller already embedded this
+   * utterance's text inline (the follow-up retrieval query reuses the SAME
+   * vector that writes here), it passes the vector so the row write skips a
+   * second Gemini call. Absent → the controller embeds in the background as
+   * before. Only ever supplied for user utterances.
+   */
+  embedding?: number[]
 }
 
 export interface RecordUtteranceResult {
@@ -147,13 +155,26 @@ export function createVoiceSessionController(
     session.processingLog.push(event)
   }
 
-  function kickOffEmbedding(utteranceId: string, text: string, speaker: Speaker): void {
+  function kickOffEmbedding(
+    utteranceId: string,
+    text: string,
+    speaker: Speaker,
+    precomputed?: number[],
+  ): void {
     const startedAt = Date.now()
     // Snapshot the session id so a late embedding finishing after
     // endSession() doesn't write to a fresh session's controller state.
     const ownerSessionId = session?.sessionId ?? null
 
-    embedTextFn(text)
+    // Phase 10B: reuse the caller's inline embed (the follow-up retrieval
+    // query already paid for it) rather than calling Gemini a second time.
+    // The DB write stays in the background either way.
+    const embeddingPromise =
+      precomputed && precomputed.length > 0
+        ? Promise.resolve(precomputed)
+        : embedTextFn(text)
+
+    embeddingPromise
       .then(async (embedding) => {
         await updateUtteranceEmbedding(utteranceId, embedding)
         if (session?.sessionId === ownerSessionId) {
@@ -161,7 +182,12 @@ export function createVoiceSessionController(
             phase: 'voice.utterance.embedded',
             outcome: 'success',
             ts: nowIso(),
-            detail: { utteranceId, speaker, dims: embedding.length },
+            detail: {
+              utteranceId,
+              speaker,
+              dims: embedding.length,
+              reusedInlineEmbed: Boolean(precomputed && precomputed.length > 0),
+            },
             durationMs: Date.now() - startedAt,
           })
         }
@@ -218,7 +244,7 @@ export function createVoiceSessionController(
       return row.id
     },
 
-    async recordUtterance({ speaker, text, startedAt, endedAt }) {
+    async recordUtterance({ speaker, text, startedAt, endedAt, embedding }) {
       const s = requireSession('recordUtterance')
       const utteranceIndex = s.nextUtteranceIndex
 
@@ -266,7 +292,7 @@ export function createVoiceSessionController(
       if (speaker === 'assistant') s.assistantHasSpokenInSession = true
 
       if (result.utteranceId) {
-        kickOffEmbedding(result.utteranceId, text, speaker)
+        kickOffEmbedding(result.utteranceId, text, speaker, embedding)
       }
 
       return { utteranceId: result.utteranceId, stripped: false }
