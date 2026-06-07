@@ -298,6 +298,45 @@ export type Database = {
           },
         ]
       }
+      weave_edge_embeddings: {
+        Row: {
+          board_id: string
+          content_summary: string | null
+          created_at: string
+          embedding: unknown
+          id: string
+          metadata: Json | null
+          mode: string
+          node_hi: string
+          node_lo: string
+          user_id: string
+        }
+        Insert: {
+          board_id: string
+          content_summary?: string | null
+          created_at?: string
+          embedding?: unknown
+          id?: string
+          metadata?: Json | null
+          mode?: string
+          node_hi: string
+          node_lo: string
+          user_id?: string
+        }
+        Update: {
+          board_id?: string
+          content_summary?: string | null
+          created_at?: string
+          embedding?: unknown
+          id?: string
+          metadata?: Json | null
+          mode?: string
+          node_hi?: string
+          node_lo?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       weave_embeddings: {
         Row: {
           archived_at: string | null
@@ -460,6 +499,25 @@ export type Database = {
           p_user_id: string
         }
         Returns: undefined
+      }
+      match_retrieval_context: {
+        Args: {
+          p_board_id: string
+          p_current_session_id: string
+          p_excluded_node_ids: string[]
+          p_match_count: number
+          p_match_threshold: number
+          query_embedding: unknown
+        }
+        Returns: {
+          content: string
+          node_type: string
+          ref_id: string
+          score: number
+          similarity: number
+          source: string
+          speaker: string
+        }[]
       }
       patch_node_data: {
         Args: {
