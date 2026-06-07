@@ -539,6 +539,11 @@ export function EdgeDetailPopup({
       connectionContext: buildConnectionContext(connection),
       nodeContent: buildNodeContent(node1, node2),
       anchorEdgeId,
+      // Phase 10B retrieval inputs: the anchor edge (identity → opening
+      // edge-vector lookup; endpoints → exclusion anchors) and the full board
+      // connection list (graph-adjacency exclusions).
+      anchorConnection: connection,
+      connections: boardConnections,
       boardSnapshot: buildBoardSnapshot({
         nodes: boardNodes,
         connections: boardConnections,

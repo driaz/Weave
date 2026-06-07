@@ -48,6 +48,16 @@ import { voiceSessionController } from './voiceSessionController'
 import type { EndReason } from '../../persistence'
 import { getLatestProfileSnapshot } from '../../persistence/profileSnapshots'
 import { requireClient } from '../../persistence/session'
+import type { Connection } from '../../api/claude'
+import { embedText } from '../embeddingService'
+import { computeRetrievalExclusions } from '../../utils/retrievalExclusions'
+import {
+  blendQueryVectors,
+  buildRelatedMaterial,
+  fetchRetrievalContext,
+  filterUnseen,
+  lookupEdgeQueryVector,
+} from './retrievalContext'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -151,6 +161,20 @@ export interface VadControllerOptions {
   initialAssistantMessage?: string
   /** Override the singleton store (useful for tests / multi-session). */
   store?: VoiceSessionStore
+  /**
+   * Phase 10B: the anchor edge this session is centered on. Its identity drives
+   * the opening-turn edge-vector lookup, and its endpoints are the anchors for
+   * the retrieval exclusion set. Absent (e.g. a non-edge entry point, or a
+   * Claude-derived connection) → retrieval is disabled for the session and the
+   * RELATED MATERIAL section never appears.
+   */
+  anchorConnection?: Connection
+  /**
+   * Phase 10B: the full board connection list, for graph-adjacency exclusions
+   * (`computeRetrievalExclusions`). Empty/absent → only the anchor endpoints
+   * themselves are excluded.
+   */
+  connections?: Connection[]
 }
 
 /**
@@ -232,6 +256,19 @@ export class VadController {
   private currentUserSpeechEndedAt: string | null = null
   private currentAssistantFirstAudioAt: string | null = null
   private currentAssistantPlaybackEndedAt: string | null = null
+
+  // ------- Phase 10B retrieval state (session-local) -------
+  //
+  // Once-per-session novelty filter: a retrieved item (node or utterance ref
+  // id) surfaces at most once per session. Tracked client-side because 10A's
+  // RPC has no cross-turn memory and its exclusion array only covers the node
+  // corpus — a post-RPC ref_id filter covers nodes and utterances uniformly.
+  private readonly surfacedRefIds = new Set<string>()
+  // The prior USER turn's RAW utterance embedding, carried for the follow-up
+  // query blend (recency-weighted with the current turn). Null until the first
+  // follow-up has been embedded — `blendQueryVectors` then weights the current
+  // turn alone (the N-1-not-ready / first-follow-up fallback).
+  private lastUserQueryEmbedding: number[] | null = null
 
   constructor(opts: VadControllerOptions) {
     this.opts = opts
@@ -435,16 +472,20 @@ export class VadController {
       parentCorrelationId: state.sessionId ?? undefined,
     }
 
-    let snapshot: { id: string; narrative: string } | null = null
+    // Phase 9 snapshot fetch and Phase 10B retrieval run together so the added
+    // latency is max(snapshot, retrieval), not their sum. Both are best-effort:
+    // either failing degrades to its empty path, never blocks the opening turn.
     const fetchStartedAt = performance.now()
-    try {
-      snapshot = await getLatestProfileSnapshot(requireClient())
-    } catch (err) {
-      console.warn(
-        '[VadController] profile snapshot fetch failed; opening turn will proceed without recentThinking:',
-        err,
-      )
-    }
+    const [snapshot, relatedMaterial] = await Promise.all([
+      getLatestProfileSnapshot(requireClient()).catch((err) => {
+        console.warn(
+          '[VadController] profile snapshot fetch failed; opening turn will proceed without recentThinking:',
+          err,
+        )
+        return null
+      }),
+      this.computeOpeningRelatedMaterial(),
+    ])
     const snapshotFetchLatencyMs = Math.round(performance.now() - fetchStartedAt)
 
     const assembledSystemPrompt = buildSystemPrompt({
@@ -453,6 +494,7 @@ export class VadController {
       recentThinking: snapshot?.narrative,
       connectionContext: this.opts.connectionContext,
       nodeContent: this.opts.nodeContent,
+      relatedMaterial: relatedMaterial ?? undefined,
     })
 
     this.logger.event(
@@ -463,10 +505,71 @@ export class VadController {
         snapshotId: snapshot?.id ?? null,
         assembledSystemPrompt,
         snapshotFetchLatencyMs,
+        relatedMaterialPresent: Boolean(relatedMaterial),
       },
       correlationIds,
     )
     void this.runOpeningTurn(assembledSystemPrompt)
+  }
+
+  // ------- Phase 10B retrieval -------
+
+  /**
+   * Opening-turn related material. Query vector = the anchor edge's STORED
+   * embedding (no Gemini call). Returns null — and the section is omitted —
+   * when retrieval is disabled (no anchor connection), the edge has no
+   * embedding yet (just-created, async write not landed), or nothing clears
+   * the floor. Best-effort: never throws into the opening path.
+   */
+  private async computeOpeningRelatedMaterial(): Promise<string | null> {
+    const conn = this.opts.anchorConnection
+    if (!conn) return null
+    try {
+      const client = requireClient()
+      const queryVector = await lookupEdgeQueryVector(client, this.opts.boardId, conn)
+      if (!queryVector) return null
+      return await this.runRetrieval(client, queryVector)
+    } catch (err) {
+      console.warn(
+        '[VadController] opening retrieval failed; proceeding without relatedMaterial:',
+        err,
+      )
+      return null
+    }
+  }
+
+  /**
+   * Shared retrieval tail (both turn types): compute the exclusion set, call
+   * the 10A RPC, apply the once-per-session novelty filter, and assemble the
+   * `relatedMaterial` block. Records what surfaced so it can't surface again.
+   * Returns null when nothing clears the floor / survives the filter.
+   */
+  private async runRetrieval(
+    client: ReturnType<typeof requireClient>,
+    queryVector: number[],
+  ): Promise<string | null> {
+    const conn = this.opts.anchorConnection
+    if (!conn) return null
+
+    const excludedNodeIds = computeRetrievalExclusions(this.opts.connections ?? [], [
+      conn.from,
+      conn.to,
+    ])
+
+    const rows = await fetchRetrievalContext(client, {
+      queryVector,
+      boardId: this.opts.boardId,
+      excludedNodeIds,
+      currentSessionId: voiceSessionController.getSessionId(),
+    })
+
+    const novel = filterUnseen(rows, this.surfacedRefIds)
+    const block = buildRelatedMaterial(novel)
+    if (block) {
+      // The whole block is injected this turn → every novel row has surfaced.
+      for (const r of novel) this.surfacedRefIds.add(r.ref_id)
+    }
+    return block
   }
 
   // ------- setup -------
@@ -900,12 +1003,66 @@ export class VadController {
     // once the first sentence has been emitted to TTS (driven from the
     // helper, see below).
     this.store.setSubstep('claude')
+
+    // Phase 10B: embed the user transcript INLINE (blocking) before the turn
+    // assembles. Double duty — this single vector is the retrieval query AND
+    // the utterance row write, so there is no second Gemini call. Real in-app
+    // embed latency is ~218–360ms, under the 500ms budget. On failure, degrade:
+    // skip retrieval this turn and let the row write embed in the background as
+    // before — never block the turn.
+    let userEmbedding: number[] | null = null
+    const embedStartedAt = performance.now()
+    try {
+      userEmbedding = await embedText(transcript)
+    } catch (err) {
+      console.warn(
+        '[VadController] inline utterance embed failed; skipping retrieval this turn:',
+        err,
+      )
+    }
+    const embedMs = Math.round(performance.now() - embedStartedAt)
+    if (abort.signal.aborted) return
+
+    let relatedMaterial: string | null = null
+    if (userEmbedding) {
+      // Instrumentation (10A follow-up): BARE embed latency, captured before
+      // the utterance row's background DB update, so the dev-script proxy is
+      // confirmed against the real in-app number once voice runs for real.
+      if (voiceSessionController.isActive()) {
+        voiceSessionController.logEvent({
+          phase: 'voice.embed.inline',
+          outcome: 'success',
+          ts: new Date().toISOString(),
+          detail: { textLen: transcript.length, dims: userEmbedding.length },
+          durationMs: embedMs,
+          correlationId: turnId,
+          parentCorrelationId: sessionId,
+        })
+      }
+      // Query = recency-weighted blend of this turn and the prior USER turn.
+      // No fall-back to the edge vector on follow-ups (that throws away drift).
+      const queryVector = blendQueryVectors(userEmbedding, this.lastUserQueryEmbedding)
+      // Carry the RAW current vector as next turn's prior (the blend is of raw
+      // embeddings, never of prior blends).
+      this.lastUserQueryEmbedding = userEmbedding
+      try {
+        relatedMaterial = await this.runRetrieval(requireClient(), queryVector)
+      } catch (err) {
+        console.warn(
+          '[VadController] follow-up retrieval failed; proceeding without relatedMaterial:',
+          err,
+        )
+      }
+      if (abort.signal.aborted) return
+    }
+
     // Phase 8: persist the user utterance. Fire-and-forget so the
     // Claude call doesn't wait on a Supabase round-trip; the controller
     // logs insert failures to processing_log and the session keeps
     // going. Timestamps come from B1's instrumentation — both fields
     // are populated by now (speech-start fired earlier in this turn,
-    // speech-end fired just before processUserTurn began).
+    // speech-end fired just before processUserTurn began). Phase 10B: pass the
+    // inline embedding so the row write reuses it (no second Gemini call).
     if (voiceSessionController.isActive()) {
       const ts = this.getTurnTimestamps()
       if (ts.user) {
@@ -915,6 +1072,7 @@ export class VadController {
             text: transcript,
             startedAt: ts.user.speechStartedAt,
             endedAt: ts.user.speechEndedAt,
+            embedding: userEmbedding ?? undefined,
           })
           .catch((err) =>
             console.error(
@@ -933,6 +1091,7 @@ export class VadController {
         claudeMessages: this.messages,
         isOpening: false,
         correlationIds,
+        relatedMaterial: relatedMaterial ?? undefined,
       })
     } catch (err) {
       if (abort.signal.aborted) return
@@ -1050,8 +1209,18 @@ export class VadController {
      * on follow-up turns; the orchestrator assembles those itself.
      */
     systemPrompt?: string
+    /**
+     * Phase 10B per-turn retrieval block. Follow-up turns pass it here so it
+     * threads into the orchestrator's own buildSystemPrompt call (it changes
+     * every turn, so it can't be a fixed session option). Opening turns leave
+     * it undefined — their relatedMaterial is already folded into
+     * `systemPrompt` upstream, and the orchestrator ignores it when
+     * `systemPrompt` is set.
+     */
+    relatedMaterial?: string
   }): Promise<void> {
-    const { turnId, abort, claudeMessages, isOpening, correlationIds, systemPrompt } = args
+    const { turnId, abort, claudeMessages, isOpening, correlationIds, systemPrompt, relatedMaterial } =
+      args
 
     const segmenter = createSentenceSegmenter()
     const pending: string[] = []
@@ -1467,6 +1636,7 @@ export class VadController {
         messages: claudeMessages,
         signal: abort.signal,
         systemPrompt,
+        relatedMaterial,
       })) {
         if (abort.signal.aborted) break
         assistantText += chunk
