@@ -2,6 +2,9 @@ import type { Part } from '@google/genai'
 import { ai } from './geminiClient'
 import { supabase } from './supabaseClient'
 import type { NodeLogger } from '../utils/logger'
+import type { Connection } from '../api/claude'
+import { connectionIdentityFields } from '../utils/connectionIdentity'
+import { buildConnectionContext } from './voice/voiceContext'
 
 /**
  * Parse a data URL into its mime type and raw base64 string.
@@ -284,4 +287,91 @@ export async function embedText(text: string): Promise<number[]> {
   const embedding = response.embeddings?.[0]?.values
   if (!embedding) throw new Error('embedText: Gemini returned no embedding')
   return embedding
+}
+
+/**
+ * Embed a single connection's relationship text and store it in the
+ * edge-embedding store (`weave_edge_embeddings`), keyed on the SHIPPED
+ * directionless, mode-aware identity.
+ *
+ * The edge analogue of `embedNode`. Write-once: under first-write-wins dedup an
+ * edge's label/explanation is permanent, so there's no re-embed or staleness
+ * logic — the upsert on the identity key simply collapses any directionless
+ * duplicate (e.g. a transient A->B / B->A pair) to one row.
+ *
+ * What we embed is exactly the text `buildConnectionContext` assembles
+ * ("label — explanation") — the same string the voice layer injects — so the
+ * edge vector is comparable to how the relationship is later surfaced. Node
+ * summaries are intentionally NOT concatenated in v1: each node is already
+ * embedded and retrievable on its own, and keeping the edge vector to the
+ * relationship text keeps the write simple.
+ *
+ * Non-blocking and fail-loud: failures are logged, never thrown to the caller.
+ */
+export async function embedEdge(
+  boardId: string,
+  connection: Connection,
+  logger?: NodeLogger,
+): Promise<void> {
+  if (!ai || !supabase) return
+
+  const startedAt = Date.now()
+  const text = buildConnectionContext(connection).trim()
+  if (!text) {
+    logger?.debug('embed.edge.client', 'skipped', { reason: 'no-text' })
+    return
+  }
+
+  const { mode, lo, hi } = connectionIdentityFields(connection)
+  const embedding = await embedText(text)
+
+  const { error } = await supabase.from('weave_edge_embeddings').upsert(
+    {
+      board_id: boardId,
+      mode,
+      node_lo: lo,
+      node_hi: hi,
+      embedding: JSON.stringify(embedding),
+      content_summary: text,
+      metadata: { label: connection.label, edge_mode: connection.mode ?? null },
+    },
+    { onConflict: 'board_id,mode,node_lo,node_hi' },
+  )
+
+  // Edge events log to the console rather than persist() — unlike a node,
+  // an edge has no row-scoped processing_log to append to.
+  if (error) {
+    logger?.error(
+      'embed.edge.client',
+      'failed',
+      { error: error.message, embeddingDims: embedding.length, contentLen: text.length },
+      Date.now() - startedAt,
+    )
+    return
+  }
+
+  logger?.info(
+    'embed.edge.client',
+    'success',
+    { embeddingDims: embedding.length, contentLen: text.length, mode },
+    Date.now() - startedAt,
+  )
+}
+
+/**
+ * Fire-and-forget wrapper for embedEdge. Call this from UI code at
+ * connection creation — it will never throw or block.
+ */
+export function embedEdgeAsync(
+  boardId: string,
+  connection: Connection,
+  logger?: NodeLogger,
+): void {
+  embedEdge(boardId, connection, logger).catch((err) => {
+    if (logger) {
+      logger.error('embed.edge.client', 'failed', { error: String(err) })
+    } else {
+      console.warn('[Weave Embeddings] Edge embedding failed:', err)
+    }
+  })
 }

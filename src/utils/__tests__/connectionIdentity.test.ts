@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Connection } from '../../api/claude'
 import {
+  connectionIdentityFields,
   connectionIdentityKey,
   dedupeConnectionsFirstWins,
 } from '../connectionIdentity'
@@ -43,6 +44,37 @@ describe('connectionIdentityKey', () => {
     expect(connectionIdentityKey(conn({ from: 'a', to: 'b' }))).toBe(
       connectionIdentityKey(conn({ from: 'b', to: 'a' })),
     )
+  })
+})
+
+describe('connectionIdentityFields', () => {
+  it('sorts the pair (lo <= hi) regardless of direction', () => {
+    expect(connectionIdentityFields(conn({ from: 'b', to: 'a', mode: 'weave' }))).toEqual({
+      mode: 'weave',
+      lo: 'a',
+      hi: 'b',
+    })
+    expect(connectionIdentityFields(conn({ from: 'a', to: 'b', mode: 'weave' }))).toEqual({
+      mode: 'weave',
+      lo: 'a',
+      hi: 'b',
+    })
+  })
+
+  it('coalesces undefined mode to empty string (mirrors SQL coalesce)', () => {
+    expect(connectionIdentityFields(conn({ from: 'a', to: 'b' })).mode).toBe('')
+  })
+
+  it('strips a node- prefix before sorting', () => {
+    expect(connectionIdentityFields(conn({ from: 'node-b', to: 'node-a', mode: 'deeper' }))).toEqual(
+      { mode: 'deeper', lo: 'a', hi: 'b' },
+    )
+  })
+
+  it('agrees with connectionIdentityKey (same canonicalization)', () => {
+    const c = conn({ from: 'node-z', to: 'm', mode: 'tensions' })
+    const { mode, lo, hi } = connectionIdentityFields(c)
+    expect(connectionIdentityKey(c)).toBe(`${mode}\0${lo}\0${hi}`)
   })
 })
 

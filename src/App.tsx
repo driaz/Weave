@@ -50,7 +50,7 @@ import { HighlightContext, type HighlightState } from './hooks/useSelectedNode'
 import { trackEvent } from './services/eventTracker'
 import { BoardIdContext } from './hooks/useBoardId'
 import { CancelNodeSelectContext } from './hooks/useCancelNodeSelect'
-import { embedNodeAsync } from './services/embeddingService'
+import { embedNodeAsync, embedEdgeAsync } from './services/embeddingService'
 import { enrichLinkNode } from './services/linkEnrichment'
 import { supabase } from './services/supabaseClient'
 import { buildProcessingLogAppender, createNodeLogger } from './utils/logger'
@@ -691,6 +691,24 @@ export function App() {
                 }
                 return merged
               })
+              // Edge embedding (Phase 10A) mirrors node embedding: fire-and-forget
+              // at connection creation, keyed on the deduplicated directionless
+              // identity. Computed against the committed `connections` (not inside
+              // the state updater, which must stay pure) so each newly surfaced
+              // connection is embedded once. The upsert on the identity key
+              // collapses any directionless duplicate to a single row, so a
+              // transient A->B / B->A pair can't double-write.
+              const embeddedKeys = new Set(connections.map(connectionIdentityKey))
+              for (const c of normalised) {
+                const key = connectionIdentityKey(c)
+                if (embeddedKeys.has(key)) continue
+                embeddedKeys.add(key)
+                embedEdgeAsync(
+                  currentBoard.id,
+                  c,
+                  createNodeLogger(`edge:${key}`, currentBoard.id),
+                )
+              }
               setActiveLayer(mode)
             }}
             onClear={() => {
