@@ -48,12 +48,13 @@ When bootstrapping a new Supabase project, apply these in order. The pgvector ex
 >
 > Prod `supabase db push` is still gated on **prod service-role access** (the local `.env` key is dev-only). Apply `027`–`030` to prod, in order, **before** merging/deploying this PR's code (schema-first rule).
 
-> **Apply status (2026-06-06) — Phase 10A (031, 032):** Applied to **Weave-Dev only** and verified there. Edge-embedding backfill run on dev (`node scripts/backfill-edge-embeddings.mjs`): **93/93 edges embedded, 0 missing label+explanation, 0 failures**. RPC verified by `src/persistence/__tests__/retrievalRpc.test.ts` (7 cases: two-corpus span, floor, exclusion array, thin-summary guard, prior-session-only, speaker tagging, score==similarity ordering, k cap, RLS via SECURITY INVOKER).
+> **Apply status — Phase 10A (031, 032):**
 >
-> **Prod is gated** on prod service-role access (not held this session):
-> 1. Apply `031` then `032` to prod (`supabase link --project-ref wndfikmpifyqkgivmnwv && supabase db push`), schema-first, **before** deploying the code.
-> 2. Run the backfill against prod **explicitly** (the script defaults to the dev `.env`): `SUPABASE_URL=<prod-url> SUPABASE_SERVICE_ROLE_KEY=<prod-key> VITE_GEMINI_API_KEY=<key> node scripts/backfill-edge-embeddings.mjs` (use `--dry-run` first to confirm the edge count and that `missing label+expl` is 0).
-> 3. Re-link back to dev and confirm the `DEV` pill.
+> - **Weave-Dev (2026-06-06):** Applied and verified. Backfill: **93/93 edges embedded, 0 missing label+explanation, 0 failures**. RPC verified by `src/persistence/__tests__/retrievalRpc.test.ts` (7 cases: two-corpus span, floor, exclusion array, thin-summary guard, prior-session-only, speaker tagging, score==similarity ordering, k cap, RLS via SECURITY INVOKER).
+> - **Weave-Prod (2026-06-06):** Applied (031 then 032, schema-first) and backfilled by the owner with prod service-role creds. Backfill: **237/237 edges embedded, 0 missing label+explanation, 0 failures, `skipped duplicate: 0`** (confirms the 029 directionless unique index leaves no reversed-pair dupes). Read-back verified: **237 rows, 0 NULL embeddings, `halfvec(3072)`, identities canonicalized (`node_lo <= node_hi`)**.
+>
+> Backfill against prod is run **explicitly** (the script reads env vars, ignoring the CLI link; it falls back to the dev `.env` otherwise):
+> `SUPABASE_URL=<prod-url> SUPABASE_SERVICE_ROLE_KEY=<prod-key> node scripts/backfill-edge-embeddings.mjs` (`--dry-run` first; confirm the `[backfill] target:` line shows the prod ref and `missing label+expl` is 0). The script is idempotent (upserts on the edge identity), so re-running is safe.
 
 ## Deferred cutovers tracked in migration comments
 
