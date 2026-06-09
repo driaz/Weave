@@ -31,7 +31,10 @@ import { connectionIdentityFields } from '../../utils/connectionIdentity'
  * strong hits — the section is widening context, not a default. Tune by feel
  * once live voice sessions produce a real similarity distribution.
  */
-export const RETRIEVAL_FLOOR = 0.7
+// 0.4: diagnostic floor below the observed score band; tune up once the live
+// distribution is confirmed. NOT a considered production value — it was lowered
+// from 0.7 to let sub-band nodes surface so retrieval is observable end-to-end.
+export const RETRIEVAL_FLOOR = 0.4
 export const RETRIEVAL_K = 6
 
 /**
