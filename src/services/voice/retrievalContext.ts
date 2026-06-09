@@ -233,6 +233,165 @@ function truncate(text: string): string {
 }
 
 /**
+ * One rendered retrieval line: "- <budget-truncated content>". Shared by
+ * `buildRelatedMaterial` and working-memory admission so the line stored in
+ * working memory is byte-identical to the line RELATED MATERIAL rendered the
+ * turn the item surfaced.
+ */
+export function formatRetrievalBullet(content: string): string {
+  return `- ${truncate(content)}`
+}
+
+// ------- session working memory (surfaced-material persistence) -------
+
+/**
+ * What a working-memory entry refers to. Only 'node' is produced today (the
+ * v1 retrieval corpus is node-only, migration 034); the other members name
+ * the future corpora so renderers fail loud instead of guessing.
+ */
+export type WorkingMemoryRefType = 'node' | 'voice_session' | 'edge' | 'cross_board_node'
+
+export interface WorkingMemoryEntry {
+  refType: WorkingMemoryRefType
+  refId: string
+  /** The formatted bullet, post-truncate — the same 600-char-budget line
+   * RELATED MATERIAL rendered when this entry surfaced (`formatRetrievalBullet`). */
+  content: string
+  /** Turn ordinal at admission; orders eviction under the overflow guard. */
+  surfacedAtTurn: number
+}
+
+/**
+ * Fail-loud guard on the store's total content chars — NOT an eviction
+ * policy. Expected never to fire at current board scale (~17 nodes × ≤601
+ * chars per bullet, and the novelty filter admits each ref once); if it
+ * fires, the overflow log is the signal that scale assumptions broke.
+ */
+export const WORKING_MEMORY_MAX_CHARS = 8000
+
+/** Detail payload for the overflow log event (vadController owns the emit). */
+export interface WorkingMemoryOverflowInfo {
+  /** Store size in content chars BEFORE the incoming entry. */
+  sizeChars: number
+  entryCount: number
+  incomingChars: number
+}
+
+/** Detail payload for the per-entry admission log (vadController owns the
+ * emit). No content bodies — refs and sizes only. */
+export interface WorkingMemoryAdmitInfo {
+  refId: string
+  refType: WorkingMemoryRefType
+  surfacedAtTurn: number
+  /** Chars of this entry's stored bullet. */
+  chars: number
+  /** Store size in content chars AFTER this entry landed (cumulative). */
+  storeSizeAfterChars: number
+  entryCountAfter: number
+}
+
+/**
+ * Admit surfaced rows into the working-memory store. Mutates `memory` in
+ * place; no I/O (the caller supplies `onOverflow` / `onAdmit` for logging)
+ * so the cap/eviction behavior is unit-testable without a controller
+ * instance. `onAdmit` fires once per entry, after it lands, with cumulative
+ * store stats.
+ *
+ * A ref_id enters at most once: the caller's novelty filter guarantees
+ * `rows` excludes everything previously surfaced, so there is deliberately
+ * no second dedupe path here.
+ *
+ * Overflow guard: if an admission would push total content chars past
+ * WORKING_MEMORY_MAX_CHARS, report it via `onOverflow`, then drop oldest
+ * entries (by surfacedAtTurn) until the new entry fits. Fail-loud guard,
+ * not an eviction policy — expected never to fire at current board scale.
+ */
+export function admitToWorkingMemory(
+  memory: Map<string, WorkingMemoryEntry>,
+  rows: RetrievalRow[],
+  surfacedAtTurn: number,
+  onOverflow?: (info: WorkingMemoryOverflowInfo) => void,
+  onAdmit?: (info: WorkingMemoryAdmitInfo) => void,
+): void {
+  for (const row of rows) {
+    const entry: WorkingMemoryEntry = {
+      // v1 retrieval corpus is node-only (migration 034), so every row is a
+      // board node. A future corpus must add its refType and renderer.
+      refType: 'node',
+      refId: row.ref_id,
+      content: formatRetrievalBullet(row.content),
+      surfacedAtTurn,
+    }
+
+    let totalChars = entry.content.length
+    for (const e of memory.values()) totalChars += e.content.length
+
+    if (totalChars > WORKING_MEMORY_MAX_CHARS) {
+      onOverflow?.({
+        sizeChars: totalChars - entry.content.length,
+        entryCount: memory.size,
+        incomingChars: entry.content.length,
+      })
+      const byAge = [...memory.values()].sort(
+        (a, b) => a.surfacedAtTurn - b.surfacedAtTurn,
+      )
+      for (const victim of byAge) {
+        if (totalChars <= WORKING_MEMORY_MAX_CHARS) break
+        memory.delete(victim.refId)
+        totalChars -= victim.content.length
+      }
+    }
+
+    memory.set(entry.refId, entry)
+    // totalChars already reflects this entry (computed pre-set, post-eviction).
+    onAdmit?.({
+      refId: entry.refId,
+      refType: entry.refType,
+      surfacedAtTurn: entry.surfacedAtTurn,
+      chars: entry.content.length,
+      storeSizeAfterChars: totalChars,
+      entryCountAfter: memory.size,
+    })
+  }
+}
+
+/**
+ * Constant framing for the SURFACED THIS SESSION section: material already
+ * named aloud — re-grounding, not news.
+ */
+export const WORKING_MEMORY_FRAMING =
+  "Connections you've already named aloud in this conversation. Don't " +
+  're-introduce them as if new — but when the conversation genuinely returns ' +
+  'to one, weave it back in through its specifics rather than repeating what ' +
+  'you said before.'
+
+/**
+ * Assemble the SURFACED THIS SESSION body from working-memory entries, or
+ * null when the store is empty (the caller omits the section, keeping
+ * prompts byte-identical to pre-working-memory behavior). Renders by
+ * refType; only 'node' has a renderer today — an entry of any other type
+ * throws rather than rendering wrong, so a future corpus must bring its
+ * renderer with it.
+ */
+export function buildWorkingMemoryBlock(entries: WorkingMemoryEntry[]): string | null {
+  if (entries.length === 0) return null
+
+  const lines = entries.map((e) => {
+    switch (e.refType) {
+      case 'node':
+        // Stored pre-formatted at admission (formatRetrievalBullet).
+        return e.content
+      default:
+        throw new Error(
+          `buildWorkingMemoryBlock: no renderer for refType "${e.refType}"`,
+        )
+    }
+  })
+
+  return `${WORKING_MEMORY_FRAMING}\n\n${lines.join('\n')}`
+}
+
+/**
  * Constant framing for the related-material section. Directs EXPLICIT, specific
  * surfacing — name the actual piece so the listener recognizes the thread across
  * their own collection — while guarding against listing, forcing, or
@@ -280,7 +439,7 @@ export function buildRelatedMaterial(rows: RetrievalRow[]): string | null {
 
   const pushBlock = (header: string, items: RetrievalRow[]): void => {
     if (items.length === 0) return
-    const lines = items.map((r) => `- ${truncate(r.content)}`).join('\n')
+    const lines = items.map((r) => formatRetrievalBullet(r.content)).join('\n')
     parts.push(`${header}\n${lines}`)
   }
 

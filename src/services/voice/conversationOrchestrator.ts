@@ -44,6 +44,13 @@ export interface RunConversationTurnInput {
    * Absent / empty → the section is omitted, exactly like Phase 9.
    */
   relatedMaterial?: string
+  /**
+   * Session working memory block (SURFACED THIS SESSION): everything
+   * retrieval surfaced in prior turns, threaded per-turn exactly like
+   * `relatedMaterial` and ignored the same way when `systemPrompt` is
+   * provided. Absent / empty → the section is omitted.
+   */
+  workingMemory?: string
 }
 
 /**
@@ -62,7 +69,7 @@ export interface RunConversationTurnInput {
 export async function* runConversationTurn(
   input: RunConversationTurnInput,
 ): AsyncGenerator<string, void, unknown> {
-  const { connectionContext, nodeContent, messages, signal, systemPrompt, relatedMaterial } = input
+  const { connectionContext, nodeContent, messages, signal, systemPrompt, relatedMaterial, workingMemory } = input
 
   let system: string
   if (systemPrompt && systemPrompt.length > 0) {
@@ -76,6 +83,7 @@ export async function* runConversationTurn(
       connectionContext,
       nodeContent,
       relatedMaterial,
+      workingMemory,
     })
   }
 

@@ -29,6 +29,13 @@
  *                          breaks a turn. Changes per turn (unlike the fixed
  *                          connection/node sections), so it is threaded as a
  *                          per-turn argument, not a session option.
+ * @param workingMemory     Session working memory: everything retrieval has
+ *                          surfaced in PRIOR turns, rendered as a SURFACED
+ *                          THIS SESSION section after relatedMaterial
+ *                          (`buildWorkingMemoryBlock` — already self-framed,
+ *                          passed through untouched). Omitted when absent or
+ *                          empty, so prompts before anything surfaces stay
+ *                          byte-identical to pre-working-memory behavior.
  */
 export function buildSystemPrompt(input: {
   role: string
@@ -37,8 +44,9 @@ export function buildSystemPrompt(input: {
   connectionContext: string
   nodeContent: string
   relatedMaterial?: string
+  workingMemory?: string
 }): string {
-  const { role, cadence, recentThinking, connectionContext, nodeContent, relatedMaterial } = input
+  const { role, cadence, recentThinking, connectionContext, nodeContent, relatedMaterial, workingMemory } = input
 
   const sections: string[] = [role, '---', cadence]
 
@@ -64,6 +72,10 @@ export function buildSystemPrompt(input: {
 
   if (relatedMaterial && relatedMaterial.trim().length > 0) {
     sections.push('---', 'RELATED MATERIAL', relatedMaterial)
+  }
+
+  if (workingMemory && workingMemory.trim().length > 0) {
+    sections.push('---', 'SURFACED THIS SESSION', workingMemory)
   }
 
   return sections.join('\n\n')

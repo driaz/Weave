@@ -38,3 +38,37 @@ describe('buildSystemPrompt — relatedMaterial (Phase 10B)', () => {
     expect(out.indexOf('BLOCK')).toBeGreaterThan(out.indexOf('NODES'))
   })
 })
+
+describe('buildSystemPrompt — workingMemory (SURFACED THIS SESSION)', () => {
+  it('omits the section when absent — prompt byte-identical to pre-working-memory', () => {
+    expect(buildSystemPrompt(base)).toBe(
+      buildSystemPrompt({ ...base, workingMemory: undefined }),
+    )
+    expect(buildSystemPrompt(base)).not.toContain('SURFACED THIS SESSION')
+  })
+
+  it('omits the section when the block is empty/whitespace', () => {
+    expect(buildSystemPrompt({ ...base, workingMemory: '  ' })).not.toContain(
+      'SURFACED THIS SESSION',
+    )
+  })
+
+  it('renders SURFACED THIS SESSION after RELATED MATERIAL', () => {
+    const out = buildSystemPrompt({
+      ...base,
+      relatedMaterial: 'FRESH',
+      workingMemory: 'REMEMBERED',
+    })
+    expect(out.indexOf('RELATED MATERIAL')).toBeLessThan(
+      out.indexOf('SURFACED THIS SESSION'),
+    )
+    expect(out.indexOf('REMEMBERED')).toBeGreaterThan(out.indexOf('FRESH'))
+  })
+
+  it('renders working memory even when relatedMaterial is absent (empty-retrieval follow-up)', () => {
+    const out = buildSystemPrompt({ ...base, workingMemory: 'REMEMBERED' })
+    expect(out).toContain('SURFACED THIS SESSION')
+    expect(out).toContain('REMEMBERED')
+    expect(out).not.toContain('RELATED MATERIAL')
+  })
+})

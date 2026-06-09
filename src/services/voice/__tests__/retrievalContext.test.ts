@@ -1,17 +1,25 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  admitToWorkingMemory,
   BLEND_CURRENT,
   BLEND_PRIOR,
   blendQueryVectors,
   buildRelatedMaterial,
+  buildWorkingMemoryBlock,
   fetchRetrievalContext,
   filterUnseen,
+  formatRetrievalBullet,
   lookupEdgeQueryVector,
   parseStoredEmbedding,
   RELATED_MATERIAL_FRAMING,
   RETRIEVAL_K,
+  WORKING_MEMORY_FRAMING,
   type RetrievalRow,
+  type WorkingMemoryAdmitInfo,
+  type WorkingMemoryEntry,
+  type WorkingMemoryOverflowInfo,
 } from '../retrievalContext'
+import { buildSystemPrompt } from '../buildSystemPrompt'
 
 function row(partial: Partial<RetrievalRow>): RetrievalRow {
   return {
@@ -202,5 +210,164 @@ describe('fetchRetrievalContext', () => {
       liveNodeIds: [],
     })
     expect(out).toEqual([])
+  })
+})
+
+describe('working memory (SURFACED THIS SESSION)', () => {
+  it('stores the byte-identical line RELATED MATERIAL rendered', () => {
+    const r = row({ content: 'some saved node content here' })
+    expect(buildRelatedMaterial([r])!).toContain(formatRetrievalBullet(r.content))
+  })
+
+  it('admits each refId at most once across turns (novelty filter is the only dedupe)', () => {
+    const memory = new Map<string, WorkingMemoryEntry>()
+    const seen = new Set<string>()
+
+    // Turn 1: r1 surfaces.
+    const turn1 = filterUnseen([row({ ref_id: 'r1', content: 'first content here' })], seen)
+    turn1.forEach((r) => seen.add(r.ref_id))
+    admitToWorkingMemory(memory, turn1, 1)
+
+    // Turn 2: the RPC returns r1 again plus r2; the novelty filter strips r1
+    // before admission, exactly as in runRetrieval.
+    const turn2 = filterUnseen(
+      [
+        row({ ref_id: 'r1', content: 'first content here' }),
+        row({ ref_id: 'r2', content: 'second content here' }),
+      ],
+      seen,
+    )
+    turn2.forEach((r) => seen.add(r.ref_id))
+    admitToWorkingMemory(memory, turn2, 2)
+
+    expect([...memory.keys()]).toEqual(['r1', 'r2'])
+    expect(memory.get('r1')!.surfacedAtTurn).toBe(1) // untouched by turn 2
+  })
+
+  it('overflow guard drops oldest entries (by surfacedAtTurn) and reports', () => {
+    const memory = new Map<string, WorkingMemoryEntry>()
+    const overflows: WorkingMemoryOverflowInfo[] = []
+    // 598-char content → 600-char bullet ("- " prefix, under the truncate budget).
+    const big = (id: string): RetrievalRow => row({ ref_id: id, content: 'y'.repeat(598) })
+
+    for (let turn = 1; turn <= 13; turn++) {
+      admitToWorkingMemory(memory, [big(`r${turn}`)], turn, (info) => overflows.push(info))
+    }
+    expect(overflows).toHaveLength(0) // 13 × 600 = 7800 ≤ 8000
+
+    admitToWorkingMemory(memory, [big('r14')], 14, (info) => overflows.push(info))
+    expect(overflows).toHaveLength(1) // 8400 > 8000 → guard fires
+    expect(overflows[0]).toEqual({ sizeChars: 7800, entryCount: 13, incomingChars: 600 })
+    expect(memory.has('r1')).toBe(false) // oldest evicted...
+    expect(memory.has('r2')).toBe(true) // ...and only the oldest (7800 fits)
+    expect(memory.has('r14')).toBe(true)
+    expect(memory.size).toBe(13)
+  })
+
+  it('onAdmit fires per entry with cumulative store stats', () => {
+    const memory = new Map<string, WorkingMemoryEntry>()
+    const admits: WorkingMemoryAdmitInfo[] = []
+    const rows = [
+      row({ ref_id: 'r1', content: 'x'.repeat(98) }), // bullet = 100 chars
+      row({ ref_id: 'r2', content: 'x'.repeat(198) }), // bullet = 200 chars
+    ]
+    admitToWorkingMemory(memory, rows, 3, undefined, (info) => admits.push(info))
+
+    expect(admits).toEqual([
+      {
+        refId: 'r1',
+        refType: 'node',
+        surfacedAtTurn: 3,
+        chars: 100,
+        storeSizeAfterChars: 100, // cumulative, not final-state
+        entryCountAfter: 1,
+      },
+      {
+        refId: 'r2',
+        refType: 'node',
+        surfacedAtTurn: 3,
+        chars: 200,
+        storeSizeAfterChars: 300,
+        entryCountAfter: 2,
+      },
+    ])
+  })
+
+  it('onAdmit and onOverflow both fire on an admission that evicts', () => {
+    const memory = new Map<string, WorkingMemoryEntry>()
+    const admits: WorkingMemoryAdmitInfo[] = []
+    const overflows: WorkingMemoryOverflowInfo[] = []
+    const big = (id: string): RetrievalRow => row({ ref_id: id, content: 'y'.repeat(598) })
+
+    for (let turn = 1; turn <= 14; turn++) {
+      admitToWorkingMemory(
+        memory,
+        [big(`r${turn}`)],
+        turn,
+        (info) => overflows.push(info),
+        (info) => admits.push(info),
+      )
+    }
+
+    expect(overflows).toHaveLength(1) // eviction still fires (14 × 600 > 8000)
+    expect(admits).toHaveLength(14) // every entry still logged as admitted
+    // The 14th admission's stats reflect the post-eviction store.
+    expect(admits[13]).toMatchObject({
+      refId: 'r14',
+      storeSizeAfterChars: 7800,
+      entryCountAfter: 13,
+    })
+  })
+
+  it('empty store renders nothing', () => {
+    expect(buildWorkingMemoryBlock([])).toBeNull()
+  })
+
+  it("renders 'node' entries; throws on refTypes with no renderer yet", () => {
+    const entry: WorkingMemoryEntry = {
+      refType: 'node',
+      refId: 'r1',
+      content: '- saved thing',
+      surfacedAtTurn: 1,
+    }
+    const out = buildWorkingMemoryBlock([entry])!
+    expect(out).toContain(WORKING_MEMORY_FRAMING)
+    expect(out).toContain('- saved thing')
+    expect(() => buildWorkingMemoryBlock([{ ...entry, refType: 'edge' }])).toThrow(
+      /no renderer/,
+    )
+  })
+
+  it('integration: node surfaced on the opening persists into an empty-retrieval follow-up prompt', () => {
+    const memory = new Map<string, WorkingMemoryEntry>()
+    const seen = new Set<string>()
+
+    // Opening turn: one node clears the floor and renders in RELATED MATERIAL.
+    const surfaced = row({
+      ref_id: 'n7',
+      content: 'The Odyssey trailer — tell me what you remember',
+    })
+    const novel = filterUnseen([surfaced], seen)
+    const openingBlock = buildRelatedMaterial(novel)!
+    novel.forEach((r) => seen.add(r.ref_id))
+    admitToWorkingMemory(memory, novel, 1)
+
+    // Follow-up turn: retrieval comes back empty (e.g. a meta-question whose
+    // embedding clears nothing above the floor) — the orchestrator rebuild
+    // path's exact inputs:
+    const followUpPrompt = buildSystemPrompt({
+      role: 'ROLE',
+      cadence: 'CADENCE-FOLLOWUP',
+      connectionContext: 'CONN',
+      nodeContent: 'NODES',
+      relatedMaterial: undefined,
+      workingMemory: buildWorkingMemoryBlock([...memory.values()]) ?? undefined,
+    })
+
+    const expectedBullet = formatRetrievalBullet(surfaced.content)
+    expect(followUpPrompt).toContain('SURFACED THIS SESSION')
+    expect(followUpPrompt).toContain(expectedBullet)
+    expect(openingBlock).toContain(expectedBullet) // same line both turns
+    expect(followUpPrompt).not.toContain('RELATED MATERIAL')
   })
 })
