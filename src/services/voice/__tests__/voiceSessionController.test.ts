@@ -200,6 +200,31 @@ describe('VoiceSessionController', () => {
     expect(log.some((e) => e.phase === 'voice.utterance.embedded')).toBe(true)
   })
 
+  it('reuses a precomputed embedding (Phase 10B) instead of calling Gemini again', async () => {
+    const { deps, embedText, updateUtteranceEmbedding } = makeDeps()
+    const controller = createVoiceSessionController(deps)
+    await controller.startSession({ anchorEdgeId: null, boardSnapshot: emptySnapshot })
+
+    const precomputed = Array.from({ length: 3072 }, () => 0.5)
+    await controller.recordUtterance({
+      speaker: 'user',
+      text: 'already embedded inline',
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      embedding: precomputed,
+    })
+
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // No second Gemini call; the row write uses the inline vector.
+    expect(embedText).not.toHaveBeenCalled()
+    expect(updateUtteranceEmbedding).toHaveBeenCalledWith(expect.any(String), precomputed)
+    const log = controller.getProcessingLog()
+    const embedded = log.find((e) => e.phase === 'voice.utterance.embedded')
+    expect(embedded?.detail?.reusedInlineEmbed).toBe(true)
+  })
+
   it('logs an embedding_failed event when the Gemini call rejects', async () => {
     const { deps } = makeDeps({
       embedText: vi.fn().mockRejectedValue(new Error('quota exceeded')),

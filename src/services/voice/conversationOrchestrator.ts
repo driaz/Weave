@@ -36,6 +36,14 @@ export interface RunConversationTurnInput {
    * Follow-up turns omit it and let the orchestrator assemble as before.
    */
   systemPrompt?: string
+  /**
+   * Phase 10B follow-up retrieval block. Threaded per-turn (it changes every
+   * turn, unlike the fixed connectionContext / nodeContent) into the
+   * orchestrator's own buildSystemPrompt call. Ignored when `systemPrompt` is
+   * provided (opening turns pre-fold their own relatedMaterial upstream).
+   * Absent / empty → the section is omitted, exactly like Phase 9.
+   */
+  relatedMaterial?: string
 }
 
 /**
@@ -54,7 +62,7 @@ export interface RunConversationTurnInput {
 export async function* runConversationTurn(
   input: RunConversationTurnInput,
 ): AsyncGenerator<string, void, unknown> {
-  const { connectionContext, nodeContent, messages, signal, systemPrompt } = input
+  const { connectionContext, nodeContent, messages, signal, systemPrompt, relatedMaterial } = input
 
   let system: string
   if (systemPrompt && systemPrompt.length > 0) {
@@ -67,6 +75,7 @@ export async function* runConversationTurn(
       cadence,
       connectionContext,
       nodeContent,
+      relatedMaterial,
     })
   }
 

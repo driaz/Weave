@@ -503,10 +503,10 @@ export type Database = {
       match_retrieval_context: {
         Args: {
           p_board_id: string
-          p_current_session_id: string
           p_excluded_node_ids: string[]
-          p_match_count: number
+          p_live_node_ids: string[]
           p_match_threshold: number
+          p_total_cap: number
           query_embedding: unknown
         }
         Returns: {

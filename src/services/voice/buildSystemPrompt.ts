@@ -18,6 +18,17 @@
  *                          on follow-up turns and when no snapshot exists.
  * @param connectionContext Edge metadata: type, strength, explanation.
  * @param nodeContent       Full analyzed text of both connected nodes.
+ * @param relatedMaterial   Phase 10B per-turn retrieval block. When present, a
+ *                          RELATED MATERIAL section is appended AFTER node
+ *                          content (a trailing parent section, distinct from
+ *                          recentThinking) — the widening corpus retrieved for
+ *                          THIS edge/turn. Already self-framed by
+ *                          `buildRelatedMaterial`; passed through untouched.
+ *                          Omitted entirely when absent or empty, exactly like
+ *                          the empty-snapshot path for recentThinking — never
+ *                          breaks a turn. Changes per turn (unlike the fixed
+ *                          connection/node sections), so it is threaded as a
+ *                          per-turn argument, not a session option.
  */
 export function buildSystemPrompt(input: {
   role: string
@@ -25,8 +36,9 @@ export function buildSystemPrompt(input: {
   recentThinking?: string
   connectionContext: string
   nodeContent: string
+  relatedMaterial?: string
 }): string {
-  const { role, cadence, recentThinking, connectionContext, nodeContent } = input
+  const { role, cadence, recentThinking, connectionContext, nodeContent, relatedMaterial } = input
 
   const sections: string[] = [role, '---', cadence]
 
@@ -49,6 +61,10 @@ export function buildSystemPrompt(input: {
     '',
     nodeContent,
   )
+
+  if (relatedMaterial && relatedMaterial.trim().length > 0) {
+    sections.push('---', 'RELATED MATERIAL', relatedMaterial)
+  }
 
   return sections.join('\n\n')
 }
