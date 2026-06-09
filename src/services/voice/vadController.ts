@@ -288,8 +288,10 @@ export class VadController {
   // filter keeps an item from re-retrieving; this keeps its source material
   // from evaporating after its one RELATED MATERIAL appearance (the QA failure:
   // the model kept its own commentary but lost the material behind it). Keyed
-  // by ref_id; admission happens where surfacedRefIds is recorded, so the two
-  // structures stay in lockstep. Dies with the session — no persistence.
+  // by namespaced identity (`workingMemoryKey`: refType:sourceBoard:refId —
+  // bare client node ids collide across boards); admission happens where
+  // surfacedRefIds is recorded, so the two structures stay in lockstep. Dies
+  // with the session — no persistence.
   private readonly workingMemory = new Map<string, WorkingMemoryEntry>()
   // Monotonic ordinal for WorkingMemoryEntry.surfacedAtTurn (eviction order
   // under the overflow guard). Incremented once per retrieval-bearing turn.
@@ -646,6 +648,7 @@ export class VadController {
       admitToWorkingMemory(
         this.workingMemory,
         novel,
+        this.opts.boardId,
         this.retrievalTurnOrdinal,
         (info) =>
           this.logger.event('voice.context.working_memory_overflow', 'degraded', {

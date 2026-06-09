@@ -195,6 +195,10 @@ export async function fetchRetrievalContext(
  * covers the NODE corpus (`node_id <> all(...)`), so it can't suppress an
  * already-surfaced UTTERANCE. A post-RPC ref_id filter covers both corpora
  * uniformly.
+ *
+ * Bare-refId identity is correct while retrieval is single-board: the
+ * candidate set can't contain a cross-board collision. #5 cross-board must
+ * move this to namespaced identity (`workingMemoryKey`).
  */
 export function filterUnseen(
   rows: RetrievalRow[],
@@ -254,11 +258,29 @@ export type WorkingMemoryRefType = 'node' | 'voice_session' | 'edge' | 'cross_bo
 export interface WorkingMemoryEntry {
   refType: WorkingMemoryRefType
   refId: string
+  /** Board the entry came from. Identity/ledger metadata — client node ids
+   * are only unique within one board, so cross-board entries need it to not
+   * collide. NOT rendered into the prompt today. */
+  sourceBoard: string
   /** The formatted bullet, post-truncate — the same 600-char-budget line
    * RELATED MATERIAL rendered when this entry surfaced (`formatRetrievalBullet`). */
   content: string
   /** Turn ordinal at admission; orders eviction under the overflow guard. */
   surfacedAtTurn: number
+}
+
+/**
+ * The store's Map key: namespaced identity. Bare refIds are board-scoped
+ * client node ids and collide across boards (and across future refTypes), so
+ * the key carries all three identity parts. Single construction point — no
+ * inline template strings elsewhere.
+ */
+export function workingMemoryKey(
+  refType: WorkingMemoryRefType,
+  sourceBoard: string,
+  refId: string,
+): string {
+  return `${refType}:${sourceBoard}:${refId}`
 }
 
 /**
@@ -282,6 +304,7 @@ export interface WorkingMemoryOverflowInfo {
 export interface WorkingMemoryAdmitInfo {
   refId: string
   refType: WorkingMemoryRefType
+  sourceBoard: string
   surfacedAtTurn: number
   /** Chars of this entry's stored bullet. */
   chars: number
@@ -309,6 +332,7 @@ export interface WorkingMemoryAdmitInfo {
 export function admitToWorkingMemory(
   memory: Map<string, WorkingMemoryEntry>,
   rows: RetrievalRow[],
+  sourceBoard: string,
   surfacedAtTurn: number,
   onOverflow?: (info: WorkingMemoryOverflowInfo) => void,
   onAdmit?: (info: WorkingMemoryAdmitInfo) => void,
@@ -319,6 +343,7 @@ export function admitToWorkingMemory(
       // board node. A future corpus must add its refType and renderer.
       refType: 'node',
       refId: row.ref_id,
+      sourceBoard,
       content: formatRetrievalBullet(row.content),
       surfacedAtTurn,
     }
@@ -337,16 +362,17 @@ export function admitToWorkingMemory(
       )
       for (const victim of byAge) {
         if (totalChars <= WORKING_MEMORY_MAX_CHARS) break
-        memory.delete(victim.refId)
+        memory.delete(workingMemoryKey(victim.refType, victim.sourceBoard, victim.refId))
         totalChars -= victim.content.length
       }
     }
 
-    memory.set(entry.refId, entry)
+    memory.set(workingMemoryKey(entry.refType, entry.sourceBoard, entry.refId), entry)
     // totalChars already reflects this entry (computed pre-set, post-eviction).
     onAdmit?.({
       refId: entry.refId,
       refType: entry.refType,
+      sourceBoard: entry.sourceBoard,
       surfacedAtTurn: entry.surfacedAtTurn,
       chars: entry.content.length,
       storeSizeAfterChars: totalChars,
