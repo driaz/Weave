@@ -544,6 +544,10 @@ export function EdgeDetailPopup({
       // connection list (graph-adjacency exclusions).
       anchorConnection: connection,
       connections: boardConnections,
+      // Phase 10B retrieval v1: live board membership for orphan-drop (migration
+      // 034). The FULL node list (isolated nodes included), bare ids to match
+      // weave_embeddings.node_id — connections alone would miss unconnected nodes.
+      liveNodeIds: boardNodes.map((n) => n.id.replace(/^node-/, '')),
       boardSnapshot: buildBoardSnapshot({
         nodes: boardNodes,
         connections: boardConnections,

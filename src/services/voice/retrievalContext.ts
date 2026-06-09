@@ -134,17 +134,24 @@ export interface FetchRetrievalParams {
   boardId: string
   /** Anchor endpoints + graph-adjacent nodes, from `computeRetrievalExclusions`. */
   excludedNodeIds: string[]
-  /** Utterances from this session are excluded by the RPC. Null disables that filter. */
-  currentSessionId: string | null
+  /**
+   * Live board membership (bare client node ids) for orphan-drop. The RPC keeps
+   * only rows whose node_id is in this set, dropping weave_embeddings rows whose
+   * source node was deleted but never reconciled. Same in-memory-graph source as
+   * `excludedNodeIds` (migration 034, Option B). Null DISABLES orphan-drop (the
+   * RPC's null-guard) — a safe degrade if a caller can't supply membership,
+   * never the "drop everything" an empty array would mean.
+   */
+  liveNodeIds: string[] | null
   floor?: number
   k?: number
 }
 
 /**
- * Call the 10A `match_retrieval_context` RPC. The query vector is serialized
- * to the pgvector text form ("[...]") the halfvec column expects, identical to
- * how stored embeddings are written. Returns [] on any error — retrieval is
- * additive and must never break a voice turn.
+ * Call the `match_retrieval_context` RPC (migration 034, node-only v1). The
+ * query vector is serialized to the pgvector text form ("[...]") the halfvec
+ * column expects, identical to how stored embeddings are written. Returns [] on
+ * any error — retrieval is additive and must never break a voice turn.
  */
 export async function fetchRetrievalContext(
   client: SupabaseClient<Database>,
@@ -155,11 +162,11 @@ export async function fetchRetrievalContext(
     query_embedding: JSON.stringify(params.queryVector) as unknown as never,
     p_board_id: params.boardId,
     p_match_threshold: params.floor ?? RETRIEVAL_FLOOR,
-    p_match_count: params.k ?? RETRIEVAL_K,
+    p_total_cap: params.k ?? RETRIEVAL_K,
     p_excluded_node_ids: params.excludedNodeIds,
-    // RPC tolerates null (disables the prior-session filter); the generated
-    // Args type is non-nullable, so cast.
-    p_current_session_id: (params.currentSessionId ?? null) as unknown as string,
+    // RPC tolerates null (disables orphan-drop); the generated Args type is
+    // non-nullable, so cast.
+    p_live_node_ids: (params.liveNodeIds ?? null) as unknown as string[],
   })
 
   if (error || !data) return []

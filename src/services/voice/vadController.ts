@@ -175,6 +175,14 @@ export interface VadControllerOptions {
    * themselves are excluded.
    */
   connections?: Connection[]
+  /**
+   * Phase 10B retrieval v1: live board membership (bare client node ids) for
+   * orphan-drop (migration 034). The RPC keeps only embedding rows whose node is
+   * in this set. Sourced from the same in-memory graph as `connections`, but as
+   * the FULL node list (isolated nodes included) — connections alone would miss
+   * unconnected-but-live nodes. Absent → orphan-drop disabled (safe degrade).
+   */
+  liveNodeIds?: string[]
 }
 
 /**
@@ -560,7 +568,9 @@ export class VadController {
       queryVector,
       boardId: this.opts.boardId,
       excludedNodeIds,
-      currentSessionId: voiceSessionController.getSessionId(),
+      // Live board membership for orphan-drop. Absent → null → orphan-drop
+      // disabled (migration 034), never an empty array (which would drop all).
+      liveNodeIds: this.opts.liveNodeIds ?? null,
     })
 
     const novel = filterUnseen(rows, this.surfacedRefIds)

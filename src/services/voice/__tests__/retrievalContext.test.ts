@@ -136,32 +136,32 @@ describe('fetchRetrievalContext', () => {
       queryVector: [0.1, 0.2],
       boardId: 'board-1',
       excludedNodeIds: ['a', 'b'],
-      currentSessionId: 'sess-1',
+      liveNodeIds: ['a', 'b', 'c'],
     })
     expect(out).toHaveLength(1)
     expect(rpc).toHaveBeenCalledWith('match_retrieval_context', {
       query_embedding: '[0.1,0.2]',
       p_board_id: 'board-1',
       p_match_threshold: RETRIEVAL_FLOOR,
-      p_match_count: RETRIEVAL_K,
+      p_total_cap: RETRIEVAL_K,
       p_excluded_node_ids: ['a', 'b'],
-      p_current_session_id: 'sess-1',
+      p_live_node_ids: ['a', 'b', 'c'],
     })
   })
 
-  it('passes null session id through (disables prior-session filter)', async () => {
+  it('passes null live node ids through (disables orphan-drop)', async () => {
     const rpc = vi.fn(async () => ({ data: [], error: null }))
     const client = { rpc } as never
     await fetchRetrievalContext(client, {
       queryVector: [0.1],
       boardId: 'b',
       excludedNodeIds: [],
-      currentSessionId: null,
+      liveNodeIds: null,
     })
     const args = (rpc.mock.calls[0] as unknown[])[1] as {
-      p_current_session_id: unknown
+      p_live_node_ids: unknown
     }
-    expect(args.p_current_session_id).toBeNull()
+    expect(args.p_live_node_ids).toBeNull()
   })
 
   it('returns [] on RPC error (never breaks the turn)', async () => {
@@ -171,7 +171,7 @@ describe('fetchRetrievalContext', () => {
       queryVector: [0.1],
       boardId: 'b',
       excludedNodeIds: [],
-      currentSessionId: 's',
+      liveNodeIds: [],
     })
     expect(out).toEqual([])
   })
