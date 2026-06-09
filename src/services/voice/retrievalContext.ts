@@ -26,15 +26,15 @@ import type { Connection } from '../../api/claude'
 import { connectionIdentityFields } from '../../utils/connectionIdentity'
 
 /**
- * Similarity floor and k-cap passed to the RPC. Deliberately conservative /
- * high so the related-material section is USUALLY EMPTY and only fires on
- * strong hits — the section is widening context, not a default. Tune by feel
- * once live voice sessions produce a real similarity distribution.
+ * Similarity floor and k-cap for retrieval. The floor is now applied
+ * CLIENT-SIDE (see `fetchRetrievalContext` / the consumer in vadController):
+ * the RPC is called with threshold 0 and returns the full ranked band, then we
+ * log the band and cut at this floor — so what we exclude stays observable and
+ * tunable by eye. The k-cap still lives in the RPC (`p_total_cap`).
  */
-// 0.4: diagnostic floor below the observed score band; tune up once the live
-// distribution is confirmed. NOT a considered production value — it was lowered
-// from 0.7 to let sub-band nodes surface so retrieval is observable end-to-end.
-export const RETRIEVAL_FLOOR = 0.4
+// 0.5: surfaced material must clear this; raise if weak connections grate, lower
+// if too sparse. Tuned by ear, not derived.
+export const RETRIEVAL_FLOOR = 0.5
 export const RETRIEVAL_K = 6
 
 /**
@@ -146,7 +146,6 @@ export interface FetchRetrievalParams {
    * never the "drop everything" an empty array would mean.
    */
   liveNodeIds: string[] | null
-  floor?: number
   k?: number
 }
 
@@ -155,6 +154,12 @@ export interface FetchRetrievalParams {
  * query vector is serialized to the pgvector text form ("[...]") the halfvec
  * column expects, identical to how stored embeddings are written. Returns [] on
  * any error — retrieval is additive and must never break a voice turn.
+ *
+ * The RPC is called with `p_match_threshold => 0` so it returns the FULL ranked
+ * band; the similarity floor is applied client-side by the consumer (after
+ * logging the band) so what we exclude stays observable. Cheap because boards
+ * are small (~17 nodes) — revisit the full-band transfer if a board ever grows
+ * large. The k-cap (`p_total_cap`) still bounds the band server-side.
  */
 export async function fetchRetrievalContext(
   client: SupabaseClient<Database>,
@@ -164,7 +169,8 @@ export async function fetchRetrievalContext(
     // halfvec arg: same stringified-array form as the stored column writes.
     query_embedding: JSON.stringify(params.queryVector) as unknown as never,
     p_board_id: params.boardId,
-    p_match_threshold: params.floor ?? RETRIEVAL_FLOOR,
+    // 0 → full band; floor applied client-side (see consumer in vadController).
+    p_match_threshold: 0,
     p_total_cap: params.k ?? RETRIEVAL_K,
     p_excluded_node_ids: params.excludedNodeIds,
     // RPC tolerates null (disables orphan-drop); the generated Args type is
@@ -201,18 +207,20 @@ function truncate(text: string): string {
 }
 
 /**
- * Constant framing for the related-material section. Subordinates it to the
- * current edge, licenses natural cross-canvas reference when the link is real,
- * and forbids list-recitation / confabulation from weak hits.
+ * Constant framing for the related-material section. Directs EXPLICIT, specific
+ * surfacing — name the actual piece so the listener recognizes the thread across
+ * their own collection — while guarding against listing, forcing, or
+ * over-surfacing weak hits.
  */
 export const RELATED_MATERIAL_FRAMING =
-  'Material from elsewhere on the canvas, and from your own earlier thinking, ' +
-  'that may bear on the edge above. The edge is still the subject — this is ' +
-  'widening context, not a new topic. Where a genuine connection exists you ' +
-  'may reach for it naturally, as a person would notice something across the ' +
-  'room. Do NOT recite this as a list, name it as "related material", or ' +
-  'manufacture a link that isn\'t really there. If nothing here truly ' +
-  'connects, let it go unsaid.'
+  'When something here genuinely connects to the edge, name it explicitly and ' +
+  'specifically — point to the actual piece (e.g. \'this connects to the gomi ' +
+  'post about courage being the thing that expands or shrinks your life\') so ' +
+  'the listener recognizes the thread across their own collection. Surface the ' +
+  'connection out loud; the value is the listener seeing links they\'d ' +
+  'forgotten they made. But reach for it only where the connection is real and ' +
+  'earned — one or two at most, never a list, never a forced link. If nothing ' +
+  'here truly connects, let it go unsaid.'
 
 const CURATED_HEADER = 'Things you saved that relate to this edge:'
 const PRIOR_USER_HEADER =

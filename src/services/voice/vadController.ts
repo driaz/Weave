@@ -57,6 +57,7 @@ import {
   fetchRetrievalContext,
   filterUnseen,
   lookupEdgeQueryVector,
+  RETRIEVAL_FLOOR,
 } from './retrievalContext'
 
 const WORKLET_URL = '/voice/vad-processor.js'
@@ -564,6 +565,8 @@ export class VadController {
       conn.to,
     ])
 
+    // RPC returns the FULL ranked band (threshold 0); the floor is applied here,
+    // client-side, so we can log the whole curve before cutting.
     const rows = await fetchRetrievalContext(client, {
       queryVector,
       boardId: this.opts.boardId,
@@ -573,7 +576,31 @@ export class VadController {
       liveNodeIds: this.opts.liveNodeIds ?? null,
     })
 
-    const novel = filterUnseen(rows, this.surfacedRefIds)
+    // Diagnostic: the full returned band (scores) BEFORE the floor cut — so the
+    // whole distribution is visible, not just survivors. Tune RETRIEVAL_FLOOR by
+    // eye against this.
+    const state = this.store.getState()
+    this.logger.event(
+      'voice.retrieval.band',
+      'success',
+      {
+        floor: RETRIEVAL_FLOOR,
+        excludedCount: excludedNodeIds.length,
+        liveNodeCount: this.opts.liveNodeIds?.length ?? null,
+        returned: rows.length,
+        aboveFloor: rows.filter((r) => r.similarity >= RETRIEVAL_FLOOR).length,
+        band: rows.map((r) => ({
+          ref_id: r.ref_id,
+          similarity: Number(r.similarity.toFixed(4)),
+        })),
+      },
+      { correlationId: state.turnId ?? undefined, parentCorrelationId: state.sessionId ?? undefined },
+    )
+
+    // Apply the floor client-side, after logging, before novelty filtering.
+    const floored = rows.filter((r) => r.similarity >= RETRIEVAL_FLOOR)
+
+    const novel = filterUnseen(floored, this.surfacedRefIds)
     const block = buildRelatedMaterial(novel)
     if (block) {
       // The whole block is injected this turn → every novel row has surfaced.

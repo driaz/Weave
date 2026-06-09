@@ -9,7 +9,6 @@ import {
   lookupEdgeQueryVector,
   parseStoredEmbedding,
   RELATED_MATERIAL_FRAMING,
-  RETRIEVAL_FLOOR,
   RETRIEVAL_K,
   type RetrievalRow,
 } from '../retrievalContext'
@@ -129,7 +128,7 @@ describe('lookupEdgeQueryVector', () => {
 })
 
 describe('fetchRetrievalContext', () => {
-  it('passes the RPC signature and serializes the query vector', async () => {
+  it('calls the RPC with threshold 0 (full band; floor applied client-side)', async () => {
     const rpc = vi.fn(async () => ({ data: [row({})], error: null }))
     const client = { rpc } as never
     const out = await fetchRetrievalContext(client, {
@@ -142,7 +141,8 @@ describe('fetchRetrievalContext', () => {
     expect(rpc).toHaveBeenCalledWith('match_retrieval_context', {
       query_embedding: '[0.1,0.2]',
       p_board_id: 'board-1',
-      p_match_threshold: RETRIEVAL_FLOOR,
+      // RPC threshold is always 0 now — the band is floored client-side.
+      p_match_threshold: 0,
       p_total_cap: RETRIEVAL_K,
       p_excluded_node_ids: ['a', 'b'],
       p_live_node_ids: ['a', 'b', 'c'],
