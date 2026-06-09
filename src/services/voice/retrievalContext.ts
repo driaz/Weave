@@ -47,8 +47,10 @@ export const BLEND_CURRENT = 0.65
 export const BLEND_PRIOR = 0.35
 
 /** Per-item character cap so a long node summary / utterance can't bloat the
- * prompt. Blunt; tighten if the section reads long. */
-const ITEM_MAX_CHARS = 300
+ * prompt. 600: tuned by ear — the 2026-06-09 read-path audit found stored
+ * summaries run 200–1400 chars and the server-video write path caps at 500,
+ * so 600 passes server-written content through whole. */
+const ITEM_MAX_CHARS = 600
 
 /**
  * One ranked retrieval hit, mirroring the RPC's `returns table` columns
@@ -201,9 +203,33 @@ export function filterUnseen(
   return rows.filter((r) => !seen.has(r.ref_id))
 }
 
+/**
+ * Clip to ITEM_MAX_CHARS, preferring clean break points: end of the last full
+ * sentence within budget (only if it lands past the halfway point — earlier
+ * than that sacrifices too much content for tidiness), else the last word
+ * boundary, else a hard substring. "…" is appended only when content was
+ * actually clipped.
+ */
 function truncate(text: string): string {
   const t = text.trim()
-  return t.length > ITEM_MAX_CHARS ? `${t.slice(0, ITEM_MAX_CHARS).trimEnd()}…` : t
+  if (t.length <= ITEM_MAX_CHARS) return t
+
+  const clipped = t.slice(0, ITEM_MAX_CHARS)
+  const sentenceEnd = Math.max(
+    clipped.lastIndexOf('.'),
+    clipped.lastIndexOf('!'),
+    clipped.lastIndexOf('?'),
+  )
+  if (sentenceEnd > ITEM_MAX_CHARS / 2) {
+    return `${clipped.slice(0, sentenceEnd + 1)}…`
+  }
+
+  const lastSpace = Math.max(clipped.lastIndexOf(' '), clipped.lastIndexOf('\n'))
+  if (lastSpace > 0) {
+    return `${clipped.slice(0, lastSpace).trimEnd()}…`
+  }
+
+  return `${clipped.trimEnd()}…`
 }
 
 /**

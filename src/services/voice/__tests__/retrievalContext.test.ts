@@ -89,11 +89,39 @@ describe('buildRelatedMaterial', () => {
     expect(out).toMatch(/go further[\s\S]*a drawn connection/)
   })
 
-  it('truncates very long content', () => {
-    const long = 'x'.repeat(500)
+  it('leaves under-budget content unchanged, no ellipsis', () => {
+    const short = 'A complete thought that fits well within the budget.'
+    const out = buildRelatedMaterial([row({ content: short })])!
+    expect(out).toContain(`- ${short}`)
+    expect(out).not.toContain('…')
+  })
+
+  it('clips over-budget content at the last sentence end within budget', () => {
+    // Sentences of 80 chars each: 8 fit fully in 600 (640 > 600 → clip lands
+    // mid-sentence-8, last terminator is sentence 7's at index 559 > 300).
+    const sentence = `Sentence about meaning${'x'.repeat(57)}.`
+    const long = Array.from({ length: 10 }, () => sentence).join('')
     const out = buildRelatedMaterial([row({ content: long })])!
-    expect(out).toContain('…')
-    expect(out).not.toContain('x'.repeat(400))
+    const line = out.split('\n').find((l) => l.startsWith('- '))!
+    expect(line.endsWith('.…')).toBe(true)
+    expect(line.length).toBeLessThanOrEqual(2 + 600 + 1) // "- " + budget + "…"
+    expect(line).not.toContain(sentence.repeat(8))
+  })
+
+  it('clips at a word boundary when no sentence end is in budget', () => {
+    const long = Array.from({ length: 100 }, (_, i) => `word${i}`).join(' ')
+    const out = buildRelatedMaterial([row({ content: long })])!
+    const line = out.split('\n').find((l) => l.startsWith('- '))!
+    expect(line.endsWith('…')).toBe(true)
+    // No mid-word cut: everything before the ellipsis is whole words.
+    expect(line.slice(2, -1).split(' ').every((w) => /^word\d+$/.test(w))).toBe(true)
+  })
+
+  it('hard-clips unbreakable content (no sentence or word boundary)', () => {
+    const long = 'x'.repeat(700)
+    const out = buildRelatedMaterial([row({ content: long })])!
+    expect(out).toContain(`- ${'x'.repeat(600)}…`)
+    expect(out).not.toContain('x'.repeat(601))
   })
 })
 
