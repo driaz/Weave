@@ -24,6 +24,7 @@
 
 import roleText from '../../../prompts/role.txt?raw'
 import cadenceOpeningText from '../../../prompts/cadence-opening.txt?raw'
+import cadenceFollowupText from '../../../prompts/cadence-followup.txt?raw'
 import { PcmMultiplexer, type MuxEvent } from './pcmMultiplexer'
 import {
   runConversationTurn,
@@ -52,12 +53,16 @@ import type { Connection } from '../../api/claude'
 import { embedText } from '../embeddingService'
 import { computeRetrievalExclusions } from '../../utils/retrievalExclusions'
 import {
+  admitToWorkingMemory,
   blendQueryVectors,
   buildRelatedMaterial,
+  buildWorkingMemoryBlock,
   fetchRetrievalContext,
   filterUnseen,
   lookupEdgeQueryVector,
   RETRIEVAL_FLOOR,
+  WORKING_MEMORY_MAX_CHARS,
+  type WorkingMemoryEntry,
 } from './retrievalContext'
 
 const WORKLET_URL = '/voice/vad-processor.js'
@@ -278,6 +283,19 @@ export class VadController {
   // follow-up has been embedded — `blendQueryVectors` then weights the current
   // turn alone (the N-1-not-ready / first-follow-up fallback).
   private lastUserQueryEmbedding: number[] | null = null
+  // Working memory: everything retrieval has surfaced this session, rendered
+  // into every SUBSEQUENT turn's prompt as SURFACED THIS SESSION. The novelty
+  // filter keeps an item from re-retrieving; this keeps its source material
+  // from evaporating after its one RELATED MATERIAL appearance (the QA failure:
+  // the model kept its own commentary but lost the material behind it). Keyed
+  // by namespaced identity (`workingMemoryKey`: refType:sourceBoard:refId —
+  // bare client node ids collide across boards); admission happens where
+  // surfacedRefIds is recorded, so the two structures stay in lockstep. Dies
+  // with the session — no persistence.
+  private readonly workingMemory = new Map<string, WorkingMemoryEntry>()
+  // Monotonic ordinal for WorkingMemoryEntry.surfacedAtTurn (eviction order
+  // under the overflow guard). Incremented once per retrieval-bearing turn.
+  private retrievalTurnOrdinal = 0
 
   constructor(opts: VadControllerOptions) {
     this.opts = opts
@@ -484,6 +502,14 @@ export class VadController {
     // Phase 9 snapshot fetch and Phase 10B retrieval run together so the added
     // latency is max(snapshot, retrieval), not their sum. Both are best-effort:
     // either failing degrades to its empty path, never blocks the opening turn.
+    // Working-memory snapshot for THIS turn's prompt, taken before retrieval
+    // runs (and admits) — surfaced material starts appearing the turn AFTER
+    // it surfaces. Always empty on a fresh session's opening; wired anyway so
+    // the two assembly paths stay uniform (and a retried opening after a
+    // surfacing turn renders correctly).
+    const workingMemoryEntries = [...this.workingMemory.values()]
+    const workingMemoryBlock = buildWorkingMemoryBlock(workingMemoryEntries)
+
     const fetchStartedAt = performance.now()
     const [snapshot, relatedMaterial] = await Promise.all([
       getLatestProfileSnapshot(requireClient()).catch((err) => {
@@ -504,6 +530,7 @@ export class VadController {
       connectionContext: this.opts.connectionContext,
       nodeContent: this.opts.nodeContent,
       relatedMaterial: relatedMaterial ?? undefined,
+      workingMemory: workingMemoryBlock ?? undefined,
     })
 
     this.logger.event(
@@ -518,6 +545,15 @@ export class VadController {
       },
       correlationIds,
     )
+    this.emitContextManifest({
+      isOpening: true,
+      cadenceChars: cadenceOpeningText.length,
+      recentThinking: snapshot?.narrative ?? null,
+      relatedMaterial,
+      workingMemory: workingMemoryBlock,
+      workingMemoryEntryCount: workingMemoryEntries.length,
+      correlationIds,
+    })
     void this.runOpeningTurn(assembledSystemPrompt)
   }
 
@@ -605,8 +641,65 @@ export class VadController {
     if (block) {
       // The whole block is injected this turn → every novel row has surfaced.
       for (const r of novel) this.surfacedRefIds.add(r.ref_id)
+      // ...and enters working memory for every subsequent turn's prompt
+      // (uniform for opening and follow-up turns — this shared tail is the
+      // single admission point).
+      this.retrievalTurnOrdinal += 1
+      admitToWorkingMemory(
+        this.workingMemory,
+        novel,
+        this.opts.boardId,
+        this.retrievalTurnOrdinal,
+        (info) =>
+          this.logger.event('voice.context.working_memory_overflow', 'degraded', {
+            ...info,
+            maxChars: WORKING_MEMORY_MAX_CHARS,
+          }),
+        (info) =>
+          this.logger.event('voice.context.working_memory_admit', 'success', { ...info }),
+      )
     }
     return block
+  }
+
+  /**
+   * Per-turn context manifest: presence + char length of every block in the
+   * assembled system prompt — never the bodies. Emitted on BOTH assembly
+   * paths; before this, follow-up turns logged nothing about prompt assembly,
+   * so a claim like "the model said it had no board access" couldn't be
+   * checked against what was actually sent.
+   */
+  private emitContextManifest(args: {
+    isOpening: boolean
+    cadenceChars: number
+    recentThinking: string | null
+    relatedMaterial: string | null
+    workingMemory: string | null
+    workingMemoryEntryCount: number
+    correlationIds: { correlationId?: string; parentCorrelationId?: string }
+  }): void {
+    const block = (s: string | null | undefined): { present: boolean; chars: number } => ({
+      present: Boolean(s && s.trim().length > 0),
+      chars: s?.length ?? 0,
+    })
+    this.logger.event(
+      'voice.turn.context_manifest',
+      'success',
+      {
+        isOpening: args.isOpening,
+        role: { present: true, chars: roleText.length },
+        cadence: { present: true, chars: args.cadenceChars },
+        recentThinking: block(args.recentThinking),
+        connectionContext: block(this.opts.connectionContext),
+        nodeContent: block(this.opts.nodeContent),
+        relatedMaterial: block(args.relatedMaterial),
+        workingMemory: {
+          ...block(args.workingMemory),
+          entries: args.workingMemoryEntryCount,
+        },
+      },
+      args.correlationIds,
+    )
   }
 
   // ------- setup -------
@@ -1060,6 +1153,14 @@ export class VadController {
     const embedMs = Math.round(performance.now() - embedStartedAt)
     if (abort.signal.aborted) return
 
+    // Working-memory snapshot for THIS turn's prompt, taken before retrieval
+    // runs — this turn's new survivors enter memory for the NEXT turn, never
+    // double-render alongside their own RELATED MATERIAL appearance. Computed
+    // outside the embed guard: prior surfaced material renders even when this
+    // turn's embed failed and retrieval is skipped.
+    const workingMemoryEntries = [...this.workingMemory.values()]
+    const workingMemoryBlock = buildWorkingMemoryBlock(workingMemoryEntries)
+
     let relatedMaterial: string | null = null
     if (userEmbedding) {
       // Instrumentation (10A follow-up): BARE embed latency, captured before
@@ -1121,6 +1222,16 @@ export class VadController {
     }
     this.messages.push({ role: 'user', content: transcript })
 
+    this.emitContextManifest({
+      isOpening: false,
+      cadenceChars: cadenceFollowupText.length,
+      recentThinking: null, // opening-only by design
+      relatedMaterial,
+      workingMemory: workingMemoryBlock,
+      workingMemoryEntryCount: workingMemoryEntries.length,
+      correlationIds,
+    })
+
     try {
       await this.runSentenceChunkedSpeech({
         turnId,
@@ -1129,6 +1240,7 @@ export class VadController {
         isOpening: false,
         correlationIds,
         relatedMaterial: relatedMaterial ?? undefined,
+        workingMemory: workingMemoryBlock ?? undefined,
       })
     } catch (err) {
       if (abort.signal.aborted) return
@@ -1255,9 +1367,23 @@ export class VadController {
      * `systemPrompt` is set.
      */
     relatedMaterial?: string
+    /**
+     * Session working memory (SURFACED THIS SESSION). Same threading contract
+     * as `relatedMaterial`: follow-up turns pass it into the orchestrator's
+     * rebuild; opening turns pre-fold it into `systemPrompt` upstream.
+     */
+    workingMemory?: string
   }): Promise<void> {
-    const { turnId, abort, claudeMessages, isOpening, correlationIds, systemPrompt, relatedMaterial } =
-      args
+    const {
+      turnId,
+      abort,
+      claudeMessages,
+      isOpening,
+      correlationIds,
+      systemPrompt,
+      relatedMaterial,
+      workingMemory,
+    } = args
 
     const segmenter = createSentenceSegmenter()
     const pending: string[] = []
@@ -1674,6 +1800,7 @@ export class VadController {
         signal: abort.signal,
         systemPrompt,
         relatedMaterial,
+        workingMemory,
       })) {
         if (abort.signal.aborted) break
         assistantText += chunk
