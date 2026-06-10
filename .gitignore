@@ -35,3 +35,6 @@ deno.lock
 # Supabase CLI temp files
 supabase/.temp/
 .claude/
+
+# Local scratch output (session summary probes, etc.)
+tmp/
