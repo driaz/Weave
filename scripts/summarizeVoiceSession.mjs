@@ -28,6 +28,7 @@ const env = Object.fromEntries(
 )
 
 const DB_URL = process.env.WEAVE_PROD_RO_DATABASE_URL || env.WEAVE_PROD_RO_DATABASE_URL
+// VITE_ fallback is a workaround for the client-bundled key (backlog #6); goes away when keys route through Fly.
 const API_KEY =
   process.env.ANTHROPIC_API_KEY ||
   env.ANTHROPIC_API_KEY ||
