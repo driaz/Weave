@@ -72,3 +72,9 @@ Form: prose paragraphs, no headers, no bullets. One paragraph per deposit,
 plus a final short paragraph for the open edge (or stating there is none).
 No fixed length — length follows deposit count. No preamble; begin with the
 first deposit.
+
+Output format, exactly: after each deposit paragraph, output a line
+containing only "---" (three hyphens, nothing else on the line). Prefix the
+final open-edge paragraph with "OPEN EDGE: " — or, if no open edge exists,
+end with the single line "OPEN EDGE: none". These markers are mechanical
+delimiters for a parser; they change nothing about what you write.
