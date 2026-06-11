@@ -71,7 +71,7 @@ When bootstrapping a new Supabase project, apply these in order. The pgvector ex
 > **Apply status — 035 (voice deposits schema):**
 >
 > - **Weave-Dev (2026-06-10):** Applied via `supabase db push` (linked ref confirmed dev first). Preflight verified live before writing the migration: `voice_utterances.embedding` is `halfvec(3072)` on dev (matched exactly); prevailing RLS is the four-policy `auth.uid() = user_id` pattern; `weave_readonly` + per-table `readonly_audit_select` policies exist on **prod only** (confirmed via the read-only prod connection), with prod default ACLs auto-granting the role SELECT on new tables — hence the role-existence guard in the migration. Post-apply verification (dummy rows, deleted after): unique `(session_id, generation, ordinal)` rejects duplicates (23505); `type = 'dream'` rejected by the check (23514); the view returns an active row and drops it once `superseded_at` is stamped; RLS enabled on both tables; view confirmed `security_invoker=true`. Types regenerated, `tsc -b` green.
-> - **Weave-Prod:** **NOT applied.** Promote schema-first before merging/deploying any code that writes deposits. On prod the guarded `readonly_audit_select` policies will be created (role exists there).
+> - **Weave-Prod (2026-06-10):** Applied by the owner (schema-first; PR #28 merged the same day, no deployed code writes deposits yet). Verified read-only via the `weave_readonly` connection: both tables and the view exist (0 rows each), and the role-existence guard fired — `readonly_audit_select` created on both new tables alongside the `authenticated` SELECT policies. The RO connection reading the tables also confirms the prod default-ACL SELECT grant end-to-end.
 
 ## Deferred cutovers tracked in migration comments
 
