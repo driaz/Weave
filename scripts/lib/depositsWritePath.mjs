@@ -60,11 +60,28 @@ export function computePromptVersion(promptText) {
 // "OPEN EDGE: none" means no open-edge row — the absence of an edge is not a
 // deposit and must not be embedded into the retrieval space.
 //
-// Fail-loud (throws) on: missing markers, empty bodies, open edge not last,
-// more than one open edge.
+// Zero-delimiter output is valid: single-deposit draws have nothing to
+// separate, so honest thin output may emit no "---" at all (backfill
+// 2026-06-11, 13 of 13 such failures were this shape). The whole text is one
+// deposit, with the trailing OPEN EDGE section still required.
+//
+// Fail-loud (throws) on: speaker-tagged dialogue lines (fabricated
+// continuation — see observation log entry 3), missing open-edge marker,
+// empty bodies, open edge not last, more than one open edge.
 export function parseSummary(raw) {
   const text = raw.trim()
   if (!text) throw new Error('parse: empty summary')
+
+  // Tripwire for the fabricated-continuation failure mode: a summary is
+  // analytical prose and must never contain speaker-tagged dialogue lines.
+  // One observed instance (session 72a855bd) invented a multi-turn dialogue
+  // and summarized it; only an accidental formatting artifact kept it out of
+  // prod. This makes that containment deliberate.
+  if (/^(USER|ASSISTANT):/m.test(text)) {
+    throw new Error(
+      'parse: fabricated dialogue / transcript echo detected — output contains speaker-tagged lines ("USER:"/"ASSISTANT:" at line start); this is not a summary',
+    )
+  }
 
   const segments = []
   let current = []
@@ -78,12 +95,24 @@ export function parseSummary(raw) {
   }
   segments.push(current.join('\n').trim())
 
-  if (segments.length < 2) {
-    throw new Error('parse: no "---" delimiter found — output predates the format footnote or the model ignored it')
+  let deposits
+  let last
+  if (segments.length === 1) {
+    // Zero-delimiter draw: carve the trailing OPEN EDGE section out of the
+    // single block; everything before it is the one deposit.
+    const marker = text.match(/^OPEN EDGE:/m)
+    if (!marker) {
+      throw new Error(`parse: no "${OPEN_EDGE_MARKER}" marker found — every summary ends with an open-edge section (or "${OPEN_EDGE_MARKER} none")`)
+    }
+    deposits = [text.slice(0, marker.index).trim()]
+    last = text.slice(marker.index).trim()
+  } else {
+    deposits = segments.slice(0, -1)
+    last = segments[segments.length - 1]
+    if (!last.startsWith(OPEN_EDGE_MARKER)) {
+      throw new Error(`parse: final segment does not start with "${OPEN_EDGE_MARKER}"`)
+    }
   }
-
-  const last = segments[segments.length - 1]
-  const deposits = segments.slice(0, -1)
 
   for (const [i, seg] of deposits.entries()) {
     if (!seg) throw new Error(`parse: empty deposit body at segment ${i + 1}`)
@@ -92,9 +121,6 @@ export function parseSummary(raw) {
     }
   }
 
-  if (!last.startsWith(OPEN_EDGE_MARKER)) {
-    throw new Error(`parse: final segment does not start with "${OPEN_EDGE_MARKER}"`)
-  }
   const edgeBody = last.slice(OPEN_EDGE_MARKER.length).trim()
   if (!edgeBody) throw new Error('parse: open edge marker present but body is empty')
   if (edgeBody.includes(OPEN_EDGE_MARKER)) {
