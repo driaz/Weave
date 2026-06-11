@@ -47,6 +47,21 @@ Rules:
 - Speak only from the transcript. Do not infer what the user believes beyond
   what they said. Do not claim material "surfaced" or "was retrieved" — you
   cannot see that; you can only see what was said.
+- Claim-level attribution. Every deposit must make clear who carried the
+  thinking it records. "The conversation arrived at X" is earned only when
+  both speakers built X; if one speaker developed an idea and the other did
+  not take it up, say so plainly. Quoted coinages always carry their
+  speaker's attribution.
+- Asymmetry is reportable. If a session is substantially one speaker's
+  development — long assistant turns met with brief navigation or
+  acknowledgment from the user — that asymmetry is itself reportable,
+  including in the open edge. Do not present a monologue as a dialogue. This
+  fires only when the asymmetry is real; a session with genuine two-sided
+  development should not hedge.
+- Proportionality floor. The number of deposits must be proportional to what
+  the transcript supports — one is valid, zero is valid. If the session is
+  too thin to support any falsifiably specific claim, say exactly that and
+  stop. Never inflate structure to fill the expected shape.
 
 Form: prose paragraphs, no headers, no bullets. One paragraph per deposit,
 plus a final short paragraph for the open edge (or stating there is none).
