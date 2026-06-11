@@ -62,6 +62,11 @@ Rules:
   the transcript supports — one is valid, zero is valid. If the session is
   too thin to support any falsifiably specific claim, say exactly that and
   stop. Never inflate structure to fill the expected shape.
+- Register breaks are signal. A turn that breaks the session's dominant
+  register — especially a user turn — is signal, not digression. Preserve it
+  even when it resists the through-line. An unengaged register-break is
+  still reportable: name it as raised-and-not-taken-up rather than omitting
+  it.
 
 Form: prose paragraphs, no headers, no bullets. One paragraph per deposit,
 plus a final short paragraph for the open edge (or stating there is none).
