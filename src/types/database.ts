@@ -210,6 +210,84 @@ export type Database = {
           },
         ]
       }
+      summarization_prompts: {
+        Row: {
+          body: string
+          created_at: string
+          version: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          version: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          version?: string
+        }
+        Relationships: []
+      }
+      voice_session_deposits: {
+        Row: {
+          body: string
+          created_at: string
+          embedding: unknown
+          generation: number
+          id: string
+          model: string
+          ordinal: number
+          prompt_version: string
+          provenance: Json | null
+          session_id: string
+          superseded_at: string | null
+          type: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          embedding: unknown
+          generation?: number
+          id?: string
+          model: string
+          ordinal: number
+          prompt_version: string
+          provenance?: Json | null
+          session_id: string
+          superseded_at?: string | null
+          type: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          embedding?: unknown
+          generation?: number
+          id?: string
+          model?: string
+          ordinal?: number
+          prompt_version?: string
+          provenance?: Json | null
+          session_id?: string
+          superseded_at?: string | null
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "voice_session_deposits_prompt_version_fkey"
+            columns: ["prompt_version"]
+            isOneToOne: false
+            referencedRelation: "summarization_prompts"
+            referencedColumns: ["version"]
+          },
+          {
+            foreignKeyName: "voice_session_deposits_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "voice_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       voice_sessions: {
         Row: {
           anchor_edge_id: string | null
@@ -488,7 +566,66 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      active_voice_session_deposits: {
+        Row: {
+          body: string | null
+          created_at: string | null
+          embedding: unknown
+          generation: number | null
+          id: string | null
+          model: string | null
+          ordinal: number | null
+          prompt_version: string | null
+          provenance: Json | null
+          session_id: string | null
+          superseded_at: string | null
+          type: string | null
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string | null
+          embedding?: unknown
+          generation?: number | null
+          id?: string | null
+          model?: string | null
+          ordinal?: number | null
+          prompt_version?: string | null
+          provenance?: Json | null
+          session_id?: string | null
+          superseded_at?: string | null
+          type?: string | null
+        }
+        Update: {
+          body?: string | null
+          created_at?: string | null
+          embedding?: unknown
+          generation?: number | null
+          id?: string | null
+          model?: string | null
+          ordinal?: number | null
+          prompt_version?: string | null
+          provenance?: Json | null
+          session_id?: string | null
+          superseded_at?: string | null
+          type?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "voice_session_deposits_prompt_version_fkey"
+            columns: ["prompt_version"]
+            isOneToOne: false
+            referencedRelation: "summarization_prompts"
+            referencedColumns: ["version"]
+          },
+          {
+            foreignKeyName: "voice_session_deposits_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "voice_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       append_processing_log: {
