@@ -296,6 +296,7 @@ export type Database = {
           ended_at: string | null
           id: string
           processing_log: Json
+          session_kind: string
           started_at: string
           summary: string | null
           user_id: string
@@ -307,6 +308,7 @@ export type Database = {
           ended_at?: string | null
           id?: string
           processing_log?: Json
+          session_kind?: string
           started_at?: string
           summary?: string | null
           user_id: string
@@ -318,6 +320,7 @@ export type Database = {
           ended_at?: string | null
           id?: string
           processing_log?: Json
+          session_kind?: string
           started_at?: string
           summary?: string | null
           user_id?: string

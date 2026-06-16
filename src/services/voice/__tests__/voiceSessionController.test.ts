@@ -34,6 +34,7 @@ function makeDeps(overrides: Partial<VoiceSessionControllerDeps> = {}): {
     end_reason: null,
     processing_log: [],
     summary: null,
+    session_kind: 'real',
   }))
   const endSession = vi.fn(async () => ({}) as never)
   const writeUtterance = vi.fn(async () => ({
