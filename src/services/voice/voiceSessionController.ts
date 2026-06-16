@@ -30,6 +30,7 @@
  */
 
 import { embedText } from '../embeddingService'
+import { deriveSessionKind } from './deriveSessionKind'
 import { persistence } from '../../persistence'
 import type {
   BoardSnapshot,
@@ -234,6 +235,14 @@ export function createVoiceSessionController(
         end_reason: null,
         ended_at: null,
         summary: null,
+        // Classify real vs QA from the page host at create time. Set
+        // explicitly even for 'real' — legible intent at the call site, not a
+        // reliance on the DB default to mean "real" (migration 036). Guard the
+        // window read so this is safe under non-browser test/SSR contexts
+        // (absent host → '' → deriveSessionKind returns 'real').
+        session_kind: deriveSessionKind(
+          typeof window !== 'undefined' ? window.location.hostname : '',
+        ),
       })
       session = {
         sessionId: row.id,
