@@ -64,6 +64,12 @@ import {
   WORKING_MEMORY_MAX_CHARS,
   type WorkingMemoryEntry,
 } from './retrievalContext'
+import {
+  DEPOSIT_K,
+  loadDepositCorpus,
+  scoreDeposits,
+  type DepositCorpusRow,
+} from './depositRetrieval'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -294,8 +300,18 @@ export class VadController {
   // with the session — no persistence.
   private readonly workingMemory = new Map<string, WorkingMemoryEntry>()
   // Monotonic ordinal for WorkingMemoryEntry.surfacedAtTurn (eviction order
-  // under the overflow guard). Incremented once per retrieval-bearing turn.
+  // under the overflow guard). Incremented per band-admission; with two bands
+  // (node + deposit) a turn can advance it more than once — only monotonicity
+  // matters for eviction order, not equality with the turn number.
   private retrievalTurnOrdinal = 0
+  // Deposit band (board-agnostic). The corpus is loaded once on first retrieval
+  // and reused for the session's life (deposits are written offline between
+  // sessions, never mid-session) — null until that first load, [] when empty or
+  // the load failed. surfacedDepositIds is the deposit band's own novelty set,
+  // kept separate from surfacedRefIds so the two bands stay independent and
+  // their globally-unique UUIDs can't collide with bare client node ids.
+  private depositCorpus: DepositCorpusRow[] | null = null
+  private readonly surfacedDepositIds = new Set<string>()
 
   constructor(opts: VadControllerOptions) {
     this.opts = opts
@@ -584,15 +600,23 @@ export class VadController {
   }
 
   /**
-   * Shared retrieval tail (both turn types): compute the exclusion set, call
-   * the 10A RPC, apply the once-per-session novelty filter, and assemble the
-   * `relatedMaterial` block. Records what surfaced so it can't surface again.
-   * Returns null when nothing clears the floor / survives the filter.
+   * Shared retrieval tail (both turn types): score the two bands against the
+   * same query vector, independently. The deposit band (board-agnostic, no
+   * anchor needed) runs first and admits straight to working memory; the node
+   * band then computes the exclusion set, calls the 10A RPC, applies the
+   * once-per-session novelty filter, and assembles the `relatedMaterial` block.
+   * Records what surfaced so it can't surface again. Returns the node band's
+   * block (or null) — the deposit band has no current-turn rendered block, it
+   * surfaces from working memory on subsequent turns.
    */
   private async runRetrieval(
     client: ReturnType<typeof requireClient>,
     queryVector: number[],
   ): Promise<string | null> {
+    // Deposit band first: it needs no anchor connection, so it runs even on
+    // follow-up turns without one (where the node band below early-returns).
+    await this.runDepositBand(client, queryVector)
+
     const conn = this.opts.anchorConnection
     if (!conn) return null
 
@@ -647,8 +671,12 @@ export class VadController {
       this.retrievalTurnOrdinal += 1
       admitToWorkingMemory(
         this.workingMemory,
-        novel,
-        this.opts.boardId,
+        novel.map((r) => ({
+          refType: 'node' as const,
+          refId: r.ref_id,
+          sourceBoard: this.opts.boardId,
+          content: r.content,
+        })),
         this.retrievalTurnOrdinal,
         (info) =>
           this.logger.event('voice.context.working_memory_overflow', 'degraded', {
@@ -660,6 +688,108 @@ export class VadController {
       )
     }
     return block
+  }
+
+  /**
+   * Deposit band (board-agnostic). Scores the whole cached deposit corpus
+   * against the same per-turn query vector the node band uses, logs the FULL
+   * ranking (every candidate, admitted or not — the below-cap rows are the
+   * instrument), then admits the novel top-`DEPOSIT_K` to working memory with
+   * NO floor. Best-effort: never throws into the turn.
+   *
+   * Four observables, all threaded with the turn correlation id so the two
+   * bands reconcile within a turn:
+   *   1. full per-band ranking with scores (every row, incl. below-cap),
+   *   2. each row's `type` + `rank` → open_edge position relative to deposits,
+   *   3. the similarity values → the score distribution (floor derived later),
+   *   4. `sourceBoard` + `crossBoard` per row → the scope question.
+   */
+  private async runDepositBand(
+    client: ReturnType<typeof requireClient>,
+    queryVector: number[],
+  ): Promise<void> {
+    try {
+      if (this.depositCorpus === null) {
+        const { corpus, scanned, dropped } = await loadDepositCorpus(client)
+        this.depositCorpus = corpus
+        const s0 = this.store.getState()
+        this.logger.event(
+          'voice.retrieval.deposit_corpus',
+          'success',
+          { scanned, dropped, loaded: corpus.length },
+          {
+            correlationId: s0.turnId ?? undefined,
+            parentCorrelationId: s0.sessionId ?? undefined,
+          },
+        )
+      }
+      if (this.depositCorpus.length === 0) return
+
+      const ranked = scoreDeposits(this.depositCorpus, queryVector)
+      // No floor (intended): the cap is the only admission limiter, kept
+      // generous so it barely binds. novel = capped minus already-surfaced.
+      const novel = ranked
+        .slice(0, DEPOSIT_K)
+        .filter((d) => !this.surfacedDepositIds.has(d.id))
+
+      const currentBoard = this.opts.boardId
+      const state = this.store.getState()
+      this.logger.event(
+        'voice.retrieval.deposit_band',
+        'success',
+        {
+          cap: DEPOSIT_K,
+          corpusSize: this.depositCorpus.length,
+          admittedThisTurn: novel.length,
+          currentBoard,
+          band: ranked.map((d, i) => ({
+            rank: i + 1,
+            ref_id: d.id,
+            type: d.type,
+            similarity: Number(d.similarity.toFixed(4)),
+            sourceBoard: d.sourceBoard,
+            // null = unresolved board; else true when the source session lived
+            // on a different board than this one (the cross-board signal).
+            crossBoard: d.sourceBoard === null ? null : d.sourceBoard !== currentBoard,
+            // Reflects this turn's admission decision (set is updated below).
+            admitted: i < DEPOSIT_K && !this.surfacedDepositIds.has(d.id),
+          })),
+        },
+        {
+          correlationId: state.turnId ?? undefined,
+          parentCorrelationId: state.sessionId ?? undefined,
+        },
+      )
+
+      if (novel.length === 0) return
+
+      this.retrievalTurnOrdinal += 1
+      admitToWorkingMemory(
+        this.workingMemory,
+        novel.map((d) => ({
+          refType: 'deposit' as const,
+          refId: d.id,
+          // Board-agnostic: keep the resolved source board for ledger identity,
+          // or a sentinel when unresolved (UUIDs make collisions impossible).
+          sourceBoard: d.sourceBoard ?? 'unresolved',
+          content: d.body,
+        })),
+        this.retrievalTurnOrdinal,
+        (info) =>
+          this.logger.event('voice.context.working_memory_overflow', 'degraded', {
+            ...info,
+            maxChars: WORKING_MEMORY_MAX_CHARS,
+          }),
+        (info) =>
+          this.logger.event('voice.context.working_memory_admit', 'success', { ...info }),
+      )
+      for (const d of novel) this.surfacedDepositIds.add(d.id)
+    } catch (err) {
+      console.warn(
+        '[VadController] deposit band failed; proceeding without deposits:',
+        err,
+      )
+    }
   }
 
   /**

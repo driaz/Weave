@@ -58,7 +58,7 @@ const ITEM_MAX_CHARS = 600
  * doesn't carry them.
  */
 export interface RetrievalRow {
-  source: 'node' | 'utterance'
+  source: 'node'
   ref_id: string
   content: string
   speaker: 'user' | 'assistant' | null
@@ -249,11 +249,12 @@ export function formatRetrievalBullet(content: string): string {
 // ------- session working memory (surfaced-material persistence) -------
 
 /**
- * What a working-memory entry refers to. Only 'node' is produced today (the
- * v1 retrieval corpus is node-only, migration 034); the other members name
- * the future corpora so renderers fail loud instead of guessing.
+ * What a working-memory entry refers to. 'node' (the node band, migration 034)
+ * and 'deposit' (the board-agnostic deposit band) are produced today; the
+ * remaining members name future corpora so renderers fail loud instead of
+ * guessing.
  */
-export type WorkingMemoryRefType = 'node' | 'voice_session' | 'edge' | 'cross_board_node'
+export type WorkingMemoryRefType = 'node' | 'deposit' | 'edge' | 'cross_board_node'
 
 export interface WorkingMemoryEntry {
   refType: WorkingMemoryRefType
@@ -299,6 +300,23 @@ export interface WorkingMemoryOverflowInfo {
   incomingChars: number
 }
 
+/**
+ * One row offered for working-memory admission, normalized across bands. Each
+ * band (node, deposit) maps its own ranked rows to this shape so a single
+ * admission path serves both — the refType and sourceBoard travel per row
+ * rather than being assumed. `content` is RAW (pre-truncate); admission formats
+ * it through `formatRetrievalBullet`.
+ */
+export interface WorkingMemoryAdmission {
+  refType: WorkingMemoryRefType
+  refId: string
+  /** Board the row's source came from. For nodes, the current board; for
+   * deposits, the (board-agnostic) source session's resolved board, or a
+   * sentinel when unresolved. Identity/ledger metadata — not rendered. */
+  sourceBoard: string
+  content: string
+}
+
 /** Detail payload for the per-entry admission log (vadController owns the
  * emit). No content bodies — refs and sizes only. */
 export interface WorkingMemoryAdmitInfo {
@@ -320,9 +338,12 @@ export interface WorkingMemoryAdmitInfo {
  * instance. `onAdmit` fires once per entry, after it lands, with cumulative
  * store stats.
  *
- * A ref_id enters at most once: the caller's novelty filter guarantees
- * `rows` excludes everything previously surfaced, so there is deliberately
- * no second dedupe path here.
+ * Band-agnostic: each admission carries its own refType / sourceBoard, so the
+ * node band and the deposit band share this one path (no hardcoded 'node').
+ *
+ * A ref enters at most once: the caller's novelty filter guarantees
+ * `admissions` excludes everything previously surfaced, so there is
+ * deliberately no second dedupe path here.
  *
  * Overflow guard: if an admission would push total content chars past
  * WORKING_MEMORY_MAX_CHARS, report it via `onOverflow`, then drop oldest
@@ -331,20 +352,17 @@ export interface WorkingMemoryAdmitInfo {
  */
 export function admitToWorkingMemory(
   memory: Map<string, WorkingMemoryEntry>,
-  rows: RetrievalRow[],
-  sourceBoard: string,
+  admissions: WorkingMemoryAdmission[],
   surfacedAtTurn: number,
   onOverflow?: (info: WorkingMemoryOverflowInfo) => void,
   onAdmit?: (info: WorkingMemoryAdmitInfo) => void,
 ): void {
-  for (const row of rows) {
+  for (const admission of admissions) {
     const entry: WorkingMemoryEntry = {
-      // v1 retrieval corpus is node-only (migration 034), so every row is a
-      // board node. A future corpus must add its refType and renderer.
-      refType: 'node',
-      refId: row.ref_id,
-      sourceBoard,
-      content: formatRetrievalBullet(row.content),
+      refType: admission.refType,
+      refId: admission.refId,
+      sourceBoard: admission.sourceBoard,
+      content: formatRetrievalBullet(admission.content),
       surfacedAtTurn,
     }
 
@@ -405,7 +423,10 @@ export function buildWorkingMemoryBlock(entries: WorkingMemoryEntry[]): string |
   const lines = entries.map((e) => {
     switch (e.refType) {
       case 'node':
-        // Stored pre-formatted at admission (formatRetrievalBullet).
+      case 'deposit':
+        // Both render as the pre-formatted bullet stored at admission
+        // (formatRetrievalBullet). Deposits are third-person narrated prose,
+        // not speaker-tagged, so no attribution prefix — the bullet is the line.
         return e.content
       default:
         throw new Error(
@@ -434,47 +455,28 @@ export const RELATED_MATERIAL_FRAMING =
   'here truly connects, let it go unsaid.'
 
 const CURATED_HEADER = 'Things you saved that relate to this edge:'
-const PRIOR_USER_HEADER =
-  'Your earlier reflections — ground to build on, not lines to repeat:'
-const PRIOR_ASSISTANT_HEADER =
-  'Connections already drawn in earlier sessions — go further rather than restate:'
 
 /**
- * Assemble the `relatedMaterial` block from filtered, ranked rows, or null
+ * Assemble the `relatedMaterial` block from filtered, ranked node rows, or null
  * when there's nothing to surface (caller then omits the section entirely,
  * exactly like Phase 9's empty-snapshot path).
  *
- * Two framed subsections per the design: curated material (saved nodes) and
- * prior reasoning (past utterances), the latter speaker-aware — the user's own
- * utterances framed as their prior thinking, assistant utterances demoted to
- * "already drawn, go further". The constant framing is prepended; the caller
- * adds the section header / separator.
+ * Node-only: the RPC corpus is `weave_embeddings` (migration 034) so every row
+ * is a saved board node. (The prior speaker-aware utterance subsections were
+ * removed when the utterance corpus was retired post-034; the deposit band does
+ * NOT render here — deposits go straight to working memory.) The constant
+ * framing is prepended; the caller adds the section header / separator.
  */
 export function buildRelatedMaterial(rows: RetrievalRow[]): string | null {
   if (rows.length === 0) return null
 
-  const curated = rows.filter((r) => r.source === 'node')
-  const priorUser = rows.filter(
-    (r) => r.source === 'utterance' && r.speaker !== 'assistant',
-  )
-  const priorAssistant = rows.filter(
-    (r) => r.source === 'utterance' && r.speaker === 'assistant',
-  )
+  const lines = rows
+    .map((r) => formatRetrievalBullet(r.content))
+    .join('\n')
+    .trim()
 
-  const parts: string[] = [RELATED_MATERIAL_FRAMING]
+  // Every row was empty/whitespace. Treat as nothing.
+  if (lines.length === 0) return null
 
-  const pushBlock = (header: string, items: RetrievalRow[]): void => {
-    if (items.length === 0) return
-    const lines = items.map((r) => formatRetrievalBullet(r.content)).join('\n')
-    parts.push(`${header}\n${lines}`)
-  }
-
-  pushBlock(CURATED_HEADER, curated)
-  pushBlock(PRIOR_USER_HEADER, priorUser)
-  pushBlock(PRIOR_ASSISTANT_HEADER, priorAssistant)
-
-  // Only framing survived — every row was empty/whitespace. Treat as nothing.
-  if (parts.length === 1) return null
-
-  return parts.join('\n\n')
+  return `${RELATED_MATERIAL_FRAMING}\n\n${CURATED_HEADER}\n${lines}`
 }
