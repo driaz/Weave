@@ -32,14 +32,25 @@ import type { Database } from '../../types/database'
 import { parseStoredEmbedding } from './retrievalContext'
 
 /**
- * Per-turn admission cap for the deposit band. Deliberately GENEROUS so it
- * barely binds: the experiment is to observe the full score distribution (the
- * band log emits every candidate, admitted or not) and derive a floor from real
- * sessions later — a blind floor is the 0.7-vs-actual-0.43–0.63 miss. The real
- * backstop on what reaches the prompt is the working-memory char guard
- * (`WORKING_MEMORY_MAX_CHARS`), not this cap. There is intentionally NO floor.
+ * Per-turn admission cap for the deposit band. There is intentionally NO cosine
+ * floor — the cap is the only admission limiter, and the band log keeps the
+ * fuzzy-band rows + tail stats visible so a floor can still be derived from real
+ * sessions later. Calibrated against two QA sessions' blind quality reads:
+ * cosine sorts reliably at the extremes but fuzzily through ranks ~2–20, so the
+ * cap is set to cut ABOVE that fuzzy band rather than bisect it.
  */
-export const DEPOSIT_K = 12
+// Top 6: cut above the fuzzy mid-band where cosine can't resolve quality; calibrated on a 72-row corpus, revisit as corpus grows.
+export const DEPOSIT_K = 6
+
+/**
+ * How many top-ranked rows the per-turn band log keeps in FULL (rank, ref_id,
+ * type, similarity, sourceBoard, crossBoard). The admitted `DEPOSIT_K` plus the
+ * fuzzy band just below the cap — so "what just missed" stays visible — while
+ * the rest of the ranking is logged as aggregate stats only. Constant-size
+ * regardless of corpus growth; the full N-row ranking is available behind the
+ * on-demand dump switch (see vadController). 20 = 6 admitted + ~14 fuzzy.
+ */
+export const DEPOSIT_BAND_LOG_HEAD = 20
 
 /**
  * A deposit as scored client-side: body, kind, parsed embedding, and the
@@ -118,15 +129,13 @@ export interface DepositCorpusLoad {
  * an empty corpus on any query error — the deposit band is additive and must
  * never break a turn.
  *
- * `real_voice_session_deposits` is absent from the generated Database types
- * (pre-existing migration-036 type-regen gap), so the table handle is cast
- * locally and the row shape is validated into DepositCorpusRow here.
+ * The view's columns are typed nullable (it's a view), so the row shape is
+ * validated into DepositCorpusRow here — a null id/body/embedding drops the row.
  */
 export async function loadDepositCorpus(
   client: SupabaseClient<Database>,
 ): Promise<DepositCorpusLoad> {
-  // View not in generated types (036 gap) — localized cast; shape validated below.
-  const { data, error } = await (client as SupabaseClient)
+  const { data, error } = await client
     .from('real_voice_session_deposits')
     .select('id, session_id, type, body, embedding')
 
@@ -134,7 +143,7 @@ export async function loadDepositCorpus(
 
   const rows: DepositCorpusRow[] = []
   let dropped = 0
-  for (const raw of data as Array<Record<string, unknown>>) {
+  for (const raw of data) {
     const embedding = parseStoredEmbedding(raw.embedding)
     if (!embedding || typeof raw.id !== 'string' || typeof raw.body !== 'string') {
       dropped += 1

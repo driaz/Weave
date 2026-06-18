@@ -65,10 +65,12 @@ import {
   type WorkingMemoryEntry,
 } from './retrievalContext'
 import {
+  DEPOSIT_BAND_LOG_HEAD,
   DEPOSIT_K,
   loadDepositCorpus,
   scoreDeposits,
   type DepositCorpusRow,
+  type ScoredDeposit,
 } from './depositRetrieval'
 
 const WORKLET_URL = '/voice/vad-processor.js'
@@ -726,14 +728,53 @@ export class VadController {
       if (this.depositCorpus.length === 0) return
 
       const ranked = scoreDeposits(this.depositCorpus, queryVector)
-      // No floor (intended): the cap is the only admission limiter, kept
-      // generous so it barely binds. novel = capped minus already-surfaced.
+      // No floor (intended): the cap is the only admission limiter. novel =
+      // capped minus already-surfaced.
       const novel = ranked
         .slice(0, DEPOSIT_K)
         .filter((d) => !this.surfacedDepositIds.has(d.id))
 
       const currentBoard = this.opts.boardId
       const state = this.store.getState()
+      const corr = {
+        correlationId: state.turnId ?? undefined,
+        parentCorrelationId: state.sessionId ?? undefined,
+      }
+      // Per-row shape (full detail). `i` is the 0-based rank in `ranked`.
+      const rowOf = (d: ScoredDeposit, i: number) => ({
+        rank: i + 1,
+        ref_id: d.id,
+        type: d.type,
+        similarity: Number(d.similarity.toFixed(4)),
+        sourceBoard: d.sourceBoard,
+        // null = unresolved board; else true when the source session lived on a
+        // different board than this one (the cross-board signal).
+        crossBoard: d.sourceBoard === null ? null : d.sourceBoard !== currentBoard,
+        // Reflects this turn's admission decision (set is updated below).
+        admitted: i < DEPOSIT_K && !this.surfacedDepositIds.has(d.id),
+      })
+
+      // Bounded per-turn band log (always on, CONSTANT-size regardless of corpus
+      // growth): the top `DEPOSIT_BAND_LOG_HEAD` rows in full (admitted + fuzzy
+      // band), then the remaining tail as aggregate stats only. The four
+      // observables survive: full ranking → head rows + tail stats; type+rank →
+      // head rows; distribution → head sims + tail min/median/max; crossBoard →
+      // head rows. `ranked` is sorted similarity-desc, so the tail is the bottom.
+      const tail = ranked.slice(DEPOSIT_BAND_LOG_HEAD)
+      const tailSims = tail.map((d) => d.similarity)
+      const tailStats =
+        tail.length === 0
+          ? null
+          : {
+              count: tail.length,
+              maxSimilarity: Number(tailSims[0].toFixed(4)),
+              medianSimilarity: Number(
+                tailSims[Math.floor((tailSims.length - 1) / 2)].toFixed(4),
+              ),
+              minSimilarity: Number(tailSims[tailSims.length - 1].toFixed(4)),
+              // Floor = the last row of the FULL ranking (corpus floor).
+              floorSimilarity: Number(ranked[ranked.length - 1].similarity.toFixed(4)),
+            }
       this.logger.event(
         'voice.retrieval.deposit_band',
         'success',
@@ -742,24 +783,24 @@ export class VadController {
           corpusSize: this.depositCorpus.length,
           admittedThisTurn: novel.length,
           currentBoard,
-          band: ranked.map((d, i) => ({
-            rank: i + 1,
-            ref_id: d.id,
-            type: d.type,
-            similarity: Number(d.similarity.toFixed(4)),
-            sourceBoard: d.sourceBoard,
-            // null = unresolved board; else true when the source session lived
-            // on a different board than this one (the cross-board signal).
-            crossBoard: d.sourceBoard === null ? null : d.sourceBoard !== currentBoard,
-            // Reflects this turn's admission decision (set is updated below).
-            admitted: i < DEPOSIT_K && !this.surfacedDepositIds.has(d.id),
-          })),
+          headCount: Math.min(DEPOSIT_BAND_LOG_HEAD, ranked.length),
+          band: ranked.slice(0, DEPOSIT_BAND_LOG_HEAD).map(rowOf),
+          tailStats,
         },
-        {
-          correlationId: state.turnId ?? undefined,
-          parentCorrelationId: state.sessionId ?? undefined,
-        },
+        corr,
       )
+
+      // On-demand FULL dump (investigation path, off by default): the complete
+      // N-row ranking for this turn, so blind-read / cross-criteria probes can
+      // reach arbitrary-rank rows (50, 72, …). Toggle: VITE_DEPOSIT_BAND_FULL_DUMP=true.
+      if (import.meta.env.VITE_DEPOSIT_BAND_FULL_DUMP === 'true') {
+        this.logger.event(
+          'voice.retrieval.deposit_band_full',
+          'success',
+          { corpusSize: this.depositCorpus.length, band: ranked.map(rowOf) },
+          corr,
+        )
+      }
 
       if (novel.length === 0) return
 
