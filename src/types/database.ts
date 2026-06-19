@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "14.4"
   }
   graphql_public: {
     Tables: {
@@ -611,6 +611,38 @@ export type Database = {
           session_id?: string | null
           superseded_at?: string | null
           type?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "voice_session_deposits_prompt_version_fkey"
+            columns: ["prompt_version"]
+            isOneToOne: false
+            referencedRelation: "summarization_prompts"
+            referencedColumns: ["version"]
+          },
+          {
+            foreignKeyName: "voice_session_deposits_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "voice_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      real_voice_session_deposits: {
+        Row: {
+          body: string | null
+          created_at: string | null
+          embedding: unknown
+          generation: number | null
+          id: string | null
+          model: string | null
+          ordinal: number | null
+          prompt_version: string | null
+          provenance: Json | null
+          session_id: string | null
+          superseded_at: string | null
+          type: string | null
         }
         Relationships: [
           {
