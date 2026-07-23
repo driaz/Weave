@@ -10,21 +10,19 @@ const MODEL = 'gemini-embedding-2-preview'
 
 export interface MultimodalEmbedInput {
   text: string
+  // videoPath/audioPath are dead as of Issue #2 PR-1 — the pipeline sends
+  // text only, since mixed media parts were measured as a retrieval
+  // downgrade for text queries (docs/token-limit-and-multimodal-probe.md
+  // §2.3/§4). Retained for the media-prep cleanup pass — do not remove in
+  // that PR's absence.
   videoPath?: string
   audioPath?: string
 }
 
 /**
- * Build a single 3072-dim multimodal embedding from text + optional video
- * and audio files. Mirrors the client-side text-only call in
- * src/services/embeddingService.ts but adds inlineData parts for media.
- *
- * Tier-aware payloads (set by process.ts):
- *  - Under 10 min: text + trimmed video + trimmed audio
- *  - Over  10 min: text + trimmed audio (no video)
- *
- * The model's multimodal acceptance was confirmed via
- * scripts/probe-embedding-multimodal.mjs in the main repo.
+ * Build a single 3072-dim embedding. As of Issue #2 PR-1 every caller
+ * passes text only; the inlineData branches below are unreferenced but
+ * retained (see MultimodalEmbedInput).
  */
 export async function embedMultimodal(input: MultimodalEmbedInput): Promise<number[]> {
   const parts: Part[] = []

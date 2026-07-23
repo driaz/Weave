@@ -24,6 +24,9 @@ export async function probeDuration(mediaPath: string): Promise<number> {
  * extraction is needed — we send the trimmed clip as one inlineData part.
  *
  * Defaults to 120s, the documented Gemini Embedding 2 cap for video input.
+ *
+ * DEAD as of Issue #2 PR-1 — embeds are text-only, nothing calls this.
+ * Retained for the media-prep cleanup pass; do not remove in this PR.
  */
 export async function trimVideo(
   videoPath: string,
