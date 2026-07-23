@@ -7,6 +7,39 @@ import { connectionIdentityFields } from '../utils/connectionIdentity'
 import { buildConnectionContext } from './voice/voiceContext'
 
 /**
+ * What caused an embed write. Stored in the row's metadata and in the
+ * processing_log event so every vector's lifecycle is reconstructable.
+ * 'sweep' is reserved for the PR-2 backfill sweep; the client never emits it.
+ */
+export type EmbedTrigger =
+  | 'initial_drop'
+  | 'transcript_arrival'
+  | 'description_generated'
+  | 'media_patch'
+  | 'sweep'
+
+/**
+ * Hard character budget for composed embed text. The Gemini embedding
+ * surface truncates silently at ~36.8k chars of English prose
+ * (docs/token-limit-and-multimodal-probe.md §1.3); the margin is
+ * deliberate. Overflow is otherwise invisible, so any composition that
+ * exceeds this trips a persisted warn event (`embed.budget`) and gets
+ * its transcript tail cut to fit. The media server carries its own copy
+ * of this constant (different codebase, same value).
+ */
+const EMBED_TEXT_MAX_CHARS = 36000
+
+interface ComposedParts {
+  parts: Part[]
+  summary: string
+  hadTranscript: boolean
+  hadDescription: boolean
+  hadAnalysis: boolean
+  /** Set when the transcript tail was cut to fit EMBED_TEXT_MAX_CHARS. */
+  truncatedFromChars: number | null
+}
+
+/**
  * Parse a data URL into its mime type and raw base64 string.
  * e.g. "data:image/png;base64,iVBOR..." → { mimeType: "image/png", data: "iVBOR..." }
  */
@@ -16,15 +49,50 @@ function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | nul
   return { mimeType: match[1], data: match[2] }
 }
 
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * Join composition segments with the transcript last, cutting only the
+ * transcript's tail if the total exceeds EMBED_TEXT_MAX_CHARS. The
+ * non-transcript fields are never truncated — they are the dense,
+ * hand-or-model-curated part of the composition.
+ */
+function joinWithBudget(
+  segments: string[],
+  transcript: string,
+): { text: string; truncatedFromChars: number | null } {
+  const all = [...segments, transcript].filter(Boolean)
+  const full = all.join(' — ')
+  if (full.length <= EMBED_TEXT_MAX_CHARS) {
+    return { text: full, truncatedFromChars: null }
+  }
+  if (!transcript) {
+    // Unreachable with real field sizes (non-transcript fields are ~kB
+    // scale), but never slice curated fields — surface it instead.
+    return { text: full, truncatedFromChars: full.length }
+  }
+  const prefix = segments.filter(Boolean).join(' — ')
+  const transcriptBudget = EMBED_TEXT_MAX_CHARS - (prefix ? prefix.length + 3 : 0)
+  const kept = transcriptBudget > 0 ? transcript.slice(0, transcriptBudget) : ''
+  const text = [prefix, kept].filter(Boolean).join(' — ')
+  return { text, truncatedFromChars: full.length }
+}
+
 /**
  * Build the parts array and content summary for a given node type + data.
  */
 function buildPartsForNode(
   nodeType: string,
   data: Record<string, unknown>,
-): { parts: Part[]; summary: string } | null {
+): ComposedParts | null {
   const parts: Part[] = []
   let summary = ''
+  let hadTranscript = false
+  let hadDescription = false
+  let hadAnalysis = false
+  let truncatedFromChars: number | null = null
 
   switch (nodeType) {
     case 'textCard': {
@@ -56,70 +124,78 @@ function buildPartsForNode(
     }
 
     case 'linkCard': {
-      const title = data.title as string | undefined
-      const description = data.description as string | undefined
-      const domain = data.domain as string | undefined
+      const title = asTrimmedString(data.title)
+      const description = asTrimmedString(data.description)
+      const domain = asTrimmedString(data.domain)
       const linkType = data.type as string | undefined
-      const authorName = data.authorName as string | undefined
-      const authorHandle = data.authorHandle as string | undefined
-      const tweetText = data.tweetText as string | undefined
+      const authorName = asTrimmedString(data.authorName)
+      const authorHandle = asTrimmedString(data.authorHandle)
+      const tweetText = asTrimmedString(data.tweetText)
+      const contentDescription = asTrimmedString(data.contentDescription)
+      const mediaAnalysis = asTrimmedString(data.media_analysis)
+      // Tweets with an embedded YouTube link store their transcript under
+      // youtubeTranscript; native video under transcript. Same recipe slot.
+      const transcript =
+        asTrimmedString(data.transcript) || asTrimmedString(data.youtubeTranscript)
 
-      const textSegments: string[] = []
-
-      // For tweets, title/description from oEmbed duplicate the tweet text.
-      // Use tweetText as the authoritative source when available.
-      if (linkType === 'twitter' && tweetText) {
-        if (authorName) textSegments.push(authorName)
-        if (authorHandle) textSegments.push(authorHandle)
-        textSegments.push(tweetText)
-        if (domain) textSegments.push(domain)
-      } else {
-        if (title) textSegments.push(title)
-        if (description) textSegments.push(description)
-        if (domain) textSegments.push(domain)
-      }
-
-      // YouTube transcript
       if (linkType === 'youtube') {
-        const transcript = data.transcript as string | undefined
-        if (transcript) {
-          const truncated = transcript.length > 3000 ? transcript.slice(0, 3000) : transcript
-          textSegments.push(truncated)
-        }
+        // YouTube recipe: title — authorName — contentDescription — transcript.
+        // All present fields, full length; transcript-tail-only budget cut.
+        const composed = joinWithBudget([title, authorName, contentDescription], transcript)
+        if (!composed.text) return null
+        parts.push({ text: composed.text })
+        summary = composed.text
+        hadTranscript = Boolean(transcript)
+        hadDescription = Boolean(contentDescription)
+        truncatedFromChars = composed.truncatedFromChars
+        break
       }
 
-      // Tweet video transcript (native video)
-      if (linkType === 'twitter') {
-        const transcript = data.transcript as string | undefined
-        if (transcript) {
-          const truncated = transcript.length > 3000 ? transcript.slice(0, 3000) : transcript
-          textSegments.push(truncated)
+      if (linkType === 'twitter' && tweetText) {
+        if (transcript || mediaAnalysis || contentDescription) {
+          // Video tweet recipe: contentDescription — authorName — tweetText —
+          // media_analysis — transcript. Text-only: the multimodal parts were
+          // measured as a retrieval downgrade for text queries
+          // (docs/token-limit-and-multimodal-probe.md §2.3).
+          const composed = joinWithBudget(
+            [contentDescription, authorName, tweetText, mediaAnalysis],
+            transcript,
+          )
+          parts.push({ text: composed.text })
+          summary = composed.text
+          hadTranscript = Boolean(transcript)
+          hadDescription = Boolean(contentDescription)
+          hadAnalysis = Boolean(mediaAnalysis)
+          truncatedFromChars = composed.truncatedFromChars
+          break
         }
+
+        const imageBase64 = data.imageBase64 as string | undefined
+        const imageMimeType = data.imageMimeType as string | undefined
+        if (imageBase64 && imageMimeType) {
+          // Image tweet: deliberately untouched in PR-1, inline image part
+          // included. Text-only here would embed boilerplate (worse than
+          // pixels-maybe); these convert when #17 produces analysis text.
+          const textSegments = [authorName, authorHandle, tweetText, domain].filter(Boolean)
+          const combinedText = textSegments.join(' — ')
+          parts.push({ text: combinedText })
+          parts.push({ inlineData: { data: imageBase64, mimeType: imageMimeType } })
+          summary = combinedText
+          break
+        }
+
+        // Text tweet recipe: authorName — tweetText, uncapped.
+        const combinedText = [authorName, tweetText].filter(Boolean).join(' — ')
+        parts.push({ text: combinedText })
+        summary = combinedText
+        break
       }
 
-      // Tweet with embedded YouTube transcript
-      if (linkType === 'twitter') {
-        const youtubeTranscript = data.youtubeTranscript as string | undefined
-        if (youtubeTranscript) {
-          const truncated = youtubeTranscript.length > 3000 ? youtubeTranscript.slice(0, 3000) : youtubeTranscript
-          textSegments.push(truncated)
-        }
-      }
-
+      // Generic link (and tweets without tweetText): unchanged.
+      const textSegments = [title, description, domain].filter(Boolean)
       const combinedText = textSegments.join(' — ')
       if (!combinedText) return null
-
       parts.push({ text: combinedText })
-
-      // Include tweet image if available (fetched and stored as base64)
-      const imageBase64 = data.imageBase64 as string | undefined
-      const imageMimeType = data.imageMimeType as string | undefined
-      if (linkType === 'twitter' && imageBase64 && imageMimeType) {
-        parts.push({
-          inlineData: { data: imageBase64, mimeType: imageMimeType },
-        })
-      }
-
       summary = combinedText
       break
     }
@@ -149,7 +225,7 @@ function buildPartsForNode(
   }
 
   if (parts.length === 0) return null
-  return { parts, summary }
+  return { parts, summary, hadTranscript, hadDescription, hadAnalysis, truncatedFromChars }
 }
 
 /**
@@ -163,6 +239,7 @@ export async function embedNode(
   nodeType: string,
   nodeData: Record<string, unknown>,
   logger?: NodeLogger,
+  trigger: EmbedTrigger = 'initial_drop',
 ): Promise<void> {
   if (!ai || !supabase) return
 
@@ -173,27 +250,47 @@ export async function embedNode(
     return
   }
 
-  const { parts, summary } = result
-  logger?.debug('embed.client.start', 'success', { nodeType, partsCount: parts.length, summaryLen: summary.length })
+  const { parts, summary, hadTranscript, hadDescription, hadAnalysis, truncatedFromChars } = result
+  logger?.debug('embed.client.start', 'success', { nodeType, trigger, partsCount: parts.length, summaryLen: summary.length })
 
-  // Don't downgrade a server-written multimodal embedding with a client text-only one.
-  // The Fly media server stamps metadata.processing = 'server'; the client never sets it.
-  // Checked before the Gemini call so we don't pay for an embedding we'd discard.
-  const { data: existing, error: fetchError } = await supabase
+  // Budget tripwire: composition overflowed EMBED_TEXT_MAX_CHARS and the
+  // transcript tail was cut. The API truncates silently past the budget,
+  // so this persisted event is the only trace overflow leaves.
+  if (truncatedFromChars !== null) {
+    logger?.warn('embed.budget', 'degraded', {
+      composedChars: truncatedFromChars,
+      cap: EMBED_TEXT_MAX_CHARS,
+      droppedChars: truncatedFromChars - summary.length,
+      trigger,
+    })
+    logger?.persist('embed.budget', 'degraded', {
+      composedChars: truncatedFromChars,
+      cap: EMBED_TEXT_MAX_CHARS,
+      droppedChars: truncatedFromChars - summary.length,
+      trigger,
+    })
+  }
+
+  // Lifecycle provenance: read the previous generation counter off the
+  // existing row. This read never gates the embed — whatever it returns
+  // (or fails with), the write below proceeds. Last-write-wins by design;
+  // the old "server-embedding-exists" precheck is gone because the
+  // hierarchy it protected was measured backwards
+  // (docs/embedding-coverage-probe.md §4, token-limit probe §2.3).
+  let embedGeneration = 1
+  const { data: existing, error: generationError } = await supabase
     .from('weave_embeddings')
     .select('metadata')
     .eq('board_id', boardId)
     .eq('node_id', nodeId)
     .maybeSingle()
-
-  if (fetchError) {
-    logger?.warn('embed.client.precheck', 'failed', { error: fetchError.message })
+  if (generationError) {
+    logger?.warn('embed.client.generation', 'degraded', { error: generationError.message })
   }
-
-  const existingProcessing = (existing?.metadata as { processing?: string } | null)?.processing
-  if (existingProcessing === 'server') {
-    logger?.persist('embed.client', 'skipped', { reason: 'server-embedding-exists' })
-    return
+  const previousGeneration = (existing?.metadata as { embed_generation?: number } | null)
+    ?.embed_generation
+  if (typeof previousGeneration === 'number' && Number.isFinite(previousGeneration)) {
+    embedGeneration = previousGeneration + 1
   }
 
   const response = await ai.models.embedContent({
@@ -219,7 +316,17 @@ export async function embedNode(
       node_type: nodeType,
       embedding: JSON.stringify(embedding),
       content_summary: summary,
-      metadata: { parts_count: parts.length },
+      // An embed write means a live card owns this row.
+      archived_at: null,
+      metadata: {
+        parts_count: parts.length,
+        embed_generation: embedGeneration,
+        embed_trigger: trigger,
+        had_transcript: hadTranscript,
+        had_description: hadDescription,
+        had_analysis: hadAnalysis,
+        embed_text_chars: summary.length,
+      },
     },
     { onConflict: 'board_id,node_id' },
   )
@@ -228,7 +335,7 @@ export async function embedNode(
     logger?.persist(
       'embed.client',
       'failed',
-      { error: error.message, embeddingDims: embedding.length, contentLen: summary.length },
+      { error: error.message, embeddingDims: embedding.length, contentLen: summary.length, trigger },
       Date.now() - startedAt,
     )
     return
@@ -237,7 +344,16 @@ export async function embedNode(
   logger?.persist(
     'embed.client',
     'success',
-    { embeddingDims: embedding.length, contentLen: summary.length, partsCount: parts.length },
+    {
+      embeddingDims: embedding.length,
+      contentLen: summary.length,
+      partsCount: parts.length,
+      trigger,
+      embedGeneration,
+      hadTranscript,
+      hadDescription,
+      hadAnalysis,
+    },
     Date.now() - startedAt,
   )
 }
@@ -252,8 +368,9 @@ export function embedNodeAsync(
   nodeType: string,
   nodeData: Record<string, unknown>,
   logger?: NodeLogger,
+  trigger: EmbedTrigger = 'initial_drop',
 ): void {
-  embedNode(boardId, nodeId, nodeType, nodeData, logger).catch((err) => {
+  embedNode(boardId, nodeId, nodeType, nodeData, logger, trigger).catch((err) => {
     if (logger) {
       logger.error('embed.client', 'failed', { error: String(err) })
     } else {
