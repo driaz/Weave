@@ -13,6 +13,10 @@ const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages'
 const CLAUDE_MODEL = 'claude-sonnet-4-6'
 const CLAUDE_MAX_TOKENS = 400
 
+// Prompt-input cap for the description generator's Claude call — NOT an
+// embed-text cap. The embed composition budget is EMBED_TEXT_MAX_CHARS
+// (36,000) in src/services/embeddingService.ts and media-server/src/supabase.ts;
+// the old 3,000-char embed-text slices were deleted in Issue #2 PR-1.
 const TRANSCRIPT_CHAR_LIMIT = 3000
 
 const SYSTEM_PROMPT = `Summarize this video in 2-3 sentences. Focus on the core argument, thesis, or subject matter — what is this video actually about? Include the tone or style only if it's central to the content (e.g. satirical, polemical, instructional). Do not describe it as "a video about X" — just state what it says or argues.`

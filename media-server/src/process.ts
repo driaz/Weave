@@ -2,11 +2,11 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { downloadVideo } from './download.js'
-import { probeDuration, trimVideo, extractAudio } from './extract.js'
+import { probeDuration, extractAudio } from './extract.js'
 import { fetchTranscript } from './transcript.js'
 import { analyzeMedia } from './analyze.js'
 import { embedMultimodal } from './embed.js'
-import { patchNodeData, upsertEmbedding } from './supabase.js'
+import { patchNodeData, upsertEmbedding, fetchNodeBlob, composeEmbedText, EMBED_TEXT_MAX_CHARS } from './supabase.js'
 import { cleanup } from './cleanup.js'
 import { createNodeLogger, type NodeLogger } from './logger.js'
 
@@ -18,21 +18,32 @@ export interface ProcessMediaOptions {
   userId: string
 }
 
-const TRANSCRIPT_CHAR_LIMIT = 3000
+// Dead as of Issue #2 PR-1 (embeds are text-only; nothing trims for the
+// embed anymore). Retained with trimVideo/the 120s comments for the
+// media-prep cleanup pass — do not remove in this PR.
 const EMBEDDING_TRIM_SECONDS = 120
+void EMBEDDING_TRIM_SECONDS
+// Still live — but only to pick the media_analysis input tier (full video
+// vs full audio). No longer affects the embed payload.
 const LONG_FORM_THRESHOLD_SECONDS = 600
 
 /**
- * Full pipeline. Two tiers based on ffprobe duration:
+ * Full pipeline. Two analysis tiers based on ffprobe duration:
  *
- *   Under 10 min: full video+audio → analyze; trimmed video + 2 min audio
- *                 + transcript + media_analysis → embed.
- *   Over  10 min: full audio → analyze; 2 min audio + transcript
- *                 + media_analysis → embed (no video).
+ *   Under 10 min: full video+audio → analyze.
+ *   Over  10 min: full audio → analyze.
  *
  * Long-form is almost always a talking head — paying $5+ to send 30 min of
  * video buys no signal the audio doesn't already carry. Revisit if a content
  * type appears where the visuals matter past the 10-min mark.
+ *
+ * The embed is TEXT-ONLY as of Issue #2 PR-1: mixed media parts were
+ * measured as a retrieval downgrade for text queries
+ * (docs/token-limit-and-multimodal-probe.md §2.3/§4). Composition mirrors
+ * the client recipes; the transcript is uncapped up to the shared
+ * EMBED_TEXT_MAX_CHARS budget. This server write must not depend on the
+ * client still having the board open — it patches media_analysis and
+ * re-embeds on its own.
  */
 export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
   const logger = createNodeLogger(opts.nodeId, opts.boardId, opts.userId)
@@ -65,26 +76,25 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
     logger.debug('media.tier', 'success', { tier, durationSeconds })
 
     const transcriptStart = Date.now()
+    // Uncapped — the budget is enforced at composition (EMBED_TEXT_MAX_CHARS,
+    // transcript-tail-only), not by a blind slice.
     const transcriptPromise = fetchTranscript(opts.url).then((t) => {
-      const trimmed = t.slice(0, TRANSCRIPT_CHAR_LIMIT)
-      transcriptOk = trimmed.length > 0
+      transcriptOk = t.length > 0
       logger.debug(
         'media.transcript',
         transcriptOk ? 'success' : 'degraded',
-        { len: trimmed.length },
+        { len: t.length },
         Date.now() - transcriptStart,
       )
-      return trimmed
+      return t
     })
 
-    const { mediaAnalysis, embedding } = isLongForm
-      ? await runLongFormTier(videoPath, workDir, transcriptPromise, logger)
-      : await runShortFormTier(videoPath, workDir, transcriptPromise, logger)
+    const mediaAnalysis = isLongForm
+      ? await runLongFormAnalysis(videoPath, workDir, logger)
+      : await runShortFormAnalysis(videoPath, logger)
 
     analysisOk = mediaAnalysis.length > 0
     analysisLen = mediaAnalysis.length
-    embedOk = embedding.length > 0
-    embedDims = embedding.length
 
     if (mediaAnalysis) {
       const patchStart = Date.now()
@@ -100,24 +110,67 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
       logger.debug('media.patch', 'skipped', { reason: 'empty-analysis' })
     }
 
-    // upsertEmbedding builds content_summary from the node's title (looked
-    // up via _clientNodeId) plus the media analysis. transcriptPromise has
-    // already been consumed inside the tier helpers for the embedding
-    // payload — no second await needed here.
+    // Compose text-only embed input from the node's JSONB (client-written
+    // fields) + this run's transcript and analysis. The node blob is read
+    // AFTER the media_analysis patch so the composition and the blob agree.
+    const transcript = await transcriptPromise
+    const blob = await fetchNodeBlob({
+      nodeId: opts.nodeId,
+      boardId: opts.boardId,
+      userId: opts.userId,
+    })
+    const composed = composeEmbedText({
+      nodeType: opts.nodeType,
+      blob,
+      fallbackUrl: opts.url,
+      transcript,
+      mediaAnalysis,
+    })
+
+    // Budget tripwire: overflow past EMBED_TEXT_MAX_CHARS is otherwise
+    // perfectly silent at the API — this persisted event is the only trace.
+    if (composed.truncatedFromChars !== null) {
+      await logger.persist('embed.budget', 'degraded', {
+        composedChars: composed.truncatedFromChars,
+        cap: EMBED_TEXT_MAX_CHARS,
+        droppedChars: composed.truncatedFromChars - composed.text.length,
+        trigger: 'media_patch',
+      })
+    }
+
+    const embedStart = Date.now()
+    const embedding = await embedMultimodal({ text: composed.text })
+    embedOk = embedding.length > 0
+    embedDims = embedding.length
+    logger.debug('media.embed', 'success', { dims: embedding.length, textLen: composed.text.length }, Date.now() - embedStart)
+
     const upsertStart = Date.now()
-    await upsertEmbedding({
+    const { embedGeneration } = await upsertEmbedding({
       boardId: opts.boardId,
       nodeId: opts.nodeId,
       userId: opts.userId,
-      nodeType: opts.nodeType,
-      fallbackUrl: opts.url,
-      mediaAnalysis,
+      composed,
       embedding,
       hasVideo: !isLongForm,
       durationSeconds,
     })
     upsertOk = true
     logger.debug('media.upsert', 'success', { embedDims }, Date.now() - upsertStart)
+
+    await logger.persist(
+      'embed.server',
+      'success',
+      {
+        trigger: 'media_patch',
+        embedGeneration,
+        embeddingDims: embedding.length,
+        embedTextChars: composed.text.length,
+        hadTranscript: composed.hadTranscript,
+        hadDescription: composed.hadDescription,
+        hadAnalysis: composed.hadAnalysis,
+      },
+      Date.now() - embedStart,
+    )
 
     const outcome = analysisOk && embedOk ? 'success' : 'degraded'
     await logger.persist(
@@ -150,55 +203,29 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
   }
 }
 
-async function runShortFormTier(
+async function runShortFormAnalysis(
   videoPath: string,
-  workDir: string,
-  transcriptPromise: Promise<string>,
   logger: NodeLogger,
-): Promise<{ mediaAnalysis: string; embedding: number[] }> {
+): Promise<string> {
   // Analysis sees the full source video (which carries its own audio track).
-  // Embedding sees a 2-min trimmed clip + a 2-min standalone audio track —
-  // the embedding model caps video at 120s and benefits from the audio side
-  // being explicit rather than embedded in the mp4 container.
   const analyzeStart = Date.now()
-  const [trimmedVideo, trimmedAudio, mediaAnalysis] = await Promise.all([
-    trimVideo(videoPath, workDir, EMBEDDING_TRIM_SECONDS),
-    extractAudio(videoPath, workDir, EMBEDDING_TRIM_SECONDS),
-    analyzeMedia({ videoPath }),
-  ])
+  const mediaAnalysis = await analyzeMedia({ videoPath })
   logger.debug(
     'media.analyze',
     mediaAnalysis ? 'success' : 'degraded',
     { tier: 'short', analysisLen: mediaAnalysis.length },
     Date.now() - analyzeStart,
   )
-
-  const transcript = await transcriptPromise
-  const text = [transcript, mediaAnalysis].filter(Boolean).join('\n\n')
-
-  const embedStart = Date.now()
-  const embedding = await embedMultimodal({
-    text,
-    videoPath: trimmedVideo,
-    audioPath: trimmedAudio,
-  })
-  logger.debug('media.embed', 'success', { tier: 'short', dims: embedding.length, textLen: text.length }, Date.now() - embedStart)
-
-  return { mediaAnalysis, embedding }
+  return mediaAnalysis
 }
 
-async function runLongFormTier(
+async function runLongFormAnalysis(
   videoPath: string,
   workDir: string,
-  transcriptPromise: Promise<string>,
   logger: NodeLogger,
-): Promise<{ mediaAnalysis: string; embedding: number[] }> {
-  // No video sent anywhere. Analysis gets the full audio; embedding gets the
-  // first 2 min of audio plus transcript + analysis text.
-  const [fullAudio, trimmedAudio] = await Promise.all([
-    extractAudio(videoPath, workDir),
-    extractAudio(videoPath, workDir, EMBEDDING_TRIM_SECONDS),
-  ])
+): Promise<string> {
+  // No video sent anywhere past the 10-min mark — analysis gets full audio.
+  const fullAudio = await extractAudio(videoPath, workDir)
 
   const analyzeStart = Date.now()
   const mediaAnalysis = await analyzeMedia({ audioPath: fullAudio })
@@ -208,16 +235,5 @@ async function runLongFormTier(
     { tier: 'long', analysisLen: mediaAnalysis.length },
     Date.now() - analyzeStart,
   )
-
-  const transcript = await transcriptPromise
-  const text = [transcript, mediaAnalysis].filter(Boolean).join('\n\n')
-
-  const embedStart = Date.now()
-  const embedding = await embedMultimodal({
-    text,
-    audioPath: trimmedAudio,
-  })
-  logger.debug('media.embed', 'success', { tier: 'long', dims: embedding.length, textLen: text.length }, Date.now() - embedStart)
-
-  return { mediaAnalysis, embedding }
+  return mediaAnalysis
 }
