@@ -77,9 +77,29 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
         logger?.debug('enrich.tweet-image', 'success', { mimeType: tweetImage.imageMimeType })
         // Re-embed on image arrival: the drop embed no longer waits for this
         // fetch, and image tweets keep their inline image part in PR-1.
+        //
+        // The image fields are merged explicitly rather than trusted to the
+        // snapshot: patchNodeData routes through React setNodes (async), and
+        // getCurrentNodeData reads the store before the patch has flushed —
+        // a same-tick read returns pre-patch data (observed live: PR-1.1
+        // gen-2 media_patch embed that missed its own image). An arrival
+        // chain's embed must include what the chain itself patched, by
+        // construction.
         const current = getCurrentNodeData()
         if (current) {
-          embedNodeAsync(boardId, nodeId, 'linkCard', { ...current, loading: false }, logger, 'media_patch')
+          embedNodeAsync(
+            boardId,
+            nodeId,
+            'linkCard',
+            {
+              ...current,
+              imageBase64: tweetImage.imageBase64,
+              imageMimeType: tweetImage.imageMimeType,
+              loading: false,
+            },
+            logger,
+            'media_patch',
+          )
         }
       } else {
         logger?.debug('enrich.tweet-image', 'skipped', { reason: 'no-image' })
@@ -92,9 +112,19 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
     const transcriptUrl = tweetYouTubeUrl || url
     transcriptField = tweetYouTubeUrl ? 'youtubeTranscript' : 'transcript'
     fetchTranscript(transcriptUrl).then(async (transcript) => {
+      // Everything this chain patches is accumulated here and merged into
+      // the embed input explicitly. patchNodeData routes through React
+      // setNodes (async); getCurrentNodeData reads the store before the
+      // patch has flushed, so a same-tick read returns pre-patch data —
+      // observed live as a transcript_arrival embed with hadTranscript:
+      // false while an 877-char transcript sat in the node (PR-1.1, Todd
+      // Spence gen 3). The trigger's own artifact must be in the embed's
+      // composition by construction, never by render-timing luck.
+      const fresh: Record<string, unknown> = {}
       if (transcript) {
         transcriptLanded = true
         transcriptLen = transcript.length
+        fresh[transcriptField] = transcript
         patchNodeData({ [transcriptField]: transcript })
         logger?.debug('enrich.transcript', 'success', { field: transcriptField, len: transcript.length })
       } else {
@@ -119,6 +149,7 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
         })
         if (description) {
           descriptionGenerated = true
+          fresh.contentDescription = description
           patchNodeData({ contentDescription: description })
           logger?.debug('enrich.description', 'success', { len: description.length })
         } else {
@@ -146,7 +177,7 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
           boardId,
           nodeId,
           'linkCard',
-          { ...current, loading: false },
+          { ...current, ...fresh, loading: false },
           logger,
           descriptionGenerated ? 'description_generated' : 'transcript_arrival',
         )
@@ -189,6 +220,10 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
         }, elapsed)
         return
       }
+      // Merged into the embed input explicitly — same stale-snapshot hazard
+      // as the twitter chain above: getCurrentNodeData can't see this
+      // chain's own patches until React flushes.
+      const fresh: Record<string, unknown> = { transcript }
       patchNodeData({ transcript })
       logger?.debug('enrich.transcript', 'success', { field: 'transcript', len: transcript.length })
 
@@ -206,6 +241,7 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
       let descriptionGenerated = false
       if (description) {
         descriptionGenerated = true
+        fresh.contentDescription = description
         patchNodeData({ contentDescription: description })
         logger?.debug('enrich.description', 'success', { len: description.length })
       } else {
@@ -228,7 +264,7 @@ export function enrichLinkNode(opts: EnrichLinkNodeOptions): void {
           boardId,
           nodeId,
           'linkCard',
-          { ...current, loading: false },
+          { ...current, ...fresh, loading: false },
           logger,
           descriptionGenerated ? 'description_generated' : 'transcript_arrival',
         )

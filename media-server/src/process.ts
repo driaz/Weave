@@ -6,7 +6,8 @@ import { probeDuration, extractAudio } from './extract.js'
 import { fetchTranscript } from './transcript.js'
 import { analyzeMedia } from './analyze.js'
 import { embedMultimodal } from './embed.js'
-import { patchNodeData, upsertEmbedding, fetchNodeBlob, composeEmbedText, EMBED_TEXT_MAX_CHARS } from './supabase.js'
+import { patchNodeData, upsertEmbedding, fetchNodeBlob, buildUnionView, composeEmbedText, EMBED_TEXT_MAX_CHARS } from './supabase.js'
+import { shouldGenerateTweetDescription, fetchTweetDescription } from './description.js'
 import { cleanup } from './cleanup.js'
 import { createNodeLogger, type NodeLogger } from './logger.js'
 
@@ -59,6 +60,8 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
   let durationSeconds = 0
   let patchOk = false
   let upsertOk = false
+  let descriptionOk = false
+  let descriptionStep = 'not-reached'
 
   logger.debug('media.pipeline.start', 'success', { url: opts.url, nodeType: opts.nodeType })
 
@@ -110,21 +113,63 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
       logger.debug('media.patch', 'skipped', { reason: 'empty-analysis' })
     }
 
-    // Compose text-only embed input from the node's JSONB (client-written
-    // fields) + this run's transcript and analysis. The node blob is read
-    // AFTER the media_analysis patch so the composition and the blob agree.
+    // Union view (Fix B): per recipe field, this run's own artifact if
+    // present, else the stored JSONB value — never own-fetch-only when the
+    // store holds more. The node blob is read AFTER the media_analysis
+    // patch so the composition and the blob agree.
     const transcript = await transcriptPromise
     const blob = await fetchNodeBlob({
       nodeId: opts.nodeId,
       boardId: opts.boardId,
       userId: opts.userId,
     })
+    let view = buildUnionView(blob, { transcript, mediaAnalysis })
+
+    // Description step (Fix C): the client-side gate ran at transcript
+    // arrival, but analysis always lands later (this pipeline ~30-90s vs
+    // ~22s for the client fetch), so the fusion arm can only ever fire
+    // here. Re-evaluate against the union; generate via the existing
+    // Netlify function; a missing description degrades the embed, never
+    // fails the pipeline.
+    if (opts.nodeType !== 'twitter') {
+      descriptionStep = 'skipped-youtube'
+    } else if (!mediaAnalysis) {
+      descriptionStep = 'skipped-no-analysis'
+    } else if (view.contentDescription) {
+      descriptionStep = 'skipped-already-present'
+    } else if (!shouldGenerateTweetDescription(view)) {
+      // Unreachable while analysis is non-empty (the fusion arm passes),
+      // kept so the gate rule stays spelled out in one place.
+      descriptionStep = 'skipped-gate'
+    } else {
+      const description = await fetchTweetDescription(view, logger)
+      if (description) {
+        descriptionOk = true
+        descriptionStep = 'generated'
+        view = { ...view, contentDescription: description }
+        try {
+          await patchNodeData({
+            nodeId: opts.nodeId,
+            boardId: opts.boardId,
+            userId: opts.userId,
+            patch: { contentDescription: description },
+          })
+        } catch (err) {
+          // Composition still carries the description; only the JSONB copy
+          // is missing. Warn, don't fail.
+          logger.warn('media.description.patch', 'failed', {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      } else {
+        descriptionStep = 'failed'
+      }
+    }
+
     const composed = composeEmbedText({
       nodeType: opts.nodeType,
-      blob,
+      view,
       fallbackUrl: opts.url,
-      transcript,
-      mediaAnalysis,
     })
 
     // Budget tripwire: overflow past EMBED_TEXT_MAX_CHARS is otherwise
@@ -176,7 +221,7 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
     await logger.persist(
       'media.pipeline',
       outcome,
-      { tier, transcriptOk, analysisOk, analysisLen, embedOk, embedDims, durationSeconds, patchOk, upsertOk },
+      { tier, transcriptOk, analysisOk, analysisLen, embedOk, embedDims, durationSeconds, patchOk, upsertOk, descriptionOk, descriptionStep },
       Date.now() - startedAt,
     )
   } catch (err) {
@@ -193,6 +238,8 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
         durationSeconds,
         patchOk,
         upsertOk,
+        descriptionOk,
+        descriptionStep,
         error: err instanceof Error ? err.message : String(err),
       },
       Date.now() - startedAt,

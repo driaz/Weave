@@ -94,9 +94,53 @@ export async function fetchNodeBlob(opts: {
 }
 
 /**
- * Compose the embed text for a server-side re-embed. Mirrors the client
- * recipes in src/services/embeddingService.ts (duplicated deliberately —
- * different codebase — with identical field order):
+ * The union view of a node's composition inputs (PR-1.1 Fix B): per recipe
+ * field, this run's own freshly-generated artifact if present, else the
+ * stored JSONB value. Never own-fetch-only when the store holds more —
+ * observed live: a server embed with hadTranscript: false because its own
+ * Supadata fetch missed, while the client's successful fetch had put an
+ * 877-char transcript in JSONB 26 seconds earlier.
+ *
+ * The same view feeds the composition, the description gate, and the
+ * description generator's inputs, so none of them can be blind to words
+ * the database holds.
+ */
+export interface NodeUnionView {
+  title: string
+  authorName: string
+  authorHandle: string
+  tweetText: string
+  transcript: string
+  mediaAnalysis: string
+  contentDescription: string
+}
+
+export function buildUnionView(
+  blob: Record<string, unknown> | null,
+  own: { transcript?: string; mediaAnalysis?: string; contentDescription?: string },
+): NodeUnionView {
+  return {
+    title: blobString(blob, 'title'),
+    authorName: blobString(blob, 'authorName'),
+    authorHandle: blobString(blob, 'authorHandle'),
+    tweetText: blobString(blob, 'tweetText'),
+    // Tweets with an embedded YouTube link store the client's transcript
+    // under youtubeTranscript — same recipe slot (mirrors the client).
+    transcript:
+      (own.transcript ?? '').trim() ||
+      blobString(blob, 'transcript') ||
+      blobString(blob, 'youtubeTranscript'),
+    mediaAnalysis: (own.mediaAnalysis ?? '').trim() || blobString(blob, 'media_analysis'),
+    contentDescription:
+      (own.contentDescription ?? '').trim() || blobString(blob, 'contentDescription'),
+  }
+}
+
+/**
+ * Compose the embed text for a server-side re-embed from the union view.
+ * Mirrors the client recipes in src/services/embeddingService.ts
+ * (duplicated deliberately — different codebase — with identical field
+ * order):
  *
  *   YouTube:     title — authorName — contentDescription — transcript
  *   Video tweet: contentDescription — authorName — tweetText —
@@ -104,26 +148,21 @@ export async function fetchNodeBlob(opts: {
  *
  * All present fields, full length; the transcript rides last so a budget
  * overflow only ever cuts its tail. content_summary IS this text —
- * uncapped, exactly what was embedded.
+ * uncapped, exactly what was embedded. The had* flags derive from the
+ * actually-composed text.
  */
 export function composeEmbedText(opts: {
   nodeType: 'youtube' | 'twitter'
-  blob: Record<string, unknown> | null
+  view: NodeUnionView
   fallbackUrl: string
-  transcript: string
-  mediaAnalysis: string
 }): ComposedEmbedText {
-  const transcript = opts.transcript.trim()
-  const mediaAnalysis = opts.mediaAnalysis.trim()
-  const contentDescription = blobString(opts.blob, 'contentDescription')
-  const authorName = blobString(opts.blob, 'authorName')
+  const { transcript, mediaAnalysis, contentDescription, authorName, tweetText } = opts.view
 
   let segments: string[]
   if (opts.nodeType === 'youtube') {
-    const title = blobString(opts.blob, 'title') || opts.fallbackUrl
+    const title = opts.view.title || opts.fallbackUrl
     segments = [title, authorName, contentDescription]
   } else {
-    const tweetText = blobString(opts.blob, 'tweetText')
     // Blob unavailable → keep the row identifiable by URL, like the old
     // identifier fallback.
     const identity = authorName || tweetText ? '' : opts.fallbackUrl
@@ -151,7 +190,9 @@ export function composeEmbedText(opts: {
     text,
     hadTranscript: Boolean(transcript),
     hadDescription: Boolean(contentDescription),
-    hadAnalysis: Boolean(mediaAnalysis),
+    // "In this embed's text" — the youtube recipe never composes analysis,
+    // so its flag must not claim otherwise.
+    hadAnalysis: opts.nodeType === 'twitter' && Boolean(mediaAnalysis),
     truncatedFromChars,
   }
 }
