@@ -470,9 +470,15 @@ async function reembed(plan, record) {
         .eq('node_id', p.clientId)
         .maybeSingle()
       const existingSummary = existingRow?.content_summary ?? ''
+      const legacyTranscript = (asStr(data.transcript) || asStr(data.youtubeTranscript)).slice(0, 3000)
       const legacyReconstructions = [
         // pre-PR-1 client tweet format (text and image tweets alike)
         [asStr(data.authorName), asStr(data.authorHandle), asStr(data.tweetText), asStr(data.domain)].filter(Boolean).join(' — '),
+        // pre-PR-1 client tweet format with transcript (3,000-char slice rode
+        // after the domain — confirmed against 864f087's composition code).
+        // Added after the prod run's gomi/shouko skips: delta was pure
+        // handle+domain boilerplate.
+        [asStr(data.authorName), asStr(data.authorHandle), asStr(data.tweetText), asStr(data.domain), legacyTranscript].filter(Boolean).join(' — '),
         // pre-PR-1 generic link format
         [asStr(data.title), asStr(data.description), asStr(data.domain)].filter(Boolean).join(' — '),
       ]
