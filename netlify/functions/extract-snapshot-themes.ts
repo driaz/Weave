@@ -223,6 +223,9 @@ export default async (req: Request) => {
       .from('weave_embeddings')
       .select('board_id, node_id, node_type, content_summary')
       .in('board_id', boardIds)
+      // Archived rows (node deleted or vector superseded) never serve —
+      // same semantics as match_retrieval_context (migration 038).
+      .is('archived_at', null)
 
     if (embErr) {
       return Response.json(
