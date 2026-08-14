@@ -52,7 +52,6 @@ import { BoardIdContext } from './hooks/useBoardId'
 import { CancelNodeSelectContext } from './hooks/useCancelNodeSelect'
 import { embedNodeAsync, embedEdgeAsync } from './services/embeddingService'
 import { enrichLinkNode } from './services/linkEnrichment'
-import { supabase } from './services/supabaseClient'
 import { buildProcessingLogAppender, createNodeLogger } from './utils/logger'
 import { detectRenderAnomaly } from './utils/renderAnomaly'
 
@@ -79,7 +78,6 @@ export function App() {
     deleteBoard,
     saveCurrentBoard,
     markBoardClean,
-    queueSideEffect,
     saveError,
     dismissSaveError,
     rollbackSignal,
@@ -251,10 +249,10 @@ export function App() {
     }
   }, [nodes, connections, saveCurrentBoard, hydrating])
 
-  // Intentional delete: confirmation → local state cleanup → queue an
-  // embedding archive to fire AFTER the next successful Supabase save
-  // for this board. If the save rolls back (node reappears on canvas),
-  // the archive side-effect is dropped and the embedding stays active.
+  // Intentional delete: confirmation → local state cleanup. Embedding
+  // archival happens at the database layer — the AFTER DELETE trigger on
+  // nodes (migration 037) archives the row when the next save prunes the
+  // node, so a rolled-back save (node reappears on canvas) never archives.
   const deleteNode = useCallback(
     (nodeId: string) => {
       const confirmed = window.confirm(
@@ -267,28 +265,12 @@ export function App() {
         prev.filter((c) => c.from !== nodeId && c.to !== nodeId),
       )
 
-      const boardId = currentBoard.id
-      queueSideEffect(boardId, async () => {
-        if (!supabase) return
-        const { error } = await supabase
-          .from('weave_embeddings')
-          .update({ archived_at: new Date().toISOString() })
-          .eq('board_id', boardId)
-          .eq('node_id', nodeId)
-        if (error) {
-          console.warn(
-            '[Weave] Failed to archive embedding for deleted node:',
-            error.message,
-          )
-        }
-      })
-
       trackEvent('item_deleted', {
-        targetId: `node:${boardId}:${nodeId}`,
-        boardId,
+        targetId: `node:${currentBoard.id}:${nodeId}`,
+        boardId: currentBoard.id,
       })
     },
-    [currentBoard.id, queueSideEffect],
+    [currentBoard.id],
   )
 
   // Intercept React Flow's built-in Delete/Backspace removal so it routes

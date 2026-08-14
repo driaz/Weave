@@ -658,20 +658,8 @@ export function useBoardStorage(): UseBoardStorageResult {
         }
 
         // Post-success side effects — only run once the row is gone.
-        if (supabase) {
-          supabase
-            .from('weave_embeddings')
-            .update({ archived_at: new Date().toISOString() })
-            .eq('board_id', boardId)
-            .then(({ error }) => {
-              if (error) {
-                console.warn(
-                  '[Weave] Failed to archive embeddings for deleted board:',
-                  error.message,
-                )
-              }
-            })
-        }
+        // Embedding archival is handled by the AFTER DELETE trigger on
+        // nodes (migration 037): the board-delete cascade fires it per node.
         forgetUploadedImagesForBoard(boardId)
         lastSavedSignatures.current.delete(boardId)
         pendingSideEffects.current.delete(boardId)
