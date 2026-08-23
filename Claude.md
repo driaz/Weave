@@ -75,6 +75,15 @@ npm run preview      # Preview production build locally
 - When in doubt, choose the simpler approach.
 - If something is a judgment call, state the tradeoffs and let me decide.
 
+### Session discipline
+
+Hard-won rules from prior sittings. Each exists because it was violated once.
+
+- **Checkout currency.** Cut branches from a freshly-fetched `origin/main`, never from local `main`. `git fetch` precedes checkout, always — a branch cut from a stale base inherits its blind spots silently, and nothing in the working tree announces it.
+- **Absence claims.** A negative result is a claim about the search space, not about the world. Before asserting that something does not exist, state the preconditions the search space itself depends on — checkout currency, RLS visibility, migration state. "Not in my working tree" is not "does not exist."
+- **Missing tooling.** A missing tool (scanner, CLI, linter) is a stop-and-report, not a self-install decision.
+- **Database auth.** Connect via `--db-url` (the read-only URL for reads). Never the Supabase Management API, never CLI auth flows, never keychain prompts. On any auth failure: stop and report — never retry with elevated credentials. This governs how a session reaches a database; applying migrations remains the human terminal ceremony documented under *Migration promotion workflow*.
+
 ## Development Environment
 
 - **Editor:** VS Code with Claude Code extension
