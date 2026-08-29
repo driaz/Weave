@@ -83,6 +83,7 @@ Hard-won rules from prior sittings. Each exists because it was violated once.
 - **Absence claims.** A negative result is a claim about the search space, not about the world. Before asserting that something does not exist, state the preconditions the search space itself depends on — checkout currency, RLS visibility, migration state. "Not in my working tree" is not "does not exist."
 - **Missing tooling.** A missing tool (scanner, CLI, linter) is a stop-and-report, not a self-install decision.
 - **Database auth.** Connect via `--db-url` (the read-only URL for reads). Never the Supabase Management API, never CLI auth flows, never keychain prompts. On any auth failure: stop and report — never retry with elevated credentials. This governs how a session reaches a database; applying migrations remains the human terminal ceremony documented under *Migration promotion workflow*.
+- **Batch cardinality.** For every inventory or batch operation: state the expected count (derived independently of the processing loop), state the processed count, and compare before declaring done. On mismatch, halt and re-derive both sides independently — never adjust expected to match processed.
 
 ## Development Environment
 
