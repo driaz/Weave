@@ -55,10 +55,27 @@ export const PIPELINE_VERSION = 'v2'
 
 export const MS_PER_DAY = 86_400_000
 
+/** Run-time knobs the entry point accepts; every one is recorded in parameters. */
+export type RunOptions = {
+  anchorCount: number
+  /** When true, w_rule = 1 for every rule; decay and horizons stay on. */
+  uniformWeights: boolean
+  /** PostgREST page size for every read. */
+  pageSize: number
+}
+
+export const DEFAULT_RUN_OPTIONS: RunOptions = {
+  anchorCount: ANCHOR_COUNT,
+  uniformWeights: false,
+  pageSize: READ_PAGE_SIZE,
+}
+
 /** The named parameter block recorded in generation_metadata.parameters. */
-export function ratifiedParameters(anchorCount: number) {
+export function ratifiedParameters(opts: RunOptions) {
   return {
-    anchor_count: anchorCount,
+    anchor_count: opts.anchorCount,
+    uniform_weights: opts.uniformWeights,
+    page_size: opts.pageSize,
     breadth_max: BREADTH_MAX,
     dwell_cap_s: DWELL_CAP_S,
     voice_base: VOICE_BASE,

@@ -46,6 +46,20 @@ describe('readEvents gate', () => {
   })
 })
 
+describe('page_size', () => {
+  it('page size 2 over a 5-row fixture returns 5 rows and passes the count gate', async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ id: `e${i}`, event_type: 'item_added' }))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await readEvents(fakeClient(rows, 5) as any, new Date(), 2)
+    expect(out.rows.map((r) => r.id)).toEqual(['e0', 'e1', 'e2', 'e3', 'e4'])
+    expect(out.gate).toEqual({ rows_returned: 5, rows_expected: 5 })
+  })
+  it('rejects a non-positive page size', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(readEvents(fakeClient([], 0) as any, new Date(), 0)).rejects.toThrow(/page size/)
+  })
+})
+
 describe('helpers', () => {
   it('horizonStart subtracts whole days', () => {
     expect(horizonStart(new Date('2026-09-05T00:00:00Z'), 70)).toBe('2026-06-27T00:00:00.000Z')

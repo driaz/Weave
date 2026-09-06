@@ -160,11 +160,19 @@ function edgeIdOf(event: EngagementEvent, keys: string[]): string | null {
   return keys.length === 2 && event.target_id ? event.target_id : null
 }
 
+/** w_rule under uniform weights: every resolving event counts 1 before decay. */
+export const UNIFORM_W_RULE = 1
+
 /**
  * Apply the roster to a list of events. Events with no rule are skipped and
  * counted; events whose target does not resolve are skipped and counted.
+ * With `uniformWeights`, w_rule = UNIFORM_W_RULE for every rule (the R2
+ * unweighted run); decay and horizons are unaffected.
  */
-export function resolveEvents(events: EngagementEvent[]): {
+export function resolveEvents(
+  events: EngagementEvent[],
+  opts: { uniformWeights: boolean } = { uniformWeights: false },
+): {
   resolved: ResolvedEvent[]
   unmatchedByType: Record<string, number>
   unresolvedByType: Record<string, number>
@@ -187,7 +195,7 @@ export function resolveEvents(events: EngagementEvent[]): {
       event,
       class: rule.class,
       keys,
-      w_rule: rule.weight(event),
+      w_rule: opts.uniformWeights ? UNIFORM_W_RULE : rule.weight(event),
       edge_id: edgeIdOf(event, keys),
     })
   }
