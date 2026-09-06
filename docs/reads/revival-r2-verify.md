@@ -2,13 +2,13 @@
 
 > **This is a point-in-time verification record, as of 2026-09-05 (local).**
 >
-> **Read opened:** `PENDING — select now() at first RO connection (P2)`.
+> **Read opened:** `2026-09-06 02:24:10 UTC` (`select now()` at first RO connection, P2).
 > **Repo SHA (baseline read):** `2cda5920f37692c2b9f165dea6d7beb27586106d` (`origin/main` = PR #45 merged).
-> **Repo SHA (runs):** `PENDING — origin/main after PR #46 (Part A) merges; the deployed function must carry it`.
+> **Repo SHA (runs):** `02078ae0d2524691affb9011a310ac6474c96d15` (`origin/main` after PR #46 merged; Netlify deploys `main`, so this is the code the runs execute).
 > **Database:** Weave prod (`wndfikmpifyqkgivmnwv`).
 > **Role:** `weave_readonly` via `WEAVE_PROD_RO_DATABASE_URL` / `--db-url` only. Claude Code holds no
 > write credential and no JWT; every generation is executed by Daniel from his own terminal.
-> **Dashboard PostgREST max-rows:** `PENDING — supplied by Daniel`.
+> **Dashboard PostgREST max-rows:** **1000** (read by Daniel from the project dashboard, 2026-09-05). This closes R0/F3: the v1 read (2,642 rows, no range) was capped at 1,000; the v2 read is range-paged and count-gated, so the cap cannot truncate it silently.
 >
 > **Findings in this document decay; the query map does not.** Every count is
 > verified by re-running the query directly above it, never by citing this file.
