@@ -2,7 +2,7 @@
 // snapshot row fields plus generation_metadata. No I/O, no clock: generatedAt
 // is an input.
 
-import { CLUSTER_SIMILARITY_THRESHOLD, PIPELINE_VERSION, TOP_EVENTS_PER_ANCHOR, ratifiedParameters } from './constants'
+import { CLUSTER_SIMILARITY_THRESHOLD, PIPELINE_VERSION, TOP_EVENTS_PER_ANCHOR, ratifiedParameters, type RunOptions } from './constants'
 import { agglomerativeClustering, nodesFromEmbeddingRows } from './clustering'
 import {
   attribute,
@@ -30,7 +30,7 @@ export type NodeSetSpec =
 
 export type GenerationInput = {
   generatedAt: Date
-  anchorCount: number
+  options: RunOptions
   nodeSet: NodeSetSpec
   embeddingRows: EmbeddingRow[]
   embeddingsGate: ReadGate
@@ -76,7 +76,8 @@ function selectNodeRows(rows: EmbeddingRow[], spec: NodeSetSpec): EmbeddingRow[]
 }
 
 export function generateSnapshot(input: GenerationInput): GenerationOutput {
-  const { generatedAt, anchorCount } = input
+  const { generatedAt, options } = input
+  const anchorCount = options.anchorCount
 
   // Node set and clustering input. The map is keyed on exactly these nodes.
   const nodeRows = selectNodeRows(input.embeddingRows, input.nodeSet)
@@ -89,7 +90,9 @@ export function generateSnapshot(input: GenerationInput): GenerationOutput {
     ...input.events.map(fromWeaveEvent),
     ...input.voiceSessions.map(fromVoiceSession),
   ]
-  const { resolved, unmatchedByType, unresolvedByType } = resolveEvents(engagementEvents)
+  const { resolved, unmatchedByType, unresolvedByType } = resolveEvents(engagementEvents, {
+    uniformWeights: options.uniformWeights,
+  })
   const attributed = attribute(resolved, map, generatedAt)
 
   // Normalize: max weight -> 1.0 (unchanged from v1).
@@ -149,7 +152,7 @@ export function generateSnapshot(input: GenerationInput): GenerationOutput {
   const generationMetadata = {
     pipeline_version: PIPELINE_VERSION,
     generated_at: generatedAt.toISOString(),
-    parameters: ratifiedParameters(anchorCount),
+    parameters: ratifiedParameters(options),
     node_set: { source: input.nodeSet.source, keys: nodeKeys, count: nodeKeys.length },
     events_read: {
       breadth_from: input.breadthFrom,

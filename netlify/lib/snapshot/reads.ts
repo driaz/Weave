@@ -41,17 +41,21 @@ async function pageAll<T>(
     order: (col: string, opts?: { ascending?: boolean }) => unknown
   },
   orderBy: string[],
+  pageSize: number = READ_PAGE_SIZE,
 ): Promise<T[]> {
+  if (!Number.isInteger(pageSize) || pageSize < 1) {
+    throw new Error(`[Snapshot] page size must be a positive integer, got ${pageSize}`)
+  }
   const out: T[] = []
-  for (let from = 0; ; from += READ_PAGE_SIZE) {
+  for (let from = 0; ; from += pageSize) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let q: any = build()
     for (const col of orderBy) q = q.order(col, { ascending: true })
-    const { data, error } = await q.range(from, from + READ_PAGE_SIZE - 1)
+    const { data, error } = await q.range(from, from + pageSize - 1)
     if (error) throw new Error(`[Snapshot] paged read failed: ${error.message}`)
     const page = (data ?? []) as T[]
     out.push(...page)
-    if (page.length < READ_PAGE_SIZE) break
+    if (page.length < pageSize) break
   }
   return out
 }
@@ -62,11 +66,13 @@ async function pageAll<T>(
 
 export async function readEmbeddings(
   supabase: Client,
+  pageSize: number = READ_PAGE_SIZE,
 ): Promise<{ rows: EmbeddingRow[]; gate: ReadGate }> {
   const cols = 'board_id, node_id, node_type, embedding, content_summary, archived_at'
   const rows = await pageAll<EmbeddingRow>(
     () => supabase.from('weave_embeddings').select(cols),
     ['created_at', 'board_id', 'node_id'],
+    pageSize,
   )
   const { count, error } = await supabase
     .from('weave_embeddings')
@@ -86,6 +92,7 @@ export const EVENT_TYPES_READ = [...new Set([...ROSTER_EVENT_TYPES, ...PAIR_EVEN
 export async function readEvents(
   supabase: Client,
   generatedAt: Date,
+  pageSize: number = READ_PAGE_SIZE,
 ): Promise<{ rows: WeaveEventRow[]; gate: ReadGate; breadth_from: string; by_type: Record<string, number> }> {
   const breadthFrom = horizonStart(generatedAt, BREADTH_HORIZON_DAYS)
   const predicate = (q: ReturnType<Client['from']>) =>
@@ -94,6 +101,7 @@ export async function readEvents(
   const rows = await pageAll<WeaveEventRow>(
     () => predicate(supabase.from('weave_events')),
     ['timestamp', 'id'],
+    pageSize,
   )
   const { count, error } = await supabase
     .from('weave_events')
@@ -138,6 +146,7 @@ export function clientNodeId(node: NodeRow): string {
 export async function readVoiceSessions(
   supabase: Client,
   generatedAt: Date,
+  pageSize: number = READ_PAGE_SIZE,
 ): Promise<{
   rows: VoiceSessionRow[]
   gate: ReadGate
@@ -160,6 +169,7 @@ export async function readVoiceSessions(
   const raw = await pageAll<RawVoiceRow>(
     () => predicate(supabase.from('voice_sessions')),
     ['ended_at', 'id'],
+    pageSize,
   )
   const { count, error } = await supabase
     .from('voice_sessions')
@@ -178,6 +188,7 @@ export async function readVoiceSessions(
     ? await pageAll<EdgeRow>(
         () => supabase.from('edges').select('id, board_id, source_node_id, target_node_id').in('id', edgeIds),
         ['id'],
+        pageSize,
       )
     : []
   const edgeById = new Map(edges.map((e) => [e.id, e]))
@@ -186,6 +197,7 @@ export async function readVoiceSessions(
     ? await pageAll<NodeRow>(
         () => supabase.from('nodes').select('id, board_id, data').in('id', nodeIds),
         ['id'],
+        pageSize,
       )
     : []
   const nodeById = new Map(nodes.map((n) => [n.id, n]))

@@ -102,6 +102,30 @@ describe('curves', () => {
   })
 })
 
+describe('uniform weights', () => {
+  it('gives every resolving event w_rule = 1 across a mixed fixture, leaving keys and classes intact', () => {
+    const events = [
+      fromWeaveEvent(event({ id: 'a', event_type: 'lightbox_closed', target_id: `node:${BOARD}:1`, duration_ms: 45_000 })),
+      fromWeaveEvent(event({ id: 'b', event_type: 'connection_description_closed', target_id: `connection:${BOARD}:1:2`, duration_ms: 2_000 })),
+      fromWeaveEvent(event({ id: 'c', event_type: 'item_added', target_id: `node:${BOARD}:3` })),
+      fromVoiceSession({ session_id: 'vs1', anchor_edge_id: 'e', ended_at: AT.toISOString(), user_turns: 23, anchor_target: `connection:${BOARD}:1:2`, board_id: BOARD }),
+    ]
+    const weighted = resolveEvents(events).resolved
+    const uniform = resolveEvents(events, { uniformWeights: true }).resolved
+    expect(new Set(weighted.map((r) => r.w_rule)).size).toBe(4)
+    expect(uniform.map((r) => r.w_rule)).toEqual([1, 1, 1, 1])
+    expect(uniform.map((r) => r.keys)).toEqual(weighted.map((r) => r.keys))
+    expect(uniform.map((r) => r.class)).toEqual(weighted.map((r) => r.class))
+  })
+  it('a zero-turn voice session still weighs 1 under uniform weights', () => {
+    const { resolved } = resolveEvents(
+      [fromVoiceSession({ session_id: 'vs0', anchor_edge_id: 'e', ended_at: AT.toISOString(), user_turns: 0, anchor_target: `connection:${BOARD}:1:2`, board_id: BOARD })],
+      { uniformWeights: true },
+    )
+    expect(resolved[0].w_rule).toBe(1)
+  })
+})
+
 describe('edge resolution', () => {
   it('one edge event resolves to two endpoint keys and keeps the edge id', () => {
     const target = `connection:${BOARD}:4:9`

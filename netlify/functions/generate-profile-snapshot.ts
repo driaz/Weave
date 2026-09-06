@@ -9,16 +9,25 @@
 // I/O shell: verify the caller, read (paged, count-gated), generate, insert.
 
 import { createClient } from '@supabase/supabase-js'
-import { ANCHOR_COUNT } from '../lib/snapshot/constants'
+import { DEFAULT_RUN_OPTIONS, type RunOptions } from '../lib/snapshot/constants'
 import { UnauthorizedError, verifyCaller } from '../lib/snapshot/auth'
 import { generateSnapshot, type NodeSetSpec } from '../lib/snapshot/generate'
 import { readEmbeddings, readEvents, readPinnedNodeSet, readVoiceSessions } from '../lib/snapshot/reads'
 
 type RequestBody = {
+  /** Free text; R2 unweighted runs use 'r2_unweighted' so they stay distinguishable from t1. */
   trigger_reason?: unknown
   anchor_count?: unknown
+  /** When true, w_rule = 1 for every rule (decay and horizons unchanged). */
+  uniform_weights?: unknown
+  /** Read page size; default READ_PAGE_SIZE. Small values walk pagination on purpose. */
+  page_size?: unknown
   /** Test-harness parameter: reuse the node set recorded on an earlier snapshot. */
   pin_node_set_from_snapshot_id?: unknown
+}
+
+function positiveInteger(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null
 }
 
 function timer(): () => number {
@@ -63,10 +72,20 @@ export default async (req: Request) => {
       // Empty body is fine; defaults apply.
     }
     const triggerReason = typeof body.trigger_reason === 'string' ? body.trigger_reason : 'manual'
-    const anchorCount =
-      typeof body.anchor_count === 'number' && Number.isInteger(body.anchor_count) && body.anchor_count > 0
-        ? body.anchor_count
-        : ANCHOR_COUNT
+    if (body.anchor_count !== undefined && positiveInteger(body.anchor_count) === null) {
+      return Response.json({ error: 'anchor_count must be a positive integer' }, { status: 400 })
+    }
+    if (body.page_size !== undefined && positiveInteger(body.page_size) === null) {
+      return Response.json({ error: 'page_size must be a positive integer' }, { status: 400 })
+    }
+    if (body.uniform_weights !== undefined && typeof body.uniform_weights !== 'boolean') {
+      return Response.json({ error: 'uniform_weights must be a boolean' }, { status: 400 })
+    }
+    const options: RunOptions = {
+      anchorCount: positiveInteger(body.anchor_count) ?? DEFAULT_RUN_OPTIONS.anchorCount,
+      uniformWeights: body.uniform_weights === true,
+      pageSize: positiveInteger(body.page_size) ?? DEFAULT_RUN_OPTIONS.pageSize,
+    }
 
     const generatedAt = new Date()
 
@@ -80,21 +99,21 @@ export default async (req: Request) => {
     }
 
     const tEmb = timer()
-    const embeddings = await readEmbeddings(supabase)
+    const embeddings = await readEmbeddings(supabase, options.pageSize)
     const fetchEmbeddingsTiming = tEmb()
 
     const tEvents = timer()
-    const events = await readEvents(supabase, generatedAt)
+    const events = await readEvents(supabase, generatedAt, options.pageSize)
     const fetchEventsTiming = tEvents()
 
     const tVoice = timer()
-    const voice = await readVoiceSessions(supabase, generatedAt)
+    const voice = await readVoiceSessions(supabase, generatedAt, options.pageSize)
     const fetchVoiceTiming = tVoice()
 
     const tGenerate = timer()
     const out = generateSnapshot({
       generatedAt,
-      anchorCount,
+      options,
       nodeSet,
       embeddingRows: embeddings.rows,
       embeddingsGate: embeddings.gate,
