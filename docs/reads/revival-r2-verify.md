@@ -280,7 +280,75 @@ select jsonb_pretty(generation_metadata->'parameters') from weave_profile_snapsh
 `h_breadth_days 14`, `h_depth_days 42`, `k 5`, `anchor_count 3`, `voice_base 0.6460` ✅.
 `timing_ms`: fetch_embeddings 2,663 / fetch_events 494 / fetch_voice 1,547 / generate 158.
 
-**OQ14 verdict — Reflect visibility:** `PENDING — Daniel's observation in the prod UI, recorded verbatim when reported.`
+**OQ14 verdict — Reflect visibility, Daniel's observation verbatim (2026-09-05 local):** *"There is no
+visibility"*. **Not visible.** Per §5 this is a stop condition: **run 2 (B3) is not executed**; B4 is
+not attempted. B2, B5 and B6 below are RO reads of run 1 and stand as recorded.
+
+**What the UI observation can and cannot decide (code, not inference).** Reflect renders through
+[`getLatestProfileSnapshot`](../../src/persistence/profileSnapshots.ts) →
+[`profileSnapshotStore.refresh`](../../src/services/profileSnapshot/profileSnapshotStore.ts) →
+[`ReflectView`](../../src/components/ReflectView.tsx):
+
+```ts
+// src/persistence/profileSnapshots.ts:39-57
+    .from('weave_profile_snapshots')
+    .select('id, created_at, node_count, clusters, narrative, generation_metadata')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  ...
+  // The contract is "a usable snapshot or nothing" — a row whose
+  // narrative is null or blank is indistinguishable from no row from
+  // the caller's perspective, so collapse both cases here.
+  const narrative = data.narrative?.trim()
+  if (!narrative) return null
+```
+
+```ts
+// src/services/profileSnapshot/profileSnapshotStore.ts:109-114
+        const result = await getLatestProfileSnapshot(client)
+        if (result) { ... setState({ snapshot: result, ... }) }
+        else { setState({ snapshot: null, loading: false, error: null }) }
+// src/components/ReflectView.tsx:103-107 — snapshot null ⇒ contentMode 'empty'
+```
+
+Run 1 is a stage-1 row: `narrative` is `null` by construction (filled by
+`generate-snapshot-narrative`, stage 3, not run here). **A stage-1 snapshot cannot appear in
+Reflect under any RLS outcome**; the client collapses it to "no snapshot". The dispatch's §1
+("Their Reflect appearance is expected and accepted") assumed otherwise — see §8.
+
+The observation therefore splits OQ14 into two readable states, decided by *what Reflect shows
+instead*, because `limit(1)` returns only the newest row the policy admits:
+
+| RLS admits run 1 to Daniel's session? | newest admitted row | client result | Reflect shows |
+|---|---|---|---|
+| **yes** | run 1 (`narrative` null) | collapsed to `null` | **empty state** — the April fixture *"Clarity as cost, not reward"* disappears |
+| **no** | fixture `204af847…` (has narrative) | fixture | **the April fixture, unchanged** |
+
+```sql
+-- RO view of the same ordering, policy-free
+select id, created_at, trigger_reason, user_id, (narrative is not null and btrim(narrative) <> '') as has_narrative,
+       jsonb_array_length(coalesce(clusters,'[]'::jsonb)) as n_clusters, generation_metadata->>'title' as title
+from weave_profile_snapshots order by created_at desc limit 5;
+-- → 253c9a8c… | 2026-09-06 03:13:55 | r2_unweighted | 92fcfcc8-… | f | 7 | (null)
+--   204af847… | 2026-04-17 22:52:00 | fixture       | 92fcfcc8-… | t | 0 | Clarity as cost, not reward
+select polname, pg_get_expr(polqual, polrelid) from pg_policy where polrelid='public.weave_profile_snapshots'::regclass and polcmd='r';
+-- → readonly_audit_select true | weave_profile_snapshots_select_own (auth.uid() = user_id)
+```
+
+**Pending Daniel's second observation** (either resolves OQ14 as an RLS question without any
+write): (a) whether Reflect now shows the April fixture or the empty state; or (b) the direct
+authenticated read below, run from his terminal with his own token and the prod **anon** key
+(both public to the browser; never pasted here) — it exercises exactly `select_own`:
+
+```bash
+curl -s "$WEAVE_SUPABASE_URL/rest/v1/weave_profile_snapshots?select=id,created_at,trigger_reason&order=created_at.desc" \
+  -H "apikey: $WEAVE_SUPABASE_ANON_KEY" -H "Authorization: Bearer $WEAVE_SNAPSHOT_JWT"
+```
+
+Two rows (`253c9a8c…` first) ⇒ RLS admits the pipeline-written row; one row (the fixture) ⇒ it
+does not. The verdict recorded above stays "not visible" as the UI fact; whether B3 proceeds is
+the planning layer's call on the RLS fact once (a) or (b) is reported.
 (`weave_readonly` cannot emulate `auth.uid()`; the RLS-side facts are: policy
 `weave_profile_snapshots_select_own` is `auth.uid() = user_id`, and the row's `user_id` is
 Daniel's uid, so the policy predicate is satisfiable for his session.)
@@ -394,4 +462,89 @@ the source row and recompute `w_eff`.
   "voice_entries": 4, "user_turns_match": 4, "misses": [] }
 ```
 
-(B3, B4 and the second run's metadata follow once run 2 exists.)
+---
+
+## B3 / B4 — not executed
+
+Stopped at the OQ14 stop condition (B1). Run 2 was not requested; no determinism diff exists.
+The runbook command for B3 remains above for use if the planning layer clears it.
+
+---
+
+## 8. Contradicts the dispatch
+
+- **"Their Reflect appearance is expected and accepted."** A stage-1 row cannot appear in Reflect:
+  the client discards any snapshot with a null/blank `narrative`
+  (`profileSnapshots.ts:53-57`), and stage 1 writes `narrative: null`. The UI observation the
+  dispatch designates as the OQ14 verdict therefore reads "not visible" for every stage-1 run,
+  whatever RLS does. The RLS question is still decidable from the UI, but by the *fixture's*
+  presence or absence, or by the direct authenticated read above.
+- **B6 "confirm each event exists … by id."** `top_events` entries for `weave_events` carry no row
+  id (neither R1's shape nor §2.5's includes one); located instead by `(event_type, target_id,
+  timestamp = generated_at − age_days)` within 2 ms — 32/32 found. Voice entries do carry
+  `voice_session_id` — 4/4 found. A row id in provenance would make B6 exact; not added here.
+- **"Anchors that fail the `_clientNodeId` hop must appear in `attribution.dropped`."** All 16
+  anchors resolve to live endpoints today, so the clause has nothing to count; the mechanism
+  (a failed hop ⇒ `absent` under `voice_session`) is in place but unexercised.
+- **Pre-registered `absent` 16 → 29.** Not observable at the 70-day horizon (`absent` = 0); the
+  dispatch anticipated the difference and asked for independence instead, which holds 27/27.
+- **`nodes_found` expectation.** B0d first predicted 32 endpoint nodes; the read requests
+  *distinct* uuids and anchors share endpoints, so the figure is 22. Corrected in B0d.
+
+## 9. Query map
+
+| id | measures | where |
+|---|---|---|
+| `P2`–`P5` | role, RLS visibility, QA marker, grants (as R0) | §0 |
+| `B0a` | snapshot inventory | B0, B1 |
+| `B0b` | 70-day attribution by type (SQL composite join); 5-type row count | B0 |
+| `B0c` | pair set-difference per `(session_id, target_id)`, 70 d | B0 |
+| `B0d` | qualifying voice sessions with anchor hop (`edges` → `nodes.data._clientNodeId`) | B0, B6 |
+| `B0e` | live / total embeddings | B0 |
+| `B1` | new-row check; `user_id` = uid; `parameters`; `node_set` vs live count | B1 |
+| `R-view` | Reflect's ordering, policy-free; SELECT policies | B1 |
+| script A | `r2-expected.ts` — real R1 modules over RO exports at a given `generated_at` | B0, B2 |
+| script B | `r2-gates.mjs` — order-insensitive expected/observed table | B2 |
+| script C | `r2-provenance.mjs` — locate every `top_events` row; recompute `w_eff`, `user_turns` | B6 |
+
+## Appendix A — `r2-expected.ts` (throwaway; imports the real modules, not copies)
+
+```ts
+import { readFileSync } from 'node:fs'
+import { BREADTH_HORIZON_DAYS, DEPTH_HORIZON_DAYS, MS_PER_DAY } from '<repo>/netlify/lib/snapshot/constants'
+import { attribute, buildWeightMap, compositeKey, fromVoiceSession, fromWeaveEvent, pairAsymmetry, resolveEvents } from '<repo>/netlify/lib/snapshot/engagement'
+import { EVENT_TYPES_READ } from '<repo>/netlify/lib/snapshot/reads'
+const [S, atIso, uniformArg] = process.argv.slice(2)
+const generatedAt = new Date(atIso); const uniform = uniformArg === 'true'
+const events = JSON.parse(readFileSync(`${S}/r2-events.json`, 'utf8'))
+const embeddings = JSON.parse(readFileSync(`${S}/r2-embeddings.json`, 'utf8'))
+const voice = JSON.parse(readFileSync(`${S}/r2-voice.json`, 'utf8'))
+const breadthFrom = new Date(generatedAt.getTime() - BREADTH_HORIZON_DAYS * MS_PER_DAY)
+const depthFrom = new Date(generatedAt.getTime() - DEPTH_HORIZON_DAYS * MS_PER_DAY)
+const windowEvents = events.filter((e) => EVENT_TYPES_READ.includes(e.event_type) && new Date(e.timestamp) >= breadthFrom)
+const byType = {}; for (const e of windowEvents) byType[e.event_type] = (byType[e.event_type] ?? 0) + 1
+const windowVoice = voice.filter((v) => new Date(v.ended_at) >= depthFrom)
+const liveKeys = embeddings.filter((r) => r.archived_at === null).map(compositeKey)
+const map = buildWeightMap(embeddings, liveKeys)
+const engagementEvents = [...windowEvents.map(fromWeaveEvent), ...windowVoice.map((v) => fromVoiceSession({
+  session_id: v.session_id, anchor_edge_id: v.anchor_edge_id, ended_at: v.ended_at,
+  user_turns: Number(v.user_turns), anchor_target: v.anchor_target, board_id: v.board_id }))]
+const { resolved, unmatchedByType, unresolvedByType } = resolveEvents(engagementEvents, { uniformWeights: uniform })
+const out = attribute(resolved, map, generatedAt)
+console.log(JSON.stringify({ generated_at: generatedAt.toISOString(), uniform_weights: uniform,
+  breadth_from: breadthFrom.toISOString(), depth_from: depthFrom.toISOString(),
+  events_read: { rows_expected: windowEvents.length, by_type: byType },
+  voice_sessions: { rows_expected: windowVoice.length, user_turns: windowVoice.map((v) => [v.session_id.slice(0, 8), Number(v.user_turns)]) },
+  node_set_count_live: liveKeys.length, embeddings_total: embeddings.length,
+  attribution: out.attribution, pair_asymmetry: pairAsymmetry(windowEvents),
+  events_unmatched_by_type: unmatchedByType, events_unresolved_by_type: unresolvedByType,
+  max_raw_weight: Math.max(...Object.values(out.weights), 0) }, null, 1))
+```
+
+Bundled with `esbuild --bundle --platform=node --format=esm --alias:@supabase/supabase-js=<repo>/node_modules/@supabase/supabase-js`
+from a checkout at the **deployed SHA** (see the B2 method incident).
+
+## Appendix B — `r2-gates.mjs` and Appendix C — `r2-provenance.mjs`
+
+Reproduced in the session record for this sitting; both are short joins over `run1-meta.json`,
+the RO exports, and `r2-expected-run1.json`, with key-order-insensitive JSON comparison.
