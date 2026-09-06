@@ -196,7 +196,7 @@ order by s.ended_at, s.id;
 | `dd5f619b` | 08-28 | 14 | `a428492a…:39:35` | live / live |
 
 **Expected voice at any run in the next weeks:** `events_read.voice_sessions.rows_returned =
-rows_expected = 16`; `anchors.edges_found = 16`, `nodes_found = 32`; `attribution.by_type.voice_session
+rows_expected = 16`; `anchors.edges_found = 16`, `nodes_found = 22` (distinct endpoint uuids; anchors share nodes); `attribution.by_type.voice_session
 = 32 / 32 / 0 / 0` (every anchor endpoint is a live embedding, so **no** voice key lands in
 `attribution.dropped` today — the dispatch's "unresolved anchors appear in dropped" clause has
 nothing to count; a failed `_clientNodeId` hop would surface as an `absent` miss under
@@ -235,4 +235,163 @@ curl -s -X POST "$WEAVE_PROD_URL/api/generate-profile-snapshot" \
   -d '{"trigger_reason":"r2_unweighted","uniform_weights":true,"page_size":50,"pin_node_set_from_snapshot_id":"<RUN1_SNAPSHOT_ID>"}'
 ```
 
-(B1–B6 verification sections follow once the runs exist.)
+
+---
+
+## B1 — Run 1 (OQ14)
+
+Executed by Daniel from his terminal at `2026-09-06 03:13:50 UTC` against the deployed function
+(`main` = `02078ae`), body `{"trigger_reason":"r2_unweighted","uniform_weights":true}`. Function
+response (pasted by Daniel; no secrets): `snapshot_id 253c9a8c-5170-4461-86e0-e9c9fece9cbd`,
+`summary {cluster_count 7, avg_cluster_size 5, cross_board_cluster_count 7, max_cluster_size 14,
+singletons_dropped 36, nodes_excluded 0}`, attribution and `events_read` identical to the RO
+figures below.
+
+```sql
+select count(*) as snapshot_rows, count(*) filter (where created_at > '2026-09-06 02:24:10+00') as new_rows
+from weave_profile_snapshots;
+-- → 2 | 1                                                          (exactly one new row ✅)
+select id, created_at, trigger_reason, user_id, (user_id = '92fcfcc8-fac9-466f-be22-afdfa71b9102') as user_is_daniel,
+       node_count, event_count, jsonb_array_length(clusters) as n_clusters, generation_metadata->>'pipeline_version' as pv,
+       generation_metadata->>'generated_at' as generated_at
+from weave_profile_snapshots where id = '253c9a8c-5170-4461-86e0-e9c9fece9cbd';
+-- → 253c9a8c… | 2026-09-06 03:13:55.653969+00 | r2_unweighted | 92fcfcc8-… | t | 71 | 207 | 7 | v2 | 2026-09-06T03:13:50.574Z
+select jsonb_pretty(generation_metadata->'parameters') from weave_profile_snapshots where id = '253c9a8c-…';
+```
+
+```json
+{
+  "k": 5,
+  "page_size": 500,
+  "voice_base": 0.6460148371100897,
+  "breadth_max": 1.5,
+  "dwell_cap_s": 45,
+  "anchor_count": 3,
+  "h_depth_days": 42,
+  "h_breadth_days": 14,
+  "min_real_turns": 4,
+  "uniform_weights": true,
+  "cluster_threshold": 0.72,
+  "item_added_weight": 0.2
+}
+```
+
+`user_id` is **non-null and equals Daniel's auth uid** ✅. `uniform_weights: true`,
+`h_breadth_days 14`, `h_depth_days 42`, `k 5`, `anchor_count 3`, `voice_base 0.6460` ✅.
+`timing_ms`: fetch_embeddings 2,663 / fetch_events 494 / fetch_voice 1,547 / generate 158.
+
+**OQ14 verdict — Reflect visibility:** `PENDING — Daniel's observation in the prod UI, recorded verbatim when reported.`
+(`weave_readonly` cannot emulate `auth.uid()`; the RLS-side facts are: policy
+`weave_profile_snapshots_select_own` is `auth.uid() = user_id`, and the row's `user_id` is
+Daniel's uid, so the policy predicate is satisfiable for his session.)
+
+---
+
+## B2 — Run 1 gates (RO, against B0 re-derived at run 1's `generated_at`)
+
+Expected side: the **real R1 modules at the deployed SHA** (`netlify/lib/snapshot/*` @ `02078ae`)
+imported by `r2-expected.ts` (Appendix A) over the RO exports of B0, with
+`generated_at = 2026-09-06T03:13:50.574Z` and `uniform = true`. Observed side: the row's
+`generation_metadata`. Comparison is key-order-insensitive (`r2-gates.mjs`, Appendix B).
+
+| gate | expected | observed | match |
+|---|---|---|---|
+| events_read.breadth_from | "2026-06-28T03:13:50.574Z" | "2026-06-28T03:13:50.574Z" | MATCH |
+| events_read.depth_from | "2026-02-08T03:13:50.574Z" | "2026-02-08T03:13:50.574Z" | MATCH |
+| events_read.rows_returned = rows_expected | 191 | 191 | MATCH |
+| events_read.rows_expected = RO count(*) same predicate | 191 | 191 | MATCH |
+| events_read.by_type | {"connection_description_closed":58,"connection_label_clicked":65,"item_added":10,"lightbox_closed":28,"lightbox_opened":30} | {"connection_description_closed":58,"connection_label_clicked":65,"item_added":10,"lightbox_closed":28,"lightbox_opened":30} | MATCH |
+| attribution.resolved = hit + archived + absent | 186 | 186 | MATCH |
+| attribution.resolved | 186 | 186 | MATCH |
+| attribution.hit | 178 | 178 | MATCH |
+| attribution.dropped | {"absent":0,"archived":8} | {"absent":0,"archived":8} | MATCH |
+| attribution.by_type | {"connection_description_closed":{"absent":0,"archived":3,"hit":113,"resolved":116},"item_added":{"absent":0,"archived":2,"hit":8,"resolved":10},"lightbox_closed":{"absent":0,"archived":3,"hit":25,"resolved":28},"voice_session":{"absent":0,"archived":0,"hit":32,"resolved":32}} | {"connection_description_closed":{"absent":0,"archived":3,"hit":113,"resolved":116},"item_added":{"absent":0,"archived":2,"hit":8,"resolved":10},"lightbox_closed":{"absent":0,"archived":3,"hit":25,"resolved":28},"voice_session":{"absent":0,"archived":0,"hit":32,"resolved":32}} | MATCH |
+| attribution.zero_weight_events | 0 | 0 | MATCH |
+| pair_asymmetry.connection | {"closes":58,"opens":65,"orphan_opens":7,"paired":58,"unmatched_closes":0} | {"closes":58,"opens":65,"orphan_opens":7,"paired":58,"unmatched_closes":0} | MATCH |
+| pair_asymmetry.lightbox | {"closes":28,"opens":30,"orphan_opens":2,"paired":28,"unmatched_closes":0} | {"closes":28,"opens":30,"orphan_opens":2,"paired":28,"unmatched_closes":0} | MATCH |
+| voice rows_returned = rows_expected | 16 | 16 | MATCH |
+| voice rows_expected = RO count | 16 | 16 | MATCH |
+| voice anchors edges_found = qualifying | 16 | 16 | MATCH |
+| voice unresolved anchors (qualifying − edges_found) = voice archived+absent | 0 | 0 | MATCH |
+| node_set.source | "live" | "live" | MATCH |
+| node_set.count = RO live embeddings | 71 | 71 | MATCH |
+| node_set.keys.length = node_set.count | 71 | 71 | MATCH |
+| embeddings rows_returned = rows_expected = RO count | [101,101] | [101,101] | MATCH |
+| events_unmatched_by_type | {"connection_label_clicked":65,"lightbox_opened":30} | {"connection_label_clicked":65,"lightbox_opened":30} | MATCH |
+| max_raw_weight_before_normalization (1e-9) | 6384770239 | 6384770239 | MATCH |
+| parameters.uniform_weights | true | true | MATCH |
+| parameters.page_size | 500 | 500 | MATCH |
+| parameters.{h_breadth_days,h_depth_days,k,anchor_count} | [14,42,5,3] | [14,42,5,3] | MATCH |
+| parameters.voice_base (4dp) | 0.646 | 0.646 | MATCH |
+
+**27/27 match.** In particular: `rows_returned = rows_expected = 191` (= RO `count(*)` on the
+identical 5-type/70-day predicate); `resolved 186 = hit 178 + archived 8 + absent 0`, and every
+per-type cell equals the independent SQL join (B0b); both pair counters equal the SQL
+set-difference (B0c); voice `16 = 16 = 16`, zero unresolved anchors, `voice_session 32/32/0/0`;
+`node_set` live, 71 keys = 71 live embeddings; `max_raw_weight` agrees to 1e-9.
+
+**Method incident, recorded because it is the R0 rule in action.** The first pass of the expected
+calculator was bundled from a working tree at `2cda592` — the reads branch had been cut before
+PR #46 merged — so `resolveEvents` ignored the `uniformWeights` option and the expected
+weights came out on the weighted curve (`max_raw_weight` 8.616 vs observed 6.385) while every
+*count* matched. Rebasing the branch onto `origin/main` (`02078ae`, the deployed SHA) and
+rebuilding made the weights agree to 1e-9. Checkout currency is a precondition for an
+expected value, not just for an absence claim.
+
+---
+
+## B5 — Q18 reading (run 1, facts only)
+
+From `253c9a8c…` `clusters` and `generation_metadata`:
+
+| fact | value |
+|---|---:|
+| node count (live set) | **71** |
+| clusters (non-singleton) | **7** |
+| cluster sizes | 2, 2, 2, 2, 3, 10, 14 |
+| size min / median / max | 2 / **2** / 14 |
+| nodes in clusters | 35 |
+| singletons dropped | **36** (share **50.7%**) |
+| largest cluster share of node set | 14/71 = **19.7%** |
+| clusters spanning > 1 board | **7 of 7** (boards touched: 4, 3, 2, 2, 2, 2, 2) |
+| anchors recorded | 17 (3 + 3 + 3 + 2 + 2 + 2 + 2) |
+| anchors with `w_total = 0` | 5 of 17 |
+| `max_raw_weight` | 6.3848, held by `a428492a…:35`, which is a **singleton** (not in any cluster, so not an anchor) |
+
+Per cluster (`cluster_id`, size, boards, `engagement_weight`): c1 14 / 4 / 0.2353; c2 10 / 3 /
+0.1422; c3 3 / 2 / 0.1581; c4 2 / 2 / 0.0620; c5 2 / 2 / 0.0142; c6 2 / 2 / 0; c7 2 / 2 / 0.1174.
+
+Top three anchors by `w_total` (uniform weights, decayed):
+
+| anchor | `board_id` | cluster | `w_total` | `w_normalized` | breadth | depth | recency |
+|---|---|---|---:|---:|---:|---:|---:|
+| `a428492a…:39` | `a428492a-08f5-4d66-8da6-a307bcdaea62` | c3 | 2.8679 | 0.4492 | 1.3301 | 0.8730 | 0.6648 |
+| `b3c1473b…:20` | `b3c1473b-85bd-405b-90d0-917754d3da5f` | c1 | 1.9028 | 0.2980 | 1.6267 | 0.2760 | 0 |
+| `a428492a…:23` | `a428492a-08f5-4d66-8da6-a307bcdaea62` | c1 | 1.5363 | 0.2406 | 1.5363 | 0 | 0 |
+
+No interpretation offered; the viability call is the planning layer's.
+
+---
+
+## B6 — Provenance spot-check (run 1)
+
+`r2-provenance.mjs` (Appendix C): for each of the 17 anchors' `top_events` (36 entries), locate
+the source row and recompute `w_eff`.
+
+- **weave_events entries (32):** `top_events` carry no row id (neither R1's shape nor the
+  dispatch's §2.5 shape includes one), so each was located by `(event_type, target_id,
+  timestamp)` where `target_id` = `edge_id` for edge-grain entries or `node:<anchor key>` for
+  node-grain, and `timestamp = generated_at − age_days × 86 400 000 ms` matched within 2 ms
+  against the RO export. **32/32 located.**
+- **voice entries (4):** located by `voice_session_id`; `edge_id` equals the synthesized anchor
+  target and `ended_at` matches within 2 ms. **4/4 located.** `user_turns` recomputed from
+  `voice_utterances` (`speaker = 'user'`, B0d): **4/4 equal.**
+- **`w_eff = w_rule × 2^(−age_days / H)`** with H by class: **36/36 within 1e-6** (all `w_rule = 1`
+  under uniform weights).
+
+```json
+{ "anchors": 17, "top_events": 36, "source_row_found": 36, "w_eff_recomputed_within_1e6": 36,
+  "voice_entries": 4, "user_turns_match": 4, "misses": [] }
+```
+
+(B3, B4 and the second run's metadata follow once run 2 exists.)
