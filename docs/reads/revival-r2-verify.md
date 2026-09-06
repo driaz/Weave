@@ -347,8 +347,31 @@ curl -s "$WEAVE_SUPABASE_URL/rest/v1/weave_profile_snapshots?select=id,created_a
 ```
 
 Two rows (`253c9a8c…` first) ⇒ RLS admits the pipeline-written row; one row (the fixture) ⇒ it
-does not. The verdict recorded above stays "not visible" as the UI fact; whether B3 proceeds is
-the planning layer's call on the RLS fact once (a) or (b) is reported.
+does not.
+
+**Daniel ran (b) from his terminal, 2026-09-05 (local). Response, verbatim:**
+
+```json
+[{"id":"253c9a8c-5170-4461-86e0-e9c9fece9cbd","created_at":"2026-09-06T03:13:55.653969+00:00","trigger_reason":"r2_unweighted"},
+ {"id":"204af847-fa26-4e61-a699-c059fc5cd9e4","created_at":"2026-04-17T22:52:00+00:00","trigger_reason":"fixture"}]
+```
+
+**Two rows, run 1 first ⇒ `weave_profile_snapshots_select_own` admits the pipeline-written row
+to Daniel's authenticated session.** The §0 question — "does a pipeline-written snapshot become
+visible to the user under RLS?" — is answered **yes**. The R1 fix path (service-role insert
+carrying the verified caller's `user_id`) works as designed; the census-8 D1 hazard
+(`user_id NULL` ⇒ invisible) is closed for v2 rows.
+
+**Two verdicts, kept separate:**
+
+| question | verdict | basis |
+|---|---|---|
+| OQ14 as worded in §0 (visible under RLS) | **visible** | direct authenticated read, two rows |
+| OQ14 as observed in §3 B1 (visible in Reflect UI) | **not visible** | Reflect discards narrative-less rows (`profileSnapshots.ts:53-57`); a stage-1 row cannot render |
+
+The §5 stop condition is worded on the UI observation. It was honoured: B3 was not run in this
+sitting. Whether the RLS verdict clears B3 is recorded as the planning layer's decision, made by
+Daniel as its hand; if cleared, the runbook command for run 2 is unchanged.
 (`weave_readonly` cannot emulate `auth.uid()`; the RLS-side facts are: policy
 `weave_profile_snapshots_select_own` is `auth.uid() = user_id`, and the row's `user_id` is
 Daniel's uid, so the policy predicate is satisfiable for his session.)
