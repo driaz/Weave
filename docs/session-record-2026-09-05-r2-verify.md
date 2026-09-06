@@ -1,4 +1,4 @@
-# Session record — 2026-09-05 — R2 verify on prod (OQ14, unweighted run 1; stopped)
+# Session record — 2026-09-05 — R2 verify on prod (OQ14 split verdict, unweighted run 1; B3 pending clearance)
 
 > Provenance note: written 2026-09-05 (local; prod clock 2026-09-06 UTC) at the
 > close of the sitting, from the transcript and `docs/reads/revival-r2-verify.md`.
@@ -70,10 +70,13 @@ The RLS fact is still decidable without a write, because the client takes
 | yes | the **empty state** — the April fixture ("Clarity as cost, not reward") disappears |
 | no | the **April fixture, unchanged** |
 
-Alternatively a direct authenticated PostgREST read from Daniel's terminal (his
-token + the public anon key) lists two rows if RLS admits the new row, one if
-not. Both are in the record's B1. Pending Daniel; then the planning layer
-decides whether B3 proceeds.
+Daniel then ran the direct authenticated PostgREST read from his terminal (his
+token + the public anon key): **two rows, run 1 first.** RLS admits the
+pipeline-written row; the §0 question ("visible to the user under RLS") is
+**yes**, and census-8 D1 (`user_id NULL` ⇒ invisible) is closed for v2 rows.
+The UI verdict stays "not visible" for the client-code reason above. B3 was
+not run in this sitting; whether the RLS verdict clears it is the planning
+layer's decision.
 
 ## B2 gate table (run 1) — 27/27
 
