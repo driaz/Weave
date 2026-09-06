@@ -1,4 +1,4 @@
-# Session record — 2026-09-05 — R2 verify on prod (OQ14 split verdict, unweighted run 1; B3 pending clearance)
+# Session record — 2026-09-05/06 — R2 verify on prod (OQ14 split verdict, two unweighted runs, determinism)
 
 > Provenance note: written 2026-09-05 (local; prod clock 2026-09-06 UTC) at the
 > close of the sitting, from the transcript and `docs/reads/revival-r2-verify.md`.
@@ -17,12 +17,15 @@
   `generation_metadata.parameters`; 34 netlify tests green; tsc + eslint clean.
 - **Part B — PR #47** (`reads/revival-r2-verify`, draft, not merged):
   `docs/reads/revival-r2-verify.md` with header (runs SHA `02078ae`, dashboard
-  max-rows **1000**), preflight P1–P5, B0 baseline, runbook, B1, B2 (27/27),
-  B5, B6, the OQ14 stop, contradicts-dispatch, query map, appendices.
+  max-rows **1000**), preflight P1–P5, B0 baseline, runbook, B1 (split OQ14
+  verdict), B2 (27/27), B3 (27/27 + pagination proof), B4 (deterministic), B5,
+  B6 (both runs), contradicts-dispatch, query map, both runs' metadata and
+  clusters in full.
 - **This record.**
-- **Prod writes by Claude Code: zero.** One prod row was written, by Daniel: run 1,
-  `253c9a8c-5170-4461-86e0-e9c9fece9cbd`, `trigger_reason r2_unweighted`.
-  Flag-never-delete: it stays.
+- **Prod writes by Claude Code: zero.** Two prod rows were written, both by
+  Daniel: run 1 `253c9a8c-5170-4461-86e0-e9c9fece9cbd` and run 2
+  `e7adade7-68ec-4090-8514-923d407dbf91`, `trigger_reason r2_unweighted`.
+  Flag-never-delete: they stay.
 
 ## Sequence of the sitting
 
@@ -49,8 +52,17 @@
    absence claims.
 7. B2: 27/27 gate lines match. B6: 36/36 top events located, `w_eff` recomputed
    within 1e-6, `user_turns` 4/4. B5 facts extracted.
-8. Daniel: *"There is no visibility."* OQ14 **not visible** → §5 stop. B3 not
-   requested; B4 not attempted. Diagnosis written (below). PR #47 body updated.
+8. Daniel: *"There is no visibility."* OQ14 **not visible** in the UI → §5 stop
+   honoured. Diagnosis written (below): the Reflect client cannot render a
+   narrative-less row.
+9. Daniel ran the direct authenticated PostgREST read: two rows, run 1 first
+   → **visible under RLS**. He cleared B3 and ran run 2 pinned to run 1 with
+   `page_size 50` (47.4 min after run 1).
+10. B3: 27/27 gates; `node_set.keys` identical in order; 191 rows over 4 pages
+    of 50 with `rows_returned = rows_expected` everywhere — the pagination
+    proof. B6 for run 2: 36/36. B4: identical set-of-sets, identical
+    memberships and anchors; `w_total` drift 0.163% = the breadth-clock decay
+    over the gap; no anchor-boundary tie possible. Record and PR body updated.
 
 ## OQ14 — what "not visible" means here
 
@@ -74,9 +86,8 @@ Daniel then ran the direct authenticated PostgREST read from his terminal (his
 token + the public anon key): **two rows, run 1 first.** RLS admits the
 pipeline-written row; the §0 question ("visible to the user under RLS") is
 **yes**, and census-8 D1 (`user_id NULL` ⇒ invisible) is closed for v2 rows.
-The UI verdict stays "not visible" for the client-code reason above. B3 was
-not run in this sitting; whether the RLS verdict clears it is the planning
-layer's decision.
+The UI verdict stays "not visible" for the client-code reason above. Daniel
+cleared B3 on the RLS verdict; the clearance and both verdicts are recorded.
 
 ## B2 gate table (run 1) — 27/27
 
@@ -122,9 +133,16 @@ anchor. Top three anchors: `a428492a…:39` (c3; 2.868 = breadth 1.330 + depth
 - `absent` 16 → 29 not observable at 70 d (`absent` = 0), as anticipated.
 - `nodes_found` is 22 distinct uuids (anchors share endpoints), not 32.
 
+## B3 / B4 in one line each
+
+- **B3:** run 2 pinned to run 1, page 50 — 27/27 gates, keys identical, 191 = 191
+  over 4 pages, 101 = 101 over 3, 16 = 16. Pagination proven; R0/F3 closed with
+  max-rows 1000.
+- **B4:** deterministic. 7 = 7 clusters, set-of-sets identical, 35/35 memberships
+  identical, 17 = 17 anchors identical in order; only `w_eff` moved, by exactly
+  `1 − 2^(−47.4 min / 14 d)`.
+
 ## Not done, and why
 
-- **B3 (run 2, pinned, page 50) and B4 (determinism):** stop condition at OQ14.
-  The runbook command is in the record; the pagination proof and the
-  determinism diff await clearance.
-- **Deleting or editing the r2 row:** out of scope and flag-never-delete.
+- **Deleting or editing the r2 rows:** out of scope and flag-never-delete.
+- **Prompt v2, weights, decay, t1 timing:** R3.
