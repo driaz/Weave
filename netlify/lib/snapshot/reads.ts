@@ -9,7 +9,7 @@ import {
   READ_PAGE_SIZE,
 } from './constants'
 import { PAIR_EVENT_TYPES, ROSTER_EVENT_TYPES } from './engagement'
-import type { EmbeddingRow, VoiceSessionRow, WeaveEventRow } from './types'
+import type { BoardName, EmbeddingRow, VoiceSessionRow, WeaveEventRow } from './types'
 
 // The service-role client is untyped here on purpose: the generated Database
 // type has no row for the synthesized voice join, and the pipeline reads
@@ -23,7 +23,7 @@ export function horizonStart(generatedAt: Date, days: number): string {
   return new Date(generatedAt.getTime() - days * MS_PER_DAY).toISOString()
 }
 
-function assertGate(what: string, gate: ReadGate): void {
+export function assertGate(what: string, gate: ReadGate): void {
   if (gate.rows_returned !== gate.rows_expected) {
     throw new Error(
       `[Snapshot] ${what}: read returned ${gate.rows_returned} rows but count(*) on the identical predicate is ${gate.rows_expected}`,
@@ -36,7 +36,7 @@ function assertGate(what: string, gate: ReadGate): void {
  * `build` must apply the identical predicate every call; ordering is fixed so
  * pages do not overlap.
  */
-async function pageAll<T>(
+export async function pageAll<T>(
   build: () => {
     order: (col: string, opts?: { ascending?: boolean }) => unknown
   },
@@ -234,6 +234,31 @@ export async function readVoiceSessions(
       nodes_found: nodes.length,
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// boards — id -> name for the node set's boards; gated on the id list
+// ---------------------------------------------------------------------------
+
+export async function readBoards(
+  supabase: Client,
+  boardIds: string[],
+  pageSize: number = READ_PAGE_SIZE,
+): Promise<{ rows: BoardName[]; gate: ReadGate }> {
+  if (boardIds.length === 0) return { rows: [], gate: { rows_returned: 0, rows_expected: 0 } }
+  const rows = await pageAll<BoardName>(
+    () => supabase.from('boards').select('id, name').in('id', boardIds),
+    ['id'],
+    pageSize,
+  )
+  const { count, error } = await supabase
+    .from('boards')
+    .select('*', { count: 'exact', head: true })
+    .in('id', boardIds)
+  if (error) throw new Error(`[Snapshot] boards count failed: ${error.message}`)
+  const gate = { rows_returned: rows.length, rows_expected: count ?? -1 }
+  assertGate('boards', gate)
+  return { rows, gate }
 }
 
 // ---------------------------------------------------------------------------

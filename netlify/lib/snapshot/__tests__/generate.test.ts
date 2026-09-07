@@ -57,6 +57,8 @@ function input(over: Partial<GenerationInput> = {}): GenerationInput {
     voiceGate: { rows_returned: 0, rows_expected: 0 },
     depthFrom: '2026-02-07T00:00:00Z',
     voiceAnchors: {},
+    boards: [{ id: B1, name: 'Board One' }],
+    boardsGate: { rows_returned: 1, rows_expected: 1 },
     ...over,
   }
 }
@@ -81,8 +83,12 @@ describe('generateSnapshot', () => {
 
     const anchors = meta.anchors as { key: string; board_id: string; cluster_id: string; top_events: unknown[] }[]
     expect(anchors.map((a) => a.key)).toEqual([`${B2}:7`, `${B1}:1`])
-    expect(anchors[0]).toMatchObject({ board_id: B2, cluster_id: 'c1' })
+    expect(anchors[0]).toMatchObject({ board_id: B2, cluster_id: 'c1', attention: 'added' })
     expect(anchors[0].top_events).toHaveLength(2)
+    expect(meta.unclustered_attended).toEqual([])
+    expect(meta.conversations).toEqual([])
+    expect(meta.boards).toEqual([{ id: B1, name: 'Board One' }])
+    expect(meta.events_read.boards).toEqual({ rows_returned: 1, rows_expected: 1 })
   })
 
   it('honours anchor_count with Math.min(N, size)', () => {

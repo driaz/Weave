@@ -3,6 +3,7 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { readFileSync } from 'fs'
+import { STAGE2_MODEL } from '../netlify/lib/stage2/models.mjs'
 
 // Load .env
 const envText = readFileSync('.env', 'utf8')
@@ -22,7 +23,8 @@ if (!SUPABASE_URL || !SUPABASE_KEY || !ANTHROPIC_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-const CLAUDE_MODEL = 'claude-opus-4-6'
+// Model pinned once, shared with the Netlify functions (was a drifted literal 'claude-opus-4-6').
+const CLAUDE_MODEL = STAGE2_MODEL
 
 const SYSTEM_PROMPT = `You are analyzing a cluster of content curated by one person onto a spatial canvas. Each piece was chosen because it resonated with them. Your job is to describe the thread that binds these pieces together.
 
