@@ -83,6 +83,8 @@ export type Contribution = {
   w_rule: number
   w_eff: number
   age_days: number
+  /** weave_events.id for event-sourced contributions. */
+  event_id?: string
   edge_id?: string
   voice_session_id?: string
   user_turns?: number
@@ -133,5 +135,33 @@ export type AnchorProvenance = {
   w_total: number
   w_normalized: number
   by_class: Record<EngagementClass, number>
+  /** Derived from by_class: dwelt | discussed | added. */
+  attention: 'dwelt' | 'discussed' | 'added'
+  /** Sum of user_turns over the anchor's voice events in window; present when discussed. */
+  turns?: number
   top_events: Contribution[]
 }
+
+/** Decision B: a singleton with w_total > 0, anchor-shaped, no cluster. */
+export type UnclusteredAttended = Omit<AnchorProvenance, 'cluster_id'>
+
+export type ConversationPlacement =
+  | `same_cluster:${string}`
+  | `cross_cluster:${string},${string}`
+  | `cluster_and_singleton:${string}`
+  | 'both_singletons'
+
+/** One voice session in window, recorded once (not only inside top_events). */
+export type Conversation = {
+  voice_session_id: string
+  /** The connection target string, same identity as top_events[].edge_id. */
+  edge_id: string
+  /** voice_sessions.anchor_edge_id (edges.id). */
+  anchor_edge_id: string
+  ended_at: string
+  user_turns: number
+  endpoints: [string, string]
+  placement: ConversationPlacement
+}
+
+export type BoardName = { id: string; name: string }

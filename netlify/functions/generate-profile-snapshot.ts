@@ -12,7 +12,8 @@ import { createClient } from '@supabase/supabase-js'
 import { DEFAULT_RUN_OPTIONS, type RunOptions } from '../lib/snapshot/constants'
 import { UnauthorizedError, verifyCaller } from '../lib/snapshot/auth'
 import { generateSnapshot, type NodeSetSpec } from '../lib/snapshot/generate'
-import { readEmbeddings, readEvents, readPinnedNodeSet, readVoiceSessions } from '../lib/snapshot/reads'
+import { readBoards, readEmbeddings, readEvents, readPinnedNodeSet, readVoiceSessions } from '../lib/snapshot/reads'
+import { compositeKey } from '../lib/snapshot/engagement'
 
 type RequestBody = {
   /** Free text; R2 unweighted runs use 'r2_unweighted' so they stay distinguishable from t1. */
@@ -110,6 +111,19 @@ export default async (req: Request) => {
     const voice = await readVoiceSessions(supabase, generatedAt, options.pageSize)
     const fetchVoiceTiming = tVoice()
 
+    // Board names for every board in the node set (live rows, or the pinned keys).
+    const pinnedKeys = nodeSet.source === 'live' ? null : new Set(nodeSet.keys)
+    const nodeSetBoardIds = [
+      ...new Set(
+        embeddings.rows
+          .filter((r) => (pinnedKeys ? pinnedKeys.has(compositeKey(r)) : r.archived_at === null))
+          .map((r) => r.board_id),
+      ),
+    ]
+    const tBoards = timer()
+    const boards = await readBoards(supabase, nodeSetBoardIds, options.pageSize)
+    const fetchBoardsTiming = tBoards()
+
     const tGenerate = timer()
     const out = generateSnapshot({
       generatedAt,
@@ -125,6 +139,8 @@ export default async (req: Request) => {
       voiceGate: voice.gate,
       depthFrom: voice.depth_from,
       voiceAnchors: voice.anchors,
+      boards: boards.rows,
+      boardsGate: boards.gate,
     })
     const generateTiming = tGenerate()
 
@@ -143,6 +159,7 @@ export default async (req: Request) => {
           fetch_embeddings: fetchEmbeddingsTiming,
           fetch_events: fetchEventsTiming,
           fetch_voice: fetchVoiceTiming,
+          fetch_boards: fetchBoardsTiming,
           generate: generateTiming,
         },
       },

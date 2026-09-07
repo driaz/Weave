@@ -291,6 +291,7 @@ export function attribute(
           w_eff: wEff,
           age_days: age,
         }
+        if (r.event.event_id) c.event_id = r.event.event_id
         if (r.edge_id) c.edge_id = r.edge_id
         if (r.event.voice_session_id) c.voice_session_id = r.event.voice_session_id
         if (r.event.user_turns !== null) c.user_turns = r.event.user_turns

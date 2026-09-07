@@ -3,6 +3,7 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { readFileSync } from 'fs'
+import { STAGE2_MODEL } from '../netlify/lib/stage2/models.mjs'
 
 // Load .env
 const envText = readFileSync('.env', 'utf8')
@@ -22,7 +23,8 @@ if (!SUPABASE_URL || !SUPABASE_KEY || !ANTHROPIC_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-const CLAUDE_MODEL = 'claude-opus-4-6'
+// Model pinned once, shared with the Netlify functions (was a drifted literal 'claude-opus-4-6').
+const CLAUDE_MODEL = STAGE2_MODEL
 
 const SYSTEM_PROMPT = `You are looking at a set of thematic observations about one person's curated content — tweets, videos, images, articles they've collected on a spatial canvas over time. Each observation describes a structural thread found across a cluster of related pieces. Your job is to synthesize these observations into a short reflective narrative about the person behind the curation.
 
