@@ -5,8 +5,8 @@ import { supabase } from '../supabaseClient'
 import { buildSystemPrompt } from './buildSystemPrompt'
 
 const PROXY_URL = 'https://weave-media.fly.dev/api/claude'
-const MODEL = 'claude-opus-4-7'
-const MAX_TOKENS = 2048
+const MODEL = 'claude-opus-5'
+const MAX_TOKENS = 4096
 
 export interface ConversationMessage {
   role: 'user' | 'assistant'
@@ -105,6 +105,8 @@ export async function* runConversationTurn(
     body: JSON.stringify({
       model: MODEL,
       max_tokens: MAX_TOKENS,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'low' },
       system,
       messages,
       stream: true,
