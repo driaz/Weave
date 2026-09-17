@@ -82,10 +82,10 @@ Create a `.env` in the project root. All values come from the Weave-Dev project'
 | -------- | ------- |
 | `VITE_SUPABASE_URL` | Base URL of the Weave-Dev project (e.g. `https://<ref>.supabase.co`). Read at runtime by the browser client. |
 | `VITE_SUPABASE_ANON_KEY` | Public anon key for Weave-Dev. Safe to expose to the browser; RLS enforces the actual authorization. |
-| `VITE_ANTHROPIC_API_KEY` | Direct-access API key for the Anthropic Messages API. Optional locally — when unset the app routes through the `/api/claude` Netlify proxy function instead. |
+| `VITE_ANTHROPIC_API_KEY` | Direct-access API key for the Anthropic Messages API. Optional locally — when unset the app routes through the JWT-gated Fly proxy (`https://weave-media.fly.dev/api/claude`) instead. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Only needed if you run the persistence integration tests (`npm test`). The tests use the service role to create/tear-down throwaway users and leave production data alone. |
 
-A few related values (Gemini embedding key, Innertube / Supadata tokens, Netlify-only server vars like `ANTHROPIC_API_KEY` for the proxy) are set on Netlify for production and aren't required for most local development flows.
+A few related values (Gemini embedding key, Innertube / Supadata tokens, Netlify-only server vars like `ANTHROPIC_API_KEY` for the serverless functions) are set on Netlify for production and aren't required for most local development flows.
 
 Start the dev server:
 
