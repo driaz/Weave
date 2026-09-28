@@ -63,9 +63,40 @@ const SSE_EVENTS = [
   { type: 'message_stop' },
 ]
 
-function sseResponse(): Response {
-  const body = SSE_EVENTS.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')
-  return new Response(body, { status: 200 })
+// Adaptive thinking: a thinking block streams before the text block.
+const THINKING_THEN_TEXT_EVENTS = [
+  SSE_EVENTS[0],
+  { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Consider the pair.' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hello there.' } },
+  { type: 'content_block_stop', index: 1 },
+  ...SSE_EVENTS.slice(5),
+]
+
+const toSse = (e: { type: string }): string => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`
+
+function sseResponse(events: { type: string }[] = SSE_EVENTS): Response {
+  return new Response(events.map(toSse).join(''), { status: 200 })
+}
+
+/** One SSE event per network chunk, advancing the clock 300ms per chunk. */
+function pacedSseResponse(events: { type: string }[]): Response {
+  const encoder = new TextEncoder()
+  let i = 0
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i >= events.length) {
+        controller.close()
+        return
+      }
+      vi.setSystemTime(Date.now() + 300)
+      controller.enqueue(encoder.encode(toSse(events[i++])))
+    },
+  })
+  return new Response(stream, { status: 200 })
 }
 
 async function runTurn(input: {
@@ -138,6 +169,7 @@ describe('voice.claude latency markers', () => {
     expect(markers().map((e) => e.phase)).toEqual([
       'voice.claude.request_sent',
       'voice.claude.first_delta',
+      'voice.claude.first_text_delta',
       'voice.claude.response_complete',
     ])
   })
@@ -154,10 +186,31 @@ describe('voice.claude latency markers', () => {
     expect(phases).toContain('voice.claude.first_delta')
   })
 
+  it('on thinking-then-text, emits first_delta (thinking) then first_text_delta', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => pacedSseResponse(THINKING_THEN_TEXT_EVENTS)))
+
+    const text = await runTurn({ messages: [{ role: 'user', content: 'what links these?' }] })
+
+    expect(text).toBe('Hello there.')
+    const first = markers().find((e) => e.phase === 'voice.claude.first_delta')
+    const firstText = markers().find((e) => e.phase === 'voice.claude.first_text_delta')
+    expect(first?.detail).toEqual({ deltaType: 'thinking_delta' })
+    expect(first?.correlationId).toBe('turn-1')
+    expect(firstText?.correlationId).toBe('turn-1')
+    expect(Date.parse(first!.ts)).toBeLessThanOrEqual(Date.parse(firstText!.ts))
+    // Each fires once even though the stream carries several deltas of each kind.
+    expect(markers().map((e) => e.phase)).toEqual([
+      'voice.claude.request_sent',
+      'voice.claude.first_delta',
+      'voice.claude.first_text_delta',
+      'voice.claude.response_complete',
+    ])
+  })
+
   it('writes nothing to weave_events during the turn', async () => {
     await runTurn({ messages: [{ role: 'user', content: 'what links these?' }] })
 
-    expect(markers()).toHaveLength(3)
+    expect(markers()).toHaveLength(4)
     expect(trackEventMock).not.toHaveBeenCalled()
   })
 })
