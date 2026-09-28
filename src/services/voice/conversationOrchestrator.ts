@@ -51,7 +51,26 @@ export interface RunConversationTurnInput {
    * provided. Absent / empty → the section is omitted.
    */
   workingMemory?: string
+  /**
+   * First-token latency markers (#23). Called synchronously at three points
+   * so the caller can log them against the turn's correlationId:
+   *   - voice.claude.request_sent — immediately before the proxy fetch
+   *   - voice.claude.first_delta — first content_block_delta of any type
+   *     (`deltaType` says whether thinking or text arrived first)
+   *   - voice.claude.first_text_delta — first text_delta (same instant as
+   *     first_delta when no thinking precedes the text)
+   *   - voice.claude.response_complete — on message_stop, with token usage
+   *     merged from message_start and the final message_delta
+   * Fire-and-forget: the orchestrator never awaits it.
+   */
+  onMarker?: (phase: ClaudeMarkerPhase, detail?: Record<string, unknown>) => void
 }
+
+export type ClaudeMarkerPhase =
+  | 'voice.claude.request_sent'
+  | 'voice.claude.first_delta'
+  | 'voice.claude.first_text_delta'
+  | 'voice.claude.response_complete'
 
 /**
  * Run one turn of the voice conversation. Selects opening vs follow-up
@@ -69,7 +88,7 @@ export interface RunConversationTurnInput {
 export async function* runConversationTurn(
   input: RunConversationTurnInput,
 ): AsyncGenerator<string, void, unknown> {
-  const { connectionContext, nodeContent, messages, signal, systemPrompt, relatedMaterial, workingMemory } = input
+  const { connectionContext, nodeContent, messages, signal, systemPrompt, relatedMaterial, workingMemory, onMarker } = input
 
   let system: string
   if (systemPrompt && systemPrompt.length > 0) {
@@ -96,6 +115,7 @@ export async function* runConversationTurn(
   const token = data.session?.access_token
   if (!token) throw new Error('No Supabase session — please sign in')
 
+  onMarker?.('voice.claude.request_sent')
   const response = await fetch(PROXY_URL, {
     method: 'POST',
     headers: {
@@ -126,6 +146,10 @@ export async function* runConversationTurn(
   const decoder = new TextDecoder()
   let buffer = ''
   let sawMessageStop = false
+  let sawFirstDelta = false
+  let sawFirstTextDelta = false
+  let usage: Record<string, unknown> = {}
+  let stopReason: unknown = null
 
   const parseEvent = (raw: string): string | null => {
     let dataLine = ''
@@ -148,9 +172,24 @@ export async function* runConversationTurn(
     const type = event.type
     if (type === 'content_block_delta') {
       const delta = (event as { delta?: { type?: string; text?: unknown } }).delta
+      if (!sawFirstDelta) {
+        sawFirstDelta = true
+        onMarker?.('voice.claude.first_delta', { deltaType: delta?.type ?? null })
+      }
       if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        if (!sawFirstTextDelta) {
+          sawFirstTextDelta = true
+          onMarker?.('voice.claude.first_text_delta')
+        }
         return delta.text
       }
+    } else if (type === 'message_start') {
+      const u = (event as { message?: { usage?: Record<string, unknown> } }).message?.usage
+      if (u) usage = { ...usage, ...u }
+    } else if (type === 'message_delta') {
+      const e = event as { usage?: Record<string, unknown>; delta?: { stop_reason?: unknown } }
+      if (e.usage) usage = { ...usage, ...e.usage }
+      if (e.delta?.stop_reason !== undefined) stopReason = e.delta.stop_reason
     } else if (type === 'message_stop') {
       sawMessageStop = true
     } else if (type === 'error') {
@@ -187,4 +226,5 @@ export async function* runConversationTurn(
   if (!sawMessageStop) {
     throw new Error('Claude stream ended without message_stop')
   }
+  onMarker?.('voice.claude.response_complete', { usage, stopReason })
 }
