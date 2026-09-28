@@ -1972,6 +1972,8 @@ export class VadController {
         systemPrompt,
         relatedMaterial,
         workingMemory,
+        onMarker: (phase, detail) =>
+          this.logger.event(phase, 'success', detail, correlationIds),
       })) {
         if (abort.signal.aborted) break
         assistantText += chunk
