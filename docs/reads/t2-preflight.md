@@ -132,7 +132,7 @@ order by k.set, k.ord;
 - `connection_description_closed` with `target_id = connection:{board}:{from}:{to}` → both endpoints;
 - real voice sessions (`session_kind = 'real'`, `ended_at` not null, `anchor_edge_id` not null, `ended_at` in W) → `anchor_edge_id` → `edges` → both endpoint `nodes` → client id (`data->>'_clientNodeId'`, falling back to the row uuid, as `reads.ts:140-144`).
 
-**w_rule is undecayed** (no `2^(−age/H)` factor): breadth = `1.5 × min(log₂(s+1) / log₂(46), 1)` with s = `duration_ms / 1000`; depth = `VOICE_BASE × log₂(user_turns + 1)`, `VOICE_BASE = 1.5 / log₂ 5`, user_turns = `count(voice_utterances where speaker = 'user')`. `item_added` (recency) is outside the dispatch's qualifying set and is not counted here; §D shows no t1 node was re-added.
+**w_rule is undecayed** (no `2^(−age/H)` factor): breadth = `1.5 × min(log₂(s+1) / log₂(46), 1)` with s = `duration_ms / 1000`; depth = `VOICE_BASE × log₂(user_turns + 1)`, `VOICE_BASE = 1.5 / log₂ 5`, user_turns = `count(voice_utterances where speaker = 'user')`. `item_added` (recency) is outside the dispatch's qualifying set and is not counted here. No `item_added` row in W targets a t1 node-set key (count 0, query in §I.7; the earlier citation of §D for this was wrong, see §I).
 
 **Flag:** *re-engaged* = at least one qualifying event in W with `w_rule > 0` resolves to the node. No zero-weight rows occurred (gate below).
 
@@ -681,6 +681,223 @@ where id='efa6d6e1-6fc5-4063-8a1e-0de59409d2ad' order by ord;
 
 ---
 
+## I. Addendum — pre-commit review of the t2 pre-registration (2026-10-04)
+
+> Added after the first commit of this read, at Daniel's request. It records the read-only facts that came out of reviewing the draft t2 pre-registration against §A–§G. Same RO role and preconditions as §0. Queries ran 2026-10-04 ~17:05 UTC. The W upper bound stays frozen at `16:27:57`, except where a query states `now()`.
+>
+> Nothing above §I changed except one sentence in §B, which wrongly cited §D (see I.7).
+
+### I.0 Validation of the rebuild
+
+A SQL rebuild of t1's breadth + recency from raw `weave_events` (t1 windows, curve and decay as in code) reproduces the stored `by_class.breadth + by_class.recency` **exactly on all 19 nodes tested**. Those are the 7 anchors and 12 unclustered nodes that were not re-engaged (I.1, column `rebuilt`).
+
+### I.1 The 70-day horizon removes events; it does not decay them
+
+`readEvents` selects only `timestamp >= generated_at − 70 d` (`reads.ts:97-99`). Older events are not in the read and contribute **0**. For a not-re-engaged node, its t2 component is therefore the decayed sum over **only the t1 events still inside t2's horizon**. That is a pure `2^(−Δ/H)` ratio only if none were lost.
+
+Rebuild for the 19 not-re-engaged nodes. "Lost" = t1-window events with `timestamp < T − 70 d`. The result is identical for T = 2026-10-04 18:00 and T = 2026-10-06 00:00 UTC.
+
+| node | t1 breadth | rebuilt (breadth + recency) | t1 events (breadth/recency) | oldest | newest | lost | kept |
+|---|---:|---:|---:|---|---|---:|---:|
+| A#3 arian ghashghai | 0.2435 | 0.2435 | 1 | 08-14 | 08-14 | 0 | 1 |
+| A#4 ​𝐥𝐲𝐫𝐚 | 0.4906 | 0.5459 | 4 | 08-12 | 08-12 | 0 | 4 |
+| A#6 Sherry | 0.1562 | 0.1562 | 1 | 08-30 | 08-30 | 0 | 1 |
+| A#8 Silent Revolution | 0 | 0 | 0 | — | — | 0 | 0 |
+| A#9 Cinema Tweets | 0.6722 | 0.6722 | 1 | 08-27 | 08-27 | 0 | 1 |
+| **A#11 James Lucas (Death)** | 0.6871 | 0.6871 | 11 | 07-18 | 07-18 | **11** | **0** |
+| A#12 James Lucas (P&A) | 0.6075 | 0.6075 | 3 | 08-02 | 08-02 | 0 | 3 |
+| U#2 𝓐𝔂𝓸✯ | 2.8757 | 2.8757 | 5 | 08-02 | 08-30 | 0 | 5 |
+| **U#6 GigSlave** | 1.9932 | 2.0128 | 17 | 07-22 | 09-04 | **16** | 1 |
+| **U#9 Columbus** | 0.8954 | 0.8954 | 3 | 07-18 | 08-27 | **1** | 2 |
+| **U#11 RyanPatrick** | 0.0428 | 0.0428 | 1 | 07-07 | 07-07 | **1** | 0 |
+| **U#12 New York Magazine** | 0.0418 | 0.0418 | 1 | 07-07 | 07-07 | **1** | 0 |
+| **U#13 Alan Watts** | 0.6652 | 0.6652 | 11 | 07-18 | 07-18 | **11** | **0** |
+| U#14 Big Brain Philosophy | 0.5646 | 0.5646 | 1 | 08-27 | 08-27 | 0 | 1 |
+| **U#15 cinesthetic.** | 0.0358 | 0.0358 | 1 | 07-06 | 07-06 | **1** | 0 |
+| U#17 Hate_Room | 0 | 0 | 0 | — | — | 0 | 0 |
+| U#18 gomi | 0.1562 | 0.1562 | 1 | 08-30 | 08-30 | 0 | 1 |
+| **U#20 Jeff Daniels** | 0.0864 | 0.0864 | 3 | 07-09 | 07-09 | **3** | **0** |
+| U#21 Bearly AI | 0 | 0.0597 (recency) | 1 | 08-13 | 08-13 | 0 | 1 |
+
+Consequences, stated as mechanism rather than prediction:
+- **A#11, U#13 and U#20 lose every breadth event and have no depth**, so their `w_total` is 0. In t2, A#11 cannot be an anchor (Decision A requires `w_total > 0`), and U#13 and U#20 cannot be in `unclustered_attended`.
+- **U#11, U#12 and U#15** lose all their breadth; their depth survives.
+- **Stability window.** The last roster event already outside the horizon is `2026-07-25 03:49:50 UTC`, which left at `2026-10-03 03:49:50`. The next t1-window event to leave is `2026-08-02 15:46:05`, which leaves at **`2026-10-11 15:46:05 UTC`**; it is on A#12 / U#2. Between those two instants, the set of t1 events surviving the horizon is constant.
+- **Depth horizon (210 d): no loss.** The earliest real anchored voice session in t1's window ended `2026-05-18 00:16:30`. None ends before `T − 210 d` for T ≤ 2026-10-06.
+
+```sql
+-- I.1 horizon rebuild for the 19 not-re-engaged nodes
+with s as (select generation_metadata g from weave_profile_snapshots where id='efa6d6e1-6fc5-4063-8a1e-0de59409d2ad'),
+k as (select x.ord, 'A' set, a->>'key' key, (a->'by_class'->>'breadth')::float8 b from s, jsonb_array_elements(g->'anchors') with ordinality x(a,ord)
+      union all select x.ord, 'U', a->>'key', (a->'by_class'->>'breadth')::float8 from s, jsonb_array_elements(g->'unclustered_attended') with ordinality x(a,ord)),
+nr as (select * from k where (set,ord) in (('A',3),('A',4),('A',6),('A',8),('A',9),('A',11),('A',12),('U',2),('U',6),('U',9),('U',11),('U',12),('U',13),('U',14),('U',15),('U',17),('U',18),('U',20),('U',21))),
+ev as (select e.timestamp, e.event_type,
+   case when e.event_type in ('lightbox_closed','item_added') then array[substr(e.target_id,6)]
+        else array[split_part(e.target_id,':',2)||':'||split_part(e.target_id,':',3), split_part(e.target_id,':',2)||':'||split_part(e.target_id,':',4)] end keys,
+   case when e.event_type='item_added' then 0.2 else 1.5*least((ln(greatest(e.duration_ms,0)/1000.0+1)/ln(2))/(ln(46)/ln(2)),1) end w
+ from weave_events e where e.event_type in ('lightbox_closed','connection_description_closed','item_added')
+   and e.timestamp >= '2026-06-29T02:37:59.815Z' and e.timestamp <= '2026-09-07T02:37:59.815Z'),
+r as (select ev.*, unnest(keys) key from ev)
+select nr.set, nr.ord, round(nr.b::numeric,4) t1_breadth, count(r.*) n,
+  round(coalesce(sum(r.w*power(2,-extract(epoch from ('2026-09-07T02:37:59.815Z'::timestamptz-r.timestamp))/86400/14)),0)::numeric,4) rebuilt,
+  min(r.timestamp)::date oldest, max(r.timestamp)::date newest,
+  count(r.*) filter (where r.timestamp < '2026-10-04 18:00+00'::timestamptz - interval '70 days') lost_t_oct4,
+  count(r.*) filter (where r.timestamp < '2026-10-06 00:00+00'::timestamptz - interval '70 days') lost_t_oct6,
+  count(r.*) filter (where r.timestamp >= '2026-10-06 00:00+00'::timestamptz - interval '70 days') kept_t_oct6
+from nr left join r on r.key=nr.key group by 1,2,3 order by 1,2;
+
+-- stability window (now() = 2026-10-04 ~17:05 UTC)
+select max(e.timestamp), max(e.timestamp) + interval '70 days' from weave_events e
+where e.event_type in ('lightbox_closed','connection_description_closed','item_added') and e.timestamp < now() - interval '70 days';
+-- → 2026-07-25 03:49:50 | 2026-10-03 03:49:50
+select min(e.timestamp), min(e.timestamp) + interval '70 days' from weave_events e
+where e.event_type in ('lightbox_closed','connection_description_closed','item_added')
+  and e.timestamp > now() - interval '70 days' and e.timestamp <= '2026-09-07T02:37:59.815Z';
+-- → 2026-08-02 15:46:05 | 2026-10-11 15:46:05
+
+-- depth horizon
+select min(ended_at), count(*) filter (where ended_at < '2026-10-06'::timestamptz - interval '210 days') from voice_sessions
+where session_kind='real' and ended_at is not null and anchor_edge_id is not null
+  and ended_at >= '2026-02-09T02:37:59.815Z' and ended_at <= '2026-09-07T02:37:59.815Z';
+-- → 2026-05-18 00:16:30 | 0
+```
+
+### I.2 Curve values at age 0 (arithmetic from `constants.ts` / `engagement.ts`)
+
+| act | w_rule |
+|---|---:|
+| connection close, 3 s | 0.543 |
+| lightbox close, 20 s | 1.193 |
+| any dwell ≥ 45 s (cap) | 1.5 |
+| voice, 1 user turn | 0.646 |
+| voice, 4 turns (`MIN_REAL_TURNS`) | 1.5 |
+| voice, 11 turns | 2.316 |
+| voice, 14 turns | 2.524 |
+
+For a dwell close, `w_rule < 0.5426` ⟺ `duration_ms < 3000`.
+
+### I.3 t1 anchors' top-weighted contribution (`top_events[0]`)
+
+| cluster | anchor | top event | w_rule | sub-3 s close? | re-engaged (§B) |
+|---|---|---|---:|---|---|
+| c1 | #1 WIRED `:20` | voice_session | 2.6406 | — | yes |
+| c1 | #2 Bloomberg `:22` | voice_session | 2.9620 | — | yes |
+| c1 | #3 arian ghashghai `:10` | voice_session | 2.6406 | — | no |
+| c2 | #4 ​𝐥𝐲𝐫𝐚 `:37` | connection_description_closed | 0.7764 | no | no |
+| c2 | #5 Maxpein `:12` | connection_description_closed | 0.2600 | **yes** | yes |
+| c2 | #6 Sherry `:27` | connection_description_closed | 0.2221 | **yes** | no |
+| c3 | #7 Early Retirement `:39` | voice_session | 2.5239 | — | yes |
+| c3 | #8 Silent Revolution `:6` | voice_session | 1.0239 | — | no |
+| c4 | #9 Cinema Tweets `:8` | lightbox_closed | 1.1175 | — | no |
+| c5 | #10 Rust Cohle `:15` | lightbox_closed | 1.5000 | — | yes |
+| c7 | #11 James Lucas `2810ae3a…:4` | connection_description_closed | 1.4485 | no | no |
+| c7 | #12 James Lucas `a428492a…:31` | lightbox_closed | 1.4744 | — | no |
+
+```sql
+select a->>'cluster_id', a->>'key', a->'top_events'->0->>'event_type', round((a->'top_events'->0->>'w_rule')::numeric,4)
+from weave_profile_snapshots, jsonb_array_elements(generation_metadata->'anchors') a where id='efa6d6e1-6fc5-4063-8a1e-0de59409d2ad';
+```
+
+### I.4 t1 cluster members engaged since t1 (excluding qa rows)
+
+Members of t1 clusters with at least one qualifying event in W, plus every t1 anchor. Σ values are undecayed. Clusters c4–c7 have no engaged non-anchor member.
+
+| cluster | key | t1 anchor? | title | events | Σ breadth | Σ depth |
+|---|---|---|---|---:|---:|---:|
+| c1 | `b3c1473b…:20` | yes | WIRED | 4 | 3.523 | 0.646 |
+| c1 | `b3c1473b…:22` | yes | Bloomberg | 1 | 0.856 | 0 |
+| c1 | `b3c1473b…:10` | yes | arian ghashghai | 0 | 0 | 0 |
+| c1 | `8a8d45a9…:4` | no | Autism Capital 🧩 | 8 | 5.844 | 2.524 |
+| c1 | `8a8d45a9…:3` | no | Maine | 4 | 3.172 | 2.524 |
+| c1 | `b3c1473b…:7` | no | unusual_whales | 2 | 2.458 | 0 |
+| c1 | `b3c1473b…:16` | no | Bo Ren | 1 | 1.094 | 0 |
+| c1 | `a428492a…:23` | no | Pope Leo XIV | 1 | 0.975 | 0 |
+| c2 | `a428492a…:12` | yes | Maxpein | 1 | 0.391 | 0 |
+| c2 | `a428492a…:37` | yes | ​𝐥𝐲𝐫𝐚 | 0 | 0 | 0 |
+| c2 | `a428492a…:27` | yes | Sherry | 0 | 0 | 0 |
+| c2 | `8a8d45a9…:29` | no | philosophy memes 🔗 | 6 | 5.239 | 0 |
+| c2 | `8a8d45a9…:19` | no | Saganism | 6 | 3.737 | 0 |
+| c2 | `8a8d45a9…:27` | no | no context memes | 2 | 1.626 | 0 |
+| c3 | `a428492a…:39` | yes | Early Retirement | 2 | 2.693 | 0 |
+| c3 | `8a8d45a9…:6` | yes | Silent Revolution | 0 | 0 | 0 |
+| c3 | `8a8d45a9…:9` | no | Is Ignorance Really Bliss? | 2 | 1.223 | 0 |
+| c4 | `a428492a…:8` | yes | Cinema Tweets | 0 | 0 | 0 |
+| c5 | `8a8d45a9…:15` | yes | Rust Cohle | 3 | 2.397 | 0 |
+| c7 | `a428492a…:31` | yes | James Lucas | 0 | 0 | 0 |
+| c7 | `2810ae3a…:4` | yes | James Lucas | 0 | 0 | 0 |
+
+c3 has 3 members, and all 3 carry weight from t1 or W (#7, #8, `:9`).
+
+```sql
+-- I.4 (W bounds as §B; qa rows removed by browser session_id as §E)
+with s as (select clusters c from weave_profile_snapshots where id='efa6d6e1-6fc5-4063-8a1e-0de59409d2ad'),
+m as (select cl->>'cluster_id' cid, mk key, (cl->'anchor_node_ids') ? mk is_anchor from s, jsonb_array_elements(c) cl, jsonb_array_elements_text(cl->'member_node_ids') mk),
+qs as (select distinct e.session_id from weave_events e join voice_sessions vs on vs.id=e.voice_session_id where vs.session_kind='qa'),
+ev as (
+  select e.session_id in (select session_id from qs) qa,
+    case when e.event_type='lightbox_closed' then array[substr(e.target_id,6)]
+         else array[split_part(e.target_id,':',2)||':'||split_part(e.target_id,':',3), split_part(e.target_id,':',2)||':'||split_part(e.target_id,':',4)] end keys,
+    1.5*least((ln(greatest(e.duration_ms,0)/1000.0+1)/ln(2))/(ln(46)/ln(2)),1) w, 'b' cls
+  from weave_events e where e.event_type in ('lightbox_closed','connection_description_closed')
+    and e.timestamp > '2026-09-07T02:37:59.815Z' and e.timestamp <= '2026-10-04 16:27:57+00'
+  union all
+  select false, array[ed.board_id||':'||coalesce(fn.data->>'_clientNodeId',fn.id::text), ed.board_id||':'||coalesce(tn.data->>'_clientNodeId',tn.id::text)],
+    (1.5/(ln(5)/ln(2)))*ln((select count(*) from voice_utterances u where u.session_id=vs.id and u.speaker='user')+1)/ln(2), 'd'
+  from voice_sessions vs join edges ed on ed.id=vs.anchor_edge_id join nodes fn on fn.id=ed.source_node_id join nodes tn on tn.id=ed.target_node_id
+  where vs.session_kind='real' and vs.ended_at > '2026-09-07T02:37:59.815Z' and vs.ended_at <= '2026-10-04 16:27:57+00'),
+r as (select ev.*, unnest(keys) key from ev where not qa)
+select m.cid, m.key, m.is_anchor, count(r.*) n,
+  round(coalesce(sum(r.w) filter (where cls='b'),0)::numeric,3) b, round(coalesce(sum(r.w) filter (where cls='d'),0)::numeric,3) d
+from m left join r on r.key=m.key group by 1,2,3 having count(r.*)>0 or m.is_anchor order by 1, 3 desc, 5 desc;   -- → 21 rows
+```
+
+### I.5 Launch-session endpoints and the t1 node set
+
+| session | turns | endpoint | in t1 set | t1 cluster |
+|---|---:|---|---|---|
+| `ae2ca271` | 14 | `8a8d45a9…:3` Maine | yes | c1 |
+| `ae2ca271` | 14 | `8a8d45a9…:4` Autism Capital | yes | c1 |
+| `d289fffc` | 11 | `b3c1473b…:28` 'Your brain literally atrophies' | **no** (post-t1 addition) | — |
+| `d289fffc` | 11 | `b3c1473b…:4` shouko | yes | singleton |
+| `4949baac` | 1 | `b3c1473b…:20` WIRED | yes | c1 |
+| `4949baac` | 1 | `b3c1473b…:18` 60 Minutes | yes | singleton |
+
+### I.6 Launch dwell rows for the three anchored real sessions
+
+| session (start → end, UTC) | launch click | close `duration_ms` | note |
+|---|---|---:|---|
+| `ae2ca271` (09-17 06:54:37 → 07:13:00) | 06:54:35.6 | **1,104,735** | ≈ session wall-clock (18 m 23 s). An earlier click/close pair at 06:53:56–57 (1,543 ms) is on the same edge. |
+| `d289fffc` (09-27 08:47:07 → 08:59:45) | 08:46:39.0 | **none** | Orphan click; no close follows in that browser session. A separate 13,262 ms close on the same edge exists on 09-26 10:24. |
+| `4949baac` (09-28 05:08:31 → 05:10:34) | 05:08:29.7 | **125,904** | ≈ session wall-clock. |
+
+```sql
+select e.timestamp, e.event_type, e.target_id, e.duration_ms, e.session_id from weave_events e
+where e.event_type in ('connection_description_closed','connection_label_clicked') and e.target_id in (
+ 'connection:8a8d45a9-5327-4355-ae3c-c1fff734b327:3:4','connection:8a8d45a9-5327-4355-ae3c-c1fff734b327:4:3',
+ 'connection:b3c1473b-85bd-405b-90d0-917754d3da5f:28:4','connection:b3c1473b-85bd-405b-90d0-917754d3da5f:4:28',
+ 'connection:b3c1473b-85bd-405b-90d0-917754d3da5f:20:18','connection:b3c1473b-85bd-405b-90d0-917754d3da5f:18:20')
+ and e.timestamp > '2026-09-07T02:37:59.815Z' order by 1;   -- → 9 rows
+```
+
+### I.7 Corrections to this read
+
+| where | was | now |
+|---|---|---|
+| §B intro | "§D shows no t1 node was re-added" | §D does not show that. Direct query: `item_added` rows in W targeting a t1 node-set key = **0**. The claim held; the citation was wrong. |
+| §B "not re-engaged" | (implicit) a not-re-engaged node only decays | It can also **lose events to the 70 d horizon** (I.1). The §B flags are unchanged; their meaning for t2 weights is qualified by I.1. |
+| §C.4 | (no error) | For the W window, "most engaged" covers event count and undecayed weight only; **no decayed figure was computed for W**. Any "every measure" claim built on §C.4 should say so. |
+| §0 / §F | (no error) | t1's `generated_at` is `2026-09-07T02:37:59.815Z` (UTC). Compute Δ from it, not from the local date 2026-09-06. |
+
+```sql
+with s as (select generation_metadata g from weave_profile_snapshots where id='efa6d6e1-6fc5-4063-8a1e-0de59409d2ad'),
+t1k as (select jsonb_array_elements_text(g->'node_set'->'keys') key from s)
+select count(*) from weave_events e where e.event_type='item_added'
+  and e.timestamp > '2026-09-07T02:37:59.815Z' and e.timestamp <= '2026-10-04 16:27:57+00'
+  and substr(e.target_id,6) in (select key from t1k);   -- → 0
+```
+
+---
+
 ## H. Query map
 
 | id | measures | section |
@@ -697,3 +914,4 @@ where id='efa6d6e1-6fc5-4063-8a1e-0de59409d2ad' order by ord;
 | QE1–5 | qa sessions, browser-session attribution, edge events | §E |
 | git diff | snapshot code drift since `bc22795` | §F.0 |
 | QG | title, narrative, themes | §G |
+| QI.1–I.7 | horizon rebuild, stability window, top events, cluster engagement, launch closes, re-add check | §I |
