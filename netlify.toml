@@ -8,6 +8,9 @@
 [functions."extract-snapshot-themes"]
   timeout = 300
 
+[functions."generate-snapshot-narrative"]
+  timeout = 120
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
