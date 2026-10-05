@@ -12,9 +12,7 @@ import {
   NARRATIVE_MAX_TOKENS,
   NARRATIVE_SYSTEM_PROMPT_V2,
   PROMPT_VERSION_NARRATIVE,
-  TITLE_MAX_LENGTH,
   TITLE_MAX_TOKENS,
-  TITLE_PROMPT_TEMPLATE,
 } from '../lib/stage2/prompts'
 import { readNodeContent } from '../lib/stage2/reads'
 import {
@@ -25,6 +23,7 @@ import {
   type ThreadInput,
   type UnclusteredInput,
 } from '../lib/stage2/renderNarrative'
+import { generateTitle } from '../lib/stage2/title'
 
 type StageOneMetadata = {
   anchors?: AnchorProvenance[]
@@ -167,27 +166,26 @@ export default async (req: Request) => {
     const narrative = result.text
     console.log(`[Narrative] Generated (${claudeTiming}ms, ${narrative.length} chars)`)
 
-    // Step 4b: title (unchanged from v1; best-effort, never blocks the narrative write)
-    let title: string | null = null
-    try {
-      const titleResult = await callClaude(anthropicKey, '', `${TITLE_PROMPT_TEMPLATE}${narrative}`, { model: TITLE_MODEL, maxTokens: TITLE_MAX_TOKENS })
-      if (titleResult.text === null) {
-        console.error(`[Narrative] phase=title_generation failed: ${titleResult.error}`)
-      } else {
-        const candidate = titleResult.text.trim()
-        if (!candidate || candidate.length > TITLE_MAX_LENGTH) {
-          console.error(`[Narrative] phase=title_validation rejected value=${JSON.stringify(candidate)}`)
-        } else {
-          title = candidate
-        }
-      }
-    } catch (err) {
-      console.error(`[Narrative] phase=title_generation threw: ${err instanceof Error ? err.message : String(err)}`)
+    // Step 4b: title — best-effort, never blocks the narrative write, never dropped silently
+    const titleOutcome = await generateTitle(narrative, (prompt) =>
+      callClaude(anthropicKey, '', prompt, { model: TITLE_MODEL, maxTokens: TITLE_MAX_TOKENS }),
+    )
+    const title = titleOutcome.title
+    if (titleOutcome.error) {
+      const e = titleOutcome.error
+      console.error(
+        `[Narrative] TITLE FAILED snapshot=${snapshotId} phase=${e.phase} attempts=${e.attempts} reason=${JSON.stringify(e.reason)} rejected=${JSON.stringify(e.rejected_values)} — narrative written without title`,
+      )
+    } else if (titleOutcome.attempts > 1) {
+      console.log(`[Narrative] Title accepted on attempt ${titleOutcome.attempts}`)
     }
 
     // Step 5: write back
+    // Drop any prior run's title keys so a title never outlives its narrative.
+    const priorMeta: Record<string, unknown> = { ...meta }
+    for (const k of ['title', 'title_attempts', 'title_error']) delete priorMeta[k]
     const updatedMetadata: Record<string, unknown> = {
-      ...meta,
+      ...priorMeta,
       narrative_model: STAGE2_MODEL,
       prompt_version_narrative: PROMPT_VERSION_NARRATIVE,
       narrative_timing_ms: claudeTiming,
@@ -195,7 +193,12 @@ export default async (req: Request) => {
       narrative_content_read: { ...content.gates, missing_keys: content.missing },
       narrative_user_prompt: userPrompt,
     }
-    if (title) updatedMetadata.title = title
+    if (titleOutcome.error) {
+      updatedMetadata.title_error = titleOutcome.error
+    } else {
+      updatedMetadata.title = titleOutcome.title
+      updatedMetadata.title_attempts = titleOutcome.attempts
+    }
 
     const { error: updateErr } = await supabase
       .from('weave_profile_snapshots')
