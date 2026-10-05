@@ -758,7 +758,7 @@ export type Database = {
       }
       replace_board_contents: {
         Args: { p_board_id: string; p_edges: Json; p_nodes: Json }
-        Returns: undefined
+        Returns: Json
       }
     }
     Enums: {

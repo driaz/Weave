@@ -6,7 +6,8 @@ import {
 import { AuthError, NotFoundError, mapSupabaseError } from './errors'
 import { requireClient, requireUserId } from './session'
 import type { Connection } from '../api/claude'
-import type { SerializedBoard, SerializedNode } from '../types/board'
+import { connectionIdentityKey } from '../utils/connectionIdentity'
+import type { SerializedBoard, SerializedNode, WeaveMode } from '../types/board'
 import type { Json } from '../types/database'
 
 /**
@@ -219,17 +220,53 @@ async function callReplaceBoardContents(
   boardId: string,
   nodes: RpcNodePayload[],
   edges: RpcEdgePayload[],
-): Promise<void> {
+): Promise<SavedEdgeIds> {
   const client = requireClient()
   await requireUserId()
 
-  const { error } = await client.rpc('replace_board_contents', {
+  const { data, error } = await client.rpc('replace_board_contents', {
     p_board_id: boardId,
     p_nodes: nodes as unknown as Json,
     p_edges: edges as unknown as Json,
   })
   if (error)
     throw mapSupabaseError(error, `syncBoard.replaceBoardContents(${boardId})`)
+  return edgeIdsFromRpcResult(data)
+}
+
+/** edges.id per connection, keyed by `connectionIdentityKey`. */
+export type SavedEdgeIds = Map<string, string>
+
+/**
+ * Parse `replace_board_contents`'s result (migration 041: one
+ * `{ id, client_source_id, client_target_id, mode }` per saved edge) into
+ * ids keyed on the client's own directionless identity. Malformed elements
+ * are skipped; a non-array result (a pre-041 server returns null) yields an
+ * empty map — the client then simply holds no new ids, as before.
+ */
+export function edgeIdsFromRpcResult(result: unknown): SavedEdgeIds {
+  const ids: SavedEdgeIds = new Map()
+  if (!Array.isArray(result)) return ids
+  for (const row of result) {
+    if (typeof row !== 'object' || row === null) continue
+    const { id, client_source_id, client_target_id, mode } = row as Record<
+      string,
+      unknown
+    >
+    if (
+      typeof id !== 'string' ||
+      typeof client_source_id !== 'string' ||
+      typeof client_target_id !== 'string'
+    )
+      continue
+    const key = connectionIdentityKey({
+      from: client_source_id,
+      to: client_target_id,
+      mode: typeof mode === 'string' ? (mode as WeaveMode) : undefined,
+    })
+    ids.set(key, id)
+  }
+  return ids
 }
 
 /**
@@ -242,11 +279,15 @@ async function callReplaceBoardContents(
  * 3. Single RPC call: DELETE existing nodes (cascade-deletes edges),
  *    INSERT new nodes, INSERT new edges, advance boards.updated_at.
  *    Atomic — any failure rolls the whole function back.
+ *
+ * Resolves to the saved edges' ids keyed by connection identity, so the
+ * caller can give freshly-woven connections their edges.id without a
+ * reload (migration 041).
  */
 export async function syncBoardToSupabase(
   userId: string,
   board: SerializedBoard,
-): Promise<void> {
+): Promise<SavedEdgeIds> {
   // 1. Board row
   const existing = await step('step:board-get', () =>
     persistence.boards.get(board.id).catch((err) => {
@@ -296,7 +337,7 @@ export async function syncBoardToSupabase(
   )
   const edgePayload = board.connections.map(connectionToRpcPayload)
 
-  await step('step:rpc-replace-all', () =>
+  return step('step:rpc-replace-all', () =>
     callReplaceBoardContents(board.id, nodePayload, edgePayload),
   )
 }

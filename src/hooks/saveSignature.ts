@@ -78,5 +78,14 @@ export function computeSaveSignature(
     position: node.position,
     data: normalizeData((node.data ?? {}) as Record<string, unknown>),
   }))
-  return sortedStringify({ nodes: normNodes, connections })
+  // Connection `id` is the server's edges.id, written back after a save
+  // (migration 041). It's derived, not user-meaningful: excluding it means
+  // the id write-back — and hydrate-with-ids vs cache-without — never looks
+  // like an edit that needs saving.
+  const normConnections = connections.map((c) => {
+    const rest: Partial<Connection> = { ...c }
+    delete rest.id
+    return rest
+  })
+  return sortedStringify({ nodes: normNodes, connections: normConnections })
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -42,7 +42,8 @@ import { useProfileSnapshotBootstrap } from './hooks/useProfileSnapshotBootstrap
 import type { Connection } from './api/claude'
 import type { WeaveMode } from './types/board'
 import { generateNodeId } from './utils/nodeId'
-import { connectionIdentityKey } from './utils/connectionIdentity'
+import { applyEdgeIds, connectionIdentityKey } from './utils/connectionIdentity'
+import type { SavedEdgeIds } from './persistence/syncBoard'
 import { readFileAsDataUrl, isImageFile } from './utils/imageUtils'
 import { isUrl, fetchLinkMetadata, extractDomain } from './utils/linkUtils'
 import { isPdfFile, renderPdfThumbnail } from './utils/pdfUtils'
@@ -67,6 +68,15 @@ const edgeTypes = {
 }
 
 export function App() {
+  // A save's response carries the saved edges' ids (migration 041); merge
+  // them so connections woven this page load hold their edges.id. Invoked
+  // asynchronously after a save, by which point `setConnections` (declared
+  // below, after the hook whose board seeds it) is initialised.
+  // applyEdgeIds returns the same array when nothing changes, and the save
+  // signature ignores `id`, so this never schedules a real save.
+  const onEdgeIdsSaved = useCallback((idsByKey: SavedEdgeIds) => {
+    setConnections((prev) => applyEdgeIds(prev, idsByKey))
+  }, [])
   const {
     currentBoard,
     allBoards,
@@ -82,7 +92,7 @@ export function App() {
     dismissSaveError,
     rollbackSignal,
     hydrationRevision,
-  } = useBoardStorage()
+  } = useBoardStorage({ onEdgeIdsSaved })
 
   useProfileSnapshotBootstrap()
 
@@ -102,11 +112,25 @@ export function App() {
   const [activeLayer, setActiveLayer] = useState<WeaveMode>('weave')
   const [weavingMode, setWeavingMode] = useState<WeaveMode | null>(null)
   const [highlightState, setHighlightState] = useState<HighlightState>(null)
-  // Separate state for the popup — can be open alongside any highlight mode
+  // Separate state for the popup — can be open alongside any highlight mode.
+  // Holds the connection's identity key, not the object: the live connection
+  // is resolved from `connections` at render, so an edges.id that arrives
+  // after the click (save response, boot revalidation) reaches the popup.
+  // from/to are kept as clicked for the close event's targetId.
   const [popupEdge, setPopupEdge] = useState<{
-    connection: Connection
+    key: string
+    from: string
+    to: string
     position: { x: number; y: number }
   } | null>(null)
+  const popupConnection = useMemo(
+    () =>
+      popupEdge
+        ? (connections.find((c) => connectionIdentityKey(c) === popupEdge.key) ??
+          null)
+        : null,
+    [popupEdge, connections],
+  )
   const reactFlowRef = useRef<ReactFlowInstance<
     Node,
     Edge<WeaveEdgeData>
@@ -299,9 +323,7 @@ export function App() {
   const closeEdgeDetail = useCallback(() => {
     if (popupEdge && edgeOpenedAtRef.current) {
       const durationMs = Date.now() - edgeOpenedAtRef.current
-      const conn = popupEdge.connection
-      const from = conn.from.replace(/^node-/, '')
-      const to = conn.to.replace(/^node-/, '')
+      const { from, to } = popupEdge
       trackEvent('connection_description_closed', {
         targetId: `connection:${currentBoard.id}:${from}:${to}`,
         boardId: currentBoard.id,
@@ -319,11 +341,11 @@ export function App() {
   const onLabelClick = useCallback(
     (connection: Connection, position: { x: number; y: number }) => {
       edgeOpenedAtRef.current = Date.now()
-      setPopupEdge({ connection, position })
 
       // Edge case: if label is already highlighted (node mode), keep node highlight
       const from = connection.from.replace(/^node-/, '')
       const to = connection.to.replace(/^node-/, '')
+      setPopupEdge({ key: connectionIdentityKey(connection), from, to, position })
       setHighlightState((prev) => {
         if (
           prev?.type === 'node' &&
@@ -700,16 +722,16 @@ export function App() {
             }}
             onLoadingChange={setWeavingMode}
           />
-          {popupEdge && (
+          {popupEdge && popupConnection && (
             <EdgeDetailPopup
-              connection={popupEdge.connection}
+              connection={popupConnection}
               position={popupEdge.position}
-              connectionNumber={connections.indexOf(popupEdge.connection) + 1}
+              connectionNumber={connections.indexOf(popupConnection) + 1}
               node1={nodes.find(
-                (n) => n.id === popupEdge.connection.from.replace(/^node-/, ''),
+                (n) => n.id === popupConnection.from.replace(/^node-/, ''),
               )}
               node2={nodes.find(
-                (n) => n.id === popupEdge.connection.to.replace(/^node-/, ''),
+                (n) => n.id === popupConnection.to.replace(/^node-/, ''),
               )}
               boardNodes={nodes}
               boardConnections={connections}

@@ -14,6 +14,7 @@ import {
   buildNodeContent,
 } from '../services/voice/voiceContext'
 import { buildBoardSnapshot } from '../services/voice/boardSnapshot'
+import { anchorHintFor } from '../utils/connectionIdentity'
 
 type ModeMeta = {
   label: string
@@ -538,12 +539,7 @@ export function EdgeDetailPopup({
       connectionContext: buildConnectionContext(connection),
       nodeContent: buildNodeContent(node1, node2),
       anchorEdgeId,
-      anchorHint: {
-        boardId,
-        clientFrom: fromId,
-        clientTo: toId,
-        mode: connection.mode ?? null,
-      },
+      anchorHint: anchorHintFor(boardId, connection),
       // Phase 10B retrieval inputs: the anchor edge (identity → opening
       // edge-vector lookup; endpoints → exclusion anchors) and the full board
       // connection list (graph-adjacency exclusions).
@@ -561,8 +557,6 @@ export function EdgeDetailPopup({
   }, [
     boardId,
     connection,
-    fromId,
-    toId,
     node1,
     node2,
     voiceSessionActive,
