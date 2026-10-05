@@ -33,6 +33,7 @@ import { embedText } from '../embeddingService'
 import { deriveSessionKind } from './deriveSessionKind'
 import { persistence } from '../../persistence'
 import type {
+  AnchorHint,
   BoardSnapshot,
   EndReason,
   SentinelEvent,
@@ -51,6 +52,12 @@ export interface ProcessingLogEvent {
 
 export interface StartSessionInput {
   anchorEdgeId: string | null
+  /**
+   * Launch-edge endpoints. When `anchorEdgeId` is null the server resolves
+   * the edge from these (create_voice_session, migration 040) and logs the
+   * outcome as the row's first processing_log entry.
+   */
+  anchorHint?: AnchorHint | null
   boardSnapshot: BoardSnapshot
 }
 
@@ -221,7 +228,7 @@ export function createVoiceSessionController(
     getSessionId: () => session?.sessionId ?? null,
     getProcessingLog: () => (session ? session.processingLog : []),
 
-    async startSession({ anchorEdgeId, boardSnapshot }) {
+    async startSession({ anchorEdgeId, anchorHint, boardSnapshot }) {
       if (session) {
         throw new Error(
           `VoiceSessionController: startSession() called while session ${session.sessionId} is already active`,
@@ -229,12 +236,9 @@ export function createVoiceSessionController(
       }
       const row = await createSession({
         anchor_edge_id: anchorEdgeId,
+        anchor_hint: anchorHint ?? null,
         board_snapshot: boardSnapshot as unknown as never,
         started_at: nowIso(),
-        processing_log: [] as unknown as never,
-        end_reason: null,
-        ended_at: null,
-        summary: null,
         // Classify real vs QA from the page host at create time. Set
         // explicitly even for 'real' — legible intent at the call site, not a
         // reliance on the DB default to mean "real" (migration 036). Guard the
@@ -244,6 +248,9 @@ export function createVoiceSessionController(
           typeof window !== 'undefined' ? window.location.hostname : '',
         ),
       })
+      // The buffer holds CLIENT entries only. Any server-written entry
+      // (launch.anchor_edge_*) is already on the row, and end_voice_session
+      // appends this buffer after it — seeding it here would duplicate it.
       session = {
         sessionId: row.id,
         nextUtteranceIndex: 0,

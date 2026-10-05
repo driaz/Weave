@@ -85,10 +85,6 @@ describe.skipIf(!hasServiceRole())('persistence.voiceUtterances (integration)', 
       anchor_edge_id: null,
       board_snapshot: { nodes: [], edges: [], captured_at: new Date().toISOString() } as unknown as never,
       started_at: new Date().toISOString(),
-      processing_log: [] as unknown as never,
-      end_reason: null,
-      ended_at: null,
-      summary: null,
     })
   })
 
@@ -121,10 +117,6 @@ describe.skipIf(!hasServiceRole())('persistence.voiceUtterances (integration)', 
       anchor_edge_id: null,
       board_snapshot: { nodes: [], edges: [], captured_at: new Date().toISOString() } as unknown as never,
       started_at: new Date().toISOString(),
-      processing_log: [] as unknown as never,
-      end_reason: null,
-      ended_at: null,
-      summary: null,
     })
 
     const result = await persistence.voiceUtterances.writeUtterance(
