@@ -24,7 +24,7 @@ import {
 } from './vadController'
 import { voiceSessionStore } from './voiceSessionStore'
 import { voiceSessionController } from './voiceSessionController'
-import type { BoardSnapshot } from '../../persistence'
+import type { AnchorHint, BoardSnapshot } from '../../persistence'
 
 let activeController: VadController | null = null
 
@@ -36,16 +36,14 @@ voiceSessionStore.subscribe((state, prev) => {
 
 export interface BeginVoiceSessionInput extends VadControllerOptions {
   /**
-   * UUID of the edge that anchored this session (e.g. the connection
-   * the user clicked Speak on). `null` when the modal was opened from
-   * a non-edge entry point — the schema allows it.
-   *
-   * NOTE: today the EdgeDetailPopup's `Connection` object doesn't
-   * carry a database uuid, so callers from that entry point pass
-   * `null` until the client-side edge id is plumbed. The session's
-   * board context is still recoverable via `boardSnapshot`.
+   * UUID of the edge that anchored this session (the connection the
+   * user clicked Speak on), or `null` when the client doesn't hold one
+   * — e.g. a connection whose save hasn't returned its id yet. A null
+   * with `anchorHint` set is resolved server-side.
    */
   anchorEdgeId: string | null
+  /** Launch-edge endpoints for server-side anchor resolution. */
+  anchorHint?: AnchorHint | null
   /** Snapshot of the canvas at the moment the modal opened. */
   boardSnapshot: BoardSnapshot
 }
@@ -67,10 +65,11 @@ export async function beginVoiceSession(
   // failure is logged to console; subsequent recordUtterance calls
   // will throw "no active session" and the controller-side wiring
   // already swallows those (see VadController persistence hooks).
-  const { anchorEdgeId, boardSnapshot, ...vadOpts } = opts
+  const { anchorEdgeId, anchorHint, boardSnapshot, ...vadOpts } = opts
   try {
     await voiceSessionController.startSession({
       anchorEdgeId,
+      anchorHint,
       boardSnapshot,
     })
   } catch (err) {

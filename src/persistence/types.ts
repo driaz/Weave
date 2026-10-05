@@ -39,10 +39,31 @@ export type NewEdgeInput = Omit<
   'id' | 'user_id' | 'board_id' | 'created_at' | 'updated_at'
 >
 
-export type NewVoiceSessionInput = Omit<
+/**
+ * Launch-edge endpoints for server-side anchor resolution
+ * (`create_voice_session`, migration 040). Supplied whenever the session
+ * was launched from an edge; the server only uses it when
+ * `anchor_edge_id` is null. Ids are CLIENT node ids (bare, no `node-`
+ * prefix) — the RPC maps them via `nodes.data->>'_clientNodeId'`.
+ */
+export interface AnchorHint {
+  boardId: string
+  clientFrom: string
+  clientTo: string
+  mode: string | null
+}
+
+/**
+ * Create shape for `create_voice_session`. A session is always born open
+ * (no ended_at / end_reason / summary) with an empty client log — the RPC
+ * may seed processing_log with its own launch.anchor_edge_* entry.
+ */
+export type NewVoiceSessionInput = Pick<
   VoiceSessionInsert,
-  'id' | 'user_id'
->
+  'anchor_edge_id' | 'board_snapshot' | 'started_at' | 'session_kind'
+> & {
+  anchor_hint?: AnchorHint | null
+}
 
 export type Speaker = 'user' | 'assistant'
 
@@ -64,9 +85,10 @@ export type NewVoiceUtteranceInput = Omit<
 export type EndReason = 'user_closed' | 'idle_timeout' | 'error'
 
 /**
- * Body of the single UPDATE that closes a session. processing_log is
- * the controller's accumulated event buffer; ended_at and end_reason
- * mark the session terminal.
+ * Body of the single `end_voice_session` call that closes a session.
+ * processing_log is the controller's accumulated event buffer; the RPC
+ * APPENDS it after any server-written entries (migration 040), never
+ * replaces. ended_at and end_reason mark the session terminal.
  */
 export interface VoiceSessionEndPatch {
   ended_at: string

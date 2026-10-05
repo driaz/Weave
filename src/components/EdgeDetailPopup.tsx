@@ -14,6 +14,7 @@ import {
   buildNodeContent,
 } from '../services/voice/voiceContext'
 import { buildBoardSnapshot } from '../services/voice/boardSnapshot'
+import { anchorHintFor } from '../utils/connectionIdentity'
 
 type ModeMeta = {
   label: string
@@ -525,12 +526,11 @@ export function EdgeDetailPopup({
     if (!node1 || !node2) return
     if (voiceSessionActive) return
     // Phase 8: snapshot the board at the moment Speak is clicked.
-    // anchorEdgeId comes from connection.id — populated during
-    // hydration (connectionFromEdge). On freshly-Claude-derived
-    // connections that haven't survived a save → hydrate yet,
-    // connection.id is undefined; fall through to null. The
-    // empty-string guard exists because anchor_edge_id is a uuid
-    // column and Postgres rejects empty strings — null is the only
+    // anchorEdgeId comes from connection.id. When the client doesn't
+    // hold it (a save still in flight, or the boot fetch not landed),
+    // anchorHint lets create_voice_session resolve the edge server-side
+    // on (board, directionless pair, mode). The empty-string guard
+    // exists because anchor_edge_id is a uuid column — null is the only
     // safe sentinel.
     const anchorEdgeId =
       connection.id && connection.id.length > 0 ? connection.id : null
@@ -539,6 +539,7 @@ export function EdgeDetailPopup({
       connectionContext: buildConnectionContext(connection),
       nodeContent: buildNodeContent(node1, node2),
       anchorEdgeId,
+      anchorHint: anchorHintFor(boardId, connection),
       // Phase 10B retrieval inputs: the anchor edge (identity → opening
       // edge-vector lookup; endpoints → exclusion anchors) and the full board
       // connection list (graph-adjacency exclusions).

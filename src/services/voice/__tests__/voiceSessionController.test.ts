@@ -80,6 +80,45 @@ describe('VoiceSessionController', () => {
     expect(arg.anchor_edge_id).toBe('edge-1')
   })
 
+  it('startSession forwards the anchor hint so the server can resolve a null anchor', async () => {
+    const { deps, createSession } = makeDeps()
+    const controller = createVoiceSessionController(deps)
+    const anchorHint = { boardId: 'board-1', clientFrom: '5', clientTo: '7', mode: 'weave' }
+
+    await controller.startSession({ anchorEdgeId: null, anchorHint, boardSnapshot: emptySnapshot })
+
+    const arg = createSession.mock.calls[0][0]
+    expect(arg.anchor_edge_id).toBeNull()
+    expect(arg.anchor_hint).toEqual(anchorHint)
+  })
+
+  it('endSession sends only the client buffer — server entries are appended to, not re-sent', async () => {
+    const { deps, endSession } = makeDeps({
+      createSession: vi.fn(async () => ({
+        id: 'session-123',
+        user_id: 'user-1',
+        anchor_edge_id: 'edge-1',
+        board_snapshot: emptySnapshot,
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        end_reason: null,
+        processing_log: [
+          { phase: 'launch.anchor_edge_resolved', outcome: 'success', ts: new Date().toISOString() },
+        ],
+        summary: null,
+        session_kind: 'real',
+      })) as never,
+    })
+    const controller = createVoiceSessionController(deps)
+    await controller.startSession({ anchorEdgeId: null, boardSnapshot: emptySnapshot })
+    controller.logEvent({ phase: 'voice.test.event', outcome: 'success', ts: new Date().toISOString() })
+
+    await controller.endSession({ endReason: 'user_closed' })
+
+    const [, patch] = endSession.mock.calls[0]
+    expect(patch.processing_log.map((e: { phase: string }) => e.phase)).toEqual(['voice.test.event'])
+  })
+
   it('startSession rejects when a session is already active', async () => {
     const { deps } = makeDeps()
     const controller = createVoiceSessionController(deps)

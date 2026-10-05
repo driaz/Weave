@@ -168,12 +168,13 @@ ${JSON_FORMAT_INSTRUCTIONS}`
 export type Connection = {
   /**
    * Database uuid for the edges row this connection corresponds to.
-   * Populated during hydration (connectionFromEdge). Absent on
-   * Claude-derived connections until the next save → hydrate round
-   * trip writes the row and reads it back. Consumers that need a
-   * stable cross-session id (e.g. voice_sessions.anchor_edge_id)
-   * should treat undefined as "no anchor available" rather than
-   * fabricating one.
+   * Populated during hydration (connectionFromEdge) and, for connections
+   * woven this page load, from the save response (replace_board_contents
+   * returns the saved ids, migration 041 → applyEdgeIds). Absent only
+   * between a weave and its save returning. Consumers that need it (e.g.
+   * voice_sessions.anchor_edge_id) treat undefined as "not yet known" and
+   * never fabricate one — create_voice_session resolves it server-side
+   * (migration 040).
    */
   id?: string
   from: string

@@ -74,6 +74,7 @@ export type {
   NewNodeInput,
   NewEdgeInput,
   NewVoiceSessionInput,
+  AnchorHint,
   NewVoiceUtteranceInput,
   Speaker,
   EndReason,

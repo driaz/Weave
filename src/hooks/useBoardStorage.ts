@@ -16,7 +16,11 @@ import {
   fetchFromSupabase,
   writeStoreToCache,
 } from '../persistence/hydration'
-import { syncBoardToSupabase } from '../persistence/syncBoard'
+import {
+  syncBoardToSupabase,
+  type SavedEdgeIds,
+} from '../persistence/syncBoard'
+import { applyEdgeIds } from '../utils/connectionIdentity'
 import { logHydrationSource, logSyncOutcome } from '../persistence/syncLogger'
 import { forgetUploadedImagesForBoard } from '../persistence/imageUpload'
 import {
@@ -128,8 +132,26 @@ export type UseBoardStorageResult = {
   hydrationRevision: number
 }
 
-export function useBoardStorage(): UseBoardStorageResult {
+export type UseBoardStorageOptions = {
+  /**
+   * Called after a successful save of the ACTIVE board with the saved
+   * edges' ids (keyed by `connectionIdentityKey`). App.tsx merges them into
+   * its React `connections` so a connection woven this page load holds its
+   * edges.id without a reload. Not called when the user has switched boards
+   * meanwhile — App re-seeds from the store, which already holds the ids.
+   */
+  onEdgeIdsSaved?: (idsByKey: SavedEdgeIds) => void
+}
+
+export function useBoardStorage(
+  options: UseBoardStorageOptions = {},
+): UseBoardStorageResult {
   const { user, loading: authLoading } = useAuth()
+
+  const onEdgeIdsSavedRef = useRef(options.onEdgeIdsSaved)
+  useEffect(() => {
+    onEdgeIdsSavedRef.current = options.onEdgeIdsSaved
+  }, [options.onEdgeIdsSaved])
 
   // Initial state: build from cache if we can. Otherwise start empty
   // and let the cold-start path render a skeleton until Supabase responds.
@@ -324,17 +346,17 @@ export function useBoardStorage(): UseBoardStorageResult {
 
   /**
    * Fire a Supabase save, serialized through `pendingSupabaseSave`.
-   * Returns a promise that resolves to `true` on success, `false` on
-   * failure. Rejections never escape — the chain stays alive.
+   * Returns a promise that resolves to the saved edge ids on success,
+   * `null` on failure. Rejections never escape — the chain stays alive.
    */
   const runSupabaseSave = useCallback(
-    (board: SerializedBoard): Promise<boolean> => {
+    (board: SerializedBoard): Promise<SavedEdgeIds | null> => {
       const next = pendingSupabaseSave.current
         .catch(() => {})
         .then(async () => {
           if (!user?.id) {
             logSyncOutcome('supabase', 'skipped', 'no auth session')
-            return false
+            return null
           }
           if (!supabase) {
             logSyncOutcome(
@@ -342,12 +364,12 @@ export function useBoardStorage(): UseBoardStorageResult {
               'skipped',
               'supabase client not configured',
             )
-            return false
+            return null
           }
           try {
-            await syncBoardToSupabase(user.id, board)
+            const edgeIds = await syncBoardToSupabase(user.id, board)
             logSyncOutcome('supabase', 'success')
-            return true
+            return edgeIds
           } catch (err) {
             const reason = err instanceof Error ? err.message : String(err)
             logSyncOutcome('supabase', 'failure', reason)
@@ -356,11 +378,11 @@ export function useBoardStorage(): UseBoardStorageResult {
               throw err
             }
             console.warn('[Weave sync] Supabase write failed', err)
-            return false
+            return null
           }
         })
-      pendingSupabaseSave.current = next.catch(() => false)
-      return next as Promise<boolean>
+      pendingSupabaseSave.current = next.catch(() => null)
+      return next as Promise<SavedEdgeIds | null>
     },
     [user?.id],
   )
@@ -409,8 +431,12 @@ export function useBoardStorage(): UseBoardStorageResult {
         updatedAt,
       }
 
-      void runSupabaseSave(snapshot).then((ok) => {
-        if (ok) {
+      void runSupabaseSave(snapshot).then((edgeIds) => {
+        if (edgeIds) {
+          // The saved connections, now carrying their edges.id. Store and
+          // cache hold these, so neither a board switch nor the next page
+          // load's warm cache resurrects an id-less connection.
+          const savedConnections = applyEdgeIds(connections, edgeIds)
           // Advance the in-memory store to the saved snapshot and
           // mirror it to cache. `currentBoard` stays referentially
           // stable on the UI side when the snapshot matches what
@@ -422,7 +448,7 @@ export function useBoardStorage(): UseBoardStorageResult {
             const mergedBoard: SerializedBoard = {
               ...base,
               nodes: fullNodes,
-              connections,
+              connections: savedConnections,
               nodeIdCounter: counter,
               updatedAt,
             }
@@ -437,7 +463,7 @@ export function useBoardStorage(): UseBoardStorageResult {
           // double-write quota-wise (the setter is idempotent anyway).
           putBoardCache(boardId, {
             nodes: fullNodes,
-            connections,
+            connections: savedConnections,
             updatedAt,
           })
           putBoardListCache(
@@ -453,6 +479,9 @@ export function useBoardStorage(): UseBoardStorageResult {
             }),
           )
           logSyncOutcome('cache', 'success')
+          if (storeRef.current.lastActiveBoard === boardId) {
+            onEdgeIdsSavedRef.current?.(edgeIds)
+          }
           drainSideEffects(boardId)
         } else {
           // Rollback. `storeRef` never advanced past the pre-save
@@ -514,8 +543,8 @@ export function useBoardStorage(): UseBoardStorageResult {
     // in-flight saves is deterministic. On success we write cache;
     // on failure we roll back the local store.
     const snapshotStoreBefore = storeRef.current
-    void runSupabaseSave(board).then((ok) => {
-      if (ok) {
+    void runSupabaseSave(board).then((saved) => {
+      if (saved) {
         putBoardCache(board.id, {
           nodes: [],
           connections: [],

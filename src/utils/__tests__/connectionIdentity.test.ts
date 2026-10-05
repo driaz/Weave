@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Connection } from '../../api/claude'
 import {
+  anchorHintFor,
+  applyEdgeIds,
   connectionIdentityFields,
   connectionIdentityKey,
   dedupeConnectionsFirstWins,
@@ -173,5 +175,46 @@ describe('client merge contract (App onResult)', () => {
     // weave sibling is added; the second deeper reading is dropped.
     expect(out).toHaveLength(2)
     expect(out.map((c) => c.mode).sort()).toEqual(['deeper', 'weave'])
+  })
+})
+
+describe('applyEdgeIds', () => {
+  it('writes the saved id onto the matching connection, either direction', () => {
+    const woven = [conn({ from: '7', to: '5', mode: 'weave' })]
+    const ids = new Map([[connectionIdentityKey({ from: '5', to: '7', mode: 'weave' }), 'edge-uuid']])
+    const out = applyEdgeIds(woven, ids)
+    expect(out[0].id).toBe('edge-uuid')
+    expect(out[0].from).toBe('7')
+    expect(woven[0].id).toBeUndefined() // input not mutated
+  })
+
+  it('returns the same array when nothing changes (no render, no save)', () => {
+    const held = [conn({ id: 'edge-uuid', from: '5', to: '7', mode: 'weave' })]
+    const ids = new Map([[connectionIdentityKey(held[0]), 'edge-uuid']])
+    expect(applyEdgeIds(held, ids)).toBe(held)
+    expect(applyEdgeIds(held, new Map())).toBe(held)
+  })
+
+  it('is mode-aware and leaves unmatched connections untouched', () => {
+    const weave = conn({ from: '5', to: '7', mode: 'weave' })
+    const deeper = conn({ from: '5', to: '7', mode: 'deeper' })
+    const later = conn({ from: '8', to: '9', mode: 'weave' })
+    const ids = new Map([[connectionIdentityKey(weave), 'w-id']])
+    const out = applyEdgeIds([weave, deeper, later], ids)
+    expect(out.map((c) => c.id)).toEqual(['w-id', undefined, undefined])
+    expect(out[1]).toBe(deeper)
+    expect(out[2]).toBe(later)
+  })
+})
+
+describe('anchorHintFor', () => {
+  it('builds the server-resolve hint from an id-less connection', () => {
+    expect(anchorHintFor('board-1', conn({ from: 'node-5', to: '7', mode: 'tensions' }))).toEqual({
+      boardId: 'board-1',
+      clientFrom: '5',
+      clientTo: '7',
+      mode: 'tensions',
+    })
+    expect(anchorHintFor('board-1', conn({})).mode).toBeNull()
   })
 })
