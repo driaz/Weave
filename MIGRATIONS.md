@@ -114,7 +114,7 @@ When bootstrapping a new Supabase project, apply these in order. The pgvector ex
 > **Apply status — 042 (restore node merge + skip):**
 >
 > - **Weave-Dev (2026-10-06):** Applied via `supabase db push` (linked ref confirmed `bxbhjybahfyeqytwpkry` first; dry run listed only 042). Integration tests `src/persistence/__tests__/replaceBoardContentsNodeMerge.test.ts` ran against dev before the push (2 of 4 fail on 041: server-key survival, unchanged-node re-dating) and after (4 of 4 pass). Full suite 367/367.
-> - **Weave-Prod:** _pending — owner applies, schema-first, before the PR merges._ Pre-apply base check (2026-10-06, read-only): prod `md5(prosrc)` of `replace_board_contents` = `662739c98377afe1ef818f492bd77db1` = 041's body.
+> - **Weave-Prod (2026-10-06):** Applied by the owner (schema-first, before PR #66 merged). Pre-apply base check (read-only): prod `md5(prosrc)` of `replace_board_contents` = `662739c98377afe1ef818f492bd77db1` = 041's body. Post-apply verification (read-only, `weave_readonly`, 18:47 UTC): `md5(prosrc)` = `32017a1e8fbbd04d0dfb1be1a466cbbe` = 042's body; single overload `(uuid, jsonb, jsonb)` returning `jsonb`; `proacl` still grants EXECUTE to `anon`, `authenticated`, `service_role`.
 
 ## Deferred cutovers tracked in migration comments
 
