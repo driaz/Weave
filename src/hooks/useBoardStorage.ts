@@ -31,6 +31,7 @@ import {
 } from '../persistence/cache'
 import { AuthError, persistence } from '../persistence'
 import { computeSaveSignature } from './saveSignature'
+import { createSaveGate, type SavePath } from './saveGate'
 import {
   setBootFetchStatus,
   setLastRequestedBoardId,
@@ -101,7 +102,11 @@ export type UseBoardStorageResult = {
   switchBoard: (boardId: BoardId) => void
   renameBoard: (boardId: BoardId, newName: string) => void
   deleteBoard: (boardId: BoardId) => boolean
-  saveCurrentBoard: (nodes: Node[], connections: Connection[]) => void
+  saveCurrentBoard: (
+    nodes: Node[],
+    connections: Connection[],
+    path?: SavePath,
+  ) => void
   markBoardClean: (
     boardId: BoardId,
     nodes: Node[],
@@ -188,6 +193,10 @@ export function useBoardStorage(
   // debounced save short-circuits when the current snapshot matches.
   const lastSavedSignatures = useRef<Map<BoardId, string>>(new Map())
 
+  // No board is saved until the first successful fresh fetch has
+  // delivered it (or it was created in this page load). See saveGate.ts.
+  const [saveGate] = useState(createSaveGate)
+
   // Serialize Supabase writes through a single promise chain so
   // concurrent saves can't race the replace-all RPC.
   const pendingSupabaseSave = useRef<Promise<unknown>>(Promise.resolve())
@@ -255,19 +264,7 @@ export function useBoardStorage(
         if (outcome.kind === 'success') {
           const next = outcome.store
           const prev = storeRef.current
-
-          // Snap-back guard: `next.lastActiveBoard` was frozen as
-          // `preferredActiveId` when this IIFE started. If the user
-          // switched boards during the await, the store has moved on
-          // and applying `next` as-is would revert their switch.
-          // Preserve the user's choice — but only if Supabase still
-          // knows about that board (otherwise fall through to whatever
-          // Supabase returned rather than render an undefined board).
-          const finalNext =
-            prev.lastActiveBoard !== next.lastActiveBoard &&
-            next.boards[prev.lastActiveBoard]
-              ? { ...next, lastActiveBoard: prev.lastActiveBoard }
-              : next
+          const finalNext = storeAfterBootFetch(prev, next)
 
           // Mirror the (possibly snap-back-corrected) store to cache.
           // Done here rather than inside fetchFromSupabase so the
@@ -276,21 +273,20 @@ export function useBoardStorage(
           // pre-switch board.
           writeStoreToCache(finalNext)
 
-          // Only swap state if Supabase's view differs from what we
-          // rendered. Otherwise we'd trigger a redundant sync cycle
-          // in App.tsx for a no-op.
-          if (!storesEqual(prev, finalNext)) {
-            const activeBoard = finalNext.boards[finalNext.lastActiveBoard]
-            if (activeBoard) resetNodeIdCounter(activeBoard.nodeIdCounter)
-            setStore(finalNext)
-            // Signal App.tsx to re-seed its React state from the
-            // freshly-hydrated `currentBoard` — the cache may have
-            // been missing image nodes (quota stripping) or stale
-            // content, and React state would otherwise never pick
-            // up the Supabase view until the next board switch.
-            if (hadCacheAtMountRef.current) {
-              setHydrationRevision((n) => n + 1)
-            }
+          // The fresh fetch replaces the hydrated store unconditionally.
+          // (A content-blind comparison used to short-circuit this, so
+          // server-only node writes never reached a warm-booted session.)
+          // Every fetched board is now safe to save.
+          saveGate.markFetched(Object.keys(finalNext.boards))
+          const activeBoard = finalNext.boards[finalNext.lastActiveBoard]
+          if (activeBoard) resetNodeIdCounter(activeBoard.nodeIdCounter)
+          setStore(finalNext)
+          // Signal App.tsx to re-seed its React state from the
+          // freshly-fetched `currentBoard` and mark it clean, so the
+          // replacement itself never triggers a save. A cold boot
+          // re-seeds via `hydrating` going false instead.
+          if (hadCacheAtMountRef.current) {
+            setHydrationRevision((n) => n + 1)
           }
           setHydrationError(null)
           setHydrating(false)
@@ -335,7 +331,7 @@ export function useBoardStorage(
         setHydrating(false)
       }
     })()
-  }, [authLoading, user?.id])
+  }, [authLoading, user?.id, saveGate])
 
   const currentBoard: SerializedBoard = store.boards[store.lastActiveBoard]
 
@@ -401,16 +397,20 @@ export function useBoardStorage(
    *      from `currentBoard`, drop queued side-effects, show a toast.
    */
   const saveCurrentBoard = useCallback(
-    (nodes: Node[], connections: Connection[]) => {
+    (nodes: Node[], connections: Connection[], path: SavePath = 'debounce') => {
       const currentStore = storeRef.current
       const boardId = currentStore.lastActiveBoard
       const existingBoard = currentStore.boards[boardId]
       if (!existingBoard) return
 
       const signature = computeSaveSignature(nodes, connections)
-      if (lastSavedSignatures.current.get(boardId) === signature) {
-        return
-      }
+      const decision = saveGate.decide({
+        boardId,
+        path,
+        signature,
+        lastSavedSignature: lastSavedSignatures.current.get(boardId),
+      })
+      if (decision !== 'save') return
 
       // Pin the signature optimistically so rapid follow-up saves
       // (still debounced from the same burst of edits) don't all
@@ -499,7 +499,7 @@ export function useBoardStorage(
         }
       })
     },
-    [runSupabaseSave, drainSideEffects, dropSideEffects],
+    [runSupabaseSave, drainSideEffects, dropSideEffects, saveGate],
   )
 
   /**
@@ -534,10 +534,22 @@ export function useBoardStorage(
 
     // Seed the clean-signature so the first debounced save after
     // the create doesn't re-sync an empty canvas.
-    lastSavedSignatures.current.set(
-      board.id,
-      computeSaveSignature([], []),
-    )
+    const emptySignature = computeSaveSignature([], [])
+    lastSavedSignatures.current.set(board.id, emptySignature)
+
+    // A board created in this page load has nothing to fetch: creation
+    // opens its gate. The create save itself still goes through it.
+    saveGate.markCreated(board.id)
+    if (
+      saveGate.decide({
+        boardId: board.id,
+        path: 'new-board',
+        signature: emptySignature,
+        lastSavedSignature: undefined,
+      }) !== 'save'
+    ) {
+      return board.id
+    }
 
     // Save goes through the serialized chain so ordering with any
     // in-flight saves is deterministic. On success we write cache;
@@ -568,7 +580,7 @@ export function useBoardStorage(
     })
 
     return board.id
-  }, [runSupabaseSave])
+  }, [runSupabaseSave, saveGate])
 
   const switchBoard = useCallback((boardId: BoardId) => {
     const board = storeRef.current.boards[boardId]
@@ -730,25 +742,20 @@ export function useBoardStorage(
 }
 
 /**
- * Shallow comparison good enough for the background-revalidation
- * "should we swap state?" decision. We compare board count, active
- * id, and per-board updatedAt — if those match, the Supabase payload
- * is semantically equivalent to what the cache produced and there's
- * no reason to overwrite React state.
+ * The store that replaces the hydrated one when the boot fetch lands:
+ * always the fetch result, whatever the cache held. One exception — the
+ * snap-back guard: `fetched.lastActiveBoard` was frozen as
+ * `preferredActiveId` when the fetch started. If the user switched boards
+ * during the await, keep their choice — but only if Supabase still knows
+ * about that board (otherwise fall through to whatever Supabase returned
+ * rather than render an undefined board).
  */
-function storesEqual(a: WeaveBoardsStore, b: WeaveBoardsStore): boolean {
-  if (a.lastActiveBoard !== b.lastActiveBoard) return false
-  const aIds = Object.keys(a.boards).sort()
-  const bIds = Object.keys(b.boards).sort()
-  if (aIds.length !== bIds.length) return false
-  for (let i = 0; i < aIds.length; i++) {
-    if (aIds[i] !== bIds[i]) return false
-    const aBoard = a.boards[aIds[i]]
-    const bBoard = b.boards[aIds[i]]
-    if (aBoard.updatedAt !== bBoard.updatedAt) return false
-    if (aBoard.name !== bBoard.name) return false
-    if (aBoard.nodes.length !== bBoard.nodes.length) return false
-    if (aBoard.connections.length !== bBoard.connections.length) return false
-  }
-  return true
+export function storeAfterBootFetch(
+  prev: WeaveBoardsStore,
+  fetched: WeaveBoardsStore,
+): WeaveBoardsStore {
+  return prev.lastActiveBoard !== fetched.lastActiveBoard &&
+    fetched.boards[prev.lastActiveBoard]
+    ? { ...fetched, lastActiveBoard: prev.lastActiveBoard }
+    : fetched
 }
