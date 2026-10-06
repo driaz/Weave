@@ -263,7 +263,7 @@ export function App() {
       clearTimeout(saveTimeoutRef.current)
     }
     saveTimeoutRef.current = setTimeout(() => {
-      saveCurrentBoard(nodes, connections)
+      saveCurrentBoard(nodes, connections, 'debounce')
     }, 500)
 
     return () => {
@@ -374,7 +374,7 @@ export function App() {
 
   const handleSwitchBoard = useCallback(
     (boardId: string) => {
-      saveCurrentBoard(nodes, connections)
+      saveCurrentBoard(nodes, connections, 'switch')
       switchBoard(boardId)
       setActiveLayer('weave')
       trackEvent('board_switched', { targetId: `board:${boardId}`, boardId })
@@ -383,7 +383,7 @@ export function App() {
   )
 
   const handleCreateBoard = useCallback(() => {
-    saveCurrentBoard(nodes, connections)
+    saveCurrentBoard(nodes, connections, 'create-board')
     const newBoardId = createBoard()
     trackEvent('board_created', { targetId: `board:${newBoardId}`, boardId: newBoardId })
     return newBoardId
