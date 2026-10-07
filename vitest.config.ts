@@ -23,6 +23,7 @@ export default defineConfig({
       'src/**/__tests__/**/*.test.ts',
       'netlify/**/__tests__/**/*.test.ts',
       'scripts/**/__tests__/**/*.test.mjs',
+      'media-server/src/**/__tests__/**/*.test.ts',
     ],
   },
 })

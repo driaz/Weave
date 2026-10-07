@@ -23,8 +23,8 @@
 //     The only external calls anywhere: Gemini embeds + Phase 2's generator.
 //     Upsert with archived_at: null, content_summary = full composed text,
 //     embed_generation incremented, embed_trigger: 'sweep', provenance
-//     flags, embed_text_chars. Appends an embed.sweep processing_log event
-//     per node.
+//     flags, embed_text_chars. Records an embed.sweep node_processing_log
+//     row per node (migration 043).
 //
 // HARD EXCLUSIONS (never-worse-informed invariant): imageCards, pdfCards,
 // and image tweets (no transcript, no media_analysis, but a fetched tweet
@@ -74,6 +74,7 @@ import { GoogleGenAI } from '@google/genai'
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { join } from 'node:path'
+import { WRITE_UNRESOLVED_PHASE } from './lib/processingLogPhases.mjs'
 
 // --- Env (backfill-edge-embeddings.mjs pattern) -----------------------------
 const env = Object.fromEntries(
@@ -400,6 +401,19 @@ async function backfillDescriptions(plan, record) {
       const description = asStr(body.description)
       if (!description) throw new Error('empty description')
 
+      // Exactly-one guard: patch_node_data keys on the client id and would
+      // update every row on a duplicate. The planned uuid must be the only match.
+      const { data: matches, error: resolveErr } = await supabase
+        .from('nodes')
+        .select('id')
+        .eq('board_id', p.boardId)
+        .eq('user_id', p.userId)
+        .eq('data->>_clientNodeId', p.clientId)
+      if (resolveErr || matches.length !== 1 || matches[0].id !== p.nodeUuid) {
+        await logUnresolved(p, 'script.sweep.phase2', 'contentDescription', resolveErr ? null : matches.length, resolveErr?.message)
+        throw new Error(`node unresolved (matches: ${resolveErr ? 'error' : matches.length}) — contentDescription not patched`)
+      }
+
       const { error: patchErr } = await supabase.rpc('patch_node_data', {
         p_client_id: p.clientId,
         p_board_id: p.boardId,
@@ -575,20 +589,32 @@ async function reembed(plan, record) {
 }
 
 async function appendLog(p, phase, outcome, detail, durationMs = 0) {
-  const { error } = await supabase.rpc('append_processing_log', {
-    p_client_id: p.clientId,
-    p_board_id: p.boardId,
-    p_user_id: p.userId,
-    p_entry: {
-      ts: new Date().toISOString(),
-      phase,
-      source: 'script',
-      outcome,
-      durationMs,
-      detail,
+  const { error } = await supabase.rpc('append_node_processing_log', {
+    p_node_id: p.nodeUuid,
+    p_phase: phase,
+    p_outcome: outcome,
+    p_detail: { ...detail, source: 'script', durationMs },
+  })
+  if (error) console.warn(`[log] append_node_processing_log failed for ${p.title}: ${error.message}`)
+}
+
+async function logUnresolved(p, caller, intendedKey, matchCount, error) {
+  const { error: logErr } = await supabase.rpc('append_node_processing_log', {
+    p_node_id: null,
+    p_phase: WRITE_UNRESOLVED_PHASE,
+    p_outcome: 'skipped',
+    p_detail: {
+      board_id: p.boardId,
+      node_id: p.clientId,
+      user_id: p.userId,
+      node_uuid: p.nodeUuid,
+      caller,
+      intended_key: intendedKey,
+      match_count: matchCount,
+      ...(error ? { error } : {}),
     },
   })
-  if (error) console.warn(`[log] append_processing_log failed for ${p.title}: ${error.message}`)
+  if (logErr) console.warn(`[log] write.unresolved failed for ${p.title}: ${logErr.message}`)
 }
 
 // --- Verification suite (read-only) -----------------------------------------

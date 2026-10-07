@@ -3,20 +3,21 @@
  *
  * Two surfaces:
  *   - debug/info/warn/error — stdout-only, dropped below threshold
- *   - persist                — same shape, but the entry is also appended to
- *                              the node's data.processing_log via the
- *                              append_processing_log RPC (atomic array
- *                              concatenation; survives concurrent writes).
+ *   - persist                — same shape, but the entry is also written as
+ *                              a node_processing_log row (migration 043) via
+ *                              append_node_processing_log. The server never
+ *                              writes nodes.data.processing_log — that array
+ *                              is client-owned.
  *
  * Threshold comes from LOG_LEVEL; defaults to 'debug' off-prod, 'info' on
  * NODE_ENV=production. Events below the threshold are dropped silently.
  *
- * Why a dedicated RPC: patch_node_data (migration 016) does `data || patch`,
- * which merges top-level keys — that would replace the entire processing_log
- * array on every persist instead of appending to it.
+ * Why a table: replace_board_contents merges nodes.data key-by-key, so any
+ * server entry inside nodes.data.processing_log was replaced by the client's
+ * copy of the array on the next save.
  */
 
-import { admin } from './supabase.js'
+import { appendNodeProcessingLog, logUnresolvedWrite, resolveNodeUuid } from './supabase.js'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 export type Outcome = 'success' | 'failed' | 'degraded' | 'skipped'
@@ -83,10 +84,22 @@ function emit(level: LogLevel, nodeId: string, boardId: string, event: LogEvent)
 }
 
 /**
- * Build a logger scoped to a single node. `userId` is required because
- * append_processing_log scopes its UPDATE by user_id as a defense-in-depth
- * check on top of RLS (service role bypasses RLS, so the WHERE clause is
- * the only thing stopping cross-user writes).
+ * node_processing_log has phase/ts/outcome/detail columns; the rest of the
+ * event (source, durationMs, correlation ids) rides inside detail.
+ */
+function toDetail(event: LogEvent): Record<string, unknown> {
+  const detail: Record<string, unknown> = { ...event.detail, source: event.source }
+  if (event.durationMs !== undefined) detail.durationMs = event.durationMs
+  if (event.correlationId) detail.correlationId = event.correlationId
+  if (event.parentCorrelationId) detail.parentCorrelationId = event.parentCorrelationId
+  return detail
+}
+
+/**
+ * Build a logger scoped to a single node. `userId` is required because the
+ * node lookup is scoped by user_id as a defense-in-depth check (service role
+ * bypasses RLS, so the WHERE clause is the only thing stopping cross-user
+ * writes).
  */
 export function createNodeLogger(nodeId: string, boardId: string, userId: string): NodeLogger {
   const make = (level: LogLevel) =>
@@ -103,12 +116,13 @@ export function createNodeLogger(nodeId: string, boardId: string, userId: string
       // Echo to stdout at info so persist events are visible in fly logs
       // even when the RPC fails.
       emit('info', nodeId, boardId, event)
-      const { error } = await admin.rpc('append_processing_log', {
-        p_client_id: nodeId,
-        p_board_id: boardId,
-        p_user_id: userId,
-        p_entry: event,
-      })
+      const ref = { nodeId, boardId, userId }
+      const resolution = await resolveNodeUuid(ref)
+      const error = resolution.ok
+        ? await appendNodeProcessingLog(resolution.uuid, event.phase, event.outcome, toDetail(event))
+        : await logUnresolvedWrite(ref, resolution, 'fly.logger.persist', 'processing_log', {
+            intended_phase: event.phase,
+          })
       if (error) {
         emit(
           'warn',
@@ -117,7 +131,7 @@ export function createNodeLogger(nodeId: string, boardId: string, userId: string
           buildEvent(
             'logger.persist',
             'failed',
-            { error: error.message, originalPhase: phase },
+            { error, originalPhase: phase },
             undefined,
             undefined,
           ),
