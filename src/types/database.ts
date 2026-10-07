@@ -145,6 +145,41 @@ export type Database = {
         }
         Relationships: []
       }
+      node_processing_log: {
+        Row: {
+          detail: Json
+          id: string
+          node_id: string | null
+          outcome: string | null
+          phase: string
+          ts: string
+        }
+        Insert: {
+          detail?: Json
+          id?: string
+          node_id?: string | null
+          outcome?: string | null
+          phase: string
+          ts?: string
+        }
+        Update: {
+          detail?: Json
+          id?: string
+          node_id?: string | null
+          outcome?: string | null
+          phase?: string
+          ts?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "node_processing_log_node_id_fkey"
+            columns: ["node_id"]
+            isOneToOne: false
+            referencedRelation: "nodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       nodes: {
         Row: {
           board_id: string
@@ -663,6 +698,15 @@ export type Database = {
       }
     }
     Functions: {
+      append_node_processing_log: {
+        Args: {
+          p_detail?: Json
+          p_node_id: string
+          p_outcome?: string
+          p_phase: string
+        }
+        Returns: string
+      }
       append_processing_log: {
         Args: {
           p_board_id: string
