@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { WRITE_UNRESOLVED_PHASE } from './phases.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -11,18 +12,89 @@ export const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
 
-/**
- * Merge a partial object into nodes.data via jsonb concatenation.
- * Looked up by the ReactFlow client id stashed in data->>'_clientNodeId'
- * (the server never sees the actual UUID nodes.id). Scoped by board_id +
- * user_id so a stolen JWT can't poke at other users' nodes.
- */
-export async function patchNodeData(opts: {
+/** The only node identity the server holds: the ReactFlow client id, scoped by board + user. */
+export interface ClientNodeRef {
   nodeId: string
   boardId: string
   userId: string
+}
+
+export type NodeResolution =
+  | { ok: true; uuid: string }
+  | { ok: false; matchCount: number | null; error?: string }
+
+/**
+ * Resolve a client node id to nodes.id. Exactly one row or nothing —
+ * there is no unique index on (board_id, data->>'_clientNodeId'), so a
+ * duplicate is possible and must never be guessed between.
+ */
+export async function resolveNodeUuid(ref: ClientNodeRef): Promise<NodeResolution> {
+  const { data, error } = await admin
+    .from('nodes')
+    .select('id')
+    .eq('board_id', ref.boardId)
+    .eq('user_id', ref.userId)
+    .eq('data->>_clientNodeId', ref.nodeId)
+  if (error) return { ok: false, matchCount: null, error: error.message }
+  if (data.length !== 1) return { ok: false, matchCount: data.length }
+  return { ok: true, uuid: (data[0] as { id: string }).id }
+}
+
+/**
+ * Insert one node_processing_log row (migration 043). The only server
+ * write path into that table. Returns the error message, or null.
+ */
+export async function appendNodeProcessingLog(
+  nodeUuid: string | null,
+  phase: string,
+  outcome: string | null,
+  detail: Record<string, unknown>,
+): Promise<string | null> {
+  const { error } = await admin.rpc('append_node_processing_log', {
+    p_node_id: nodeUuid,
+    p_phase: phase,
+    p_outcome: outcome,
+    p_detail: detail,
+  })
+  return error ? error.message : null
+}
+
+/** Record a skipped write: no node is touched, one write.unresolved row with the inputs. */
+export function logUnresolvedWrite(
+  ref: ClientNodeRef,
+  resolution: Extract<NodeResolution, { ok: false }>,
+  caller: string,
+  intendedKey: string,
+  extra: Record<string, unknown> = {},
+): Promise<string | null> {
+  return appendNodeProcessingLog(null, WRITE_UNRESOLVED_PHASE, 'skipped', {
+    board_id: ref.boardId,
+    node_id: ref.nodeId,
+    user_id: ref.userId,
+    caller,
+    intended_key: intendedKey,
+    match_count: resolution.matchCount,
+    ...(resolution.error ? { error: resolution.error } : {}),
+    ...extra,
+  })
+}
+
+/**
+ * Merge a partial object into nodes.data via jsonb concatenation.
+ * Guarded: the client id must resolve to exactly one node first, or
+ * nothing is written and a write.unresolved row is logged. Without the
+ * guard, patch_node_data updates every matching row on a duplicate.
+ * Scoped by board_id + user_id so a stolen JWT can't poke at other
+ * users' nodes.
+ */
+export async function patchNodeData(opts: ClientNodeRef & {
   patch: Record<string, unknown>
 }): Promise<void> {
+  const resolution = await resolveNodeUuid(opts)
+  if (!resolution.ok) {
+    await logUnresolvedWrite(opts, resolution, 'fly.patchNodeData', Object.keys(opts.patch).join(','))
+    throw new Error(`patchNodeData skipped: node unresolved (matches: ${resolution.matchCount ?? 'error'})`)
+  }
   const { error } = await admin.rpc('patch_node_data', {
     p_client_id: opts.nodeId,
     p_board_id: opts.boardId,
