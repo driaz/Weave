@@ -37,7 +37,11 @@
  *                          empty, so prompts before anything surfaces stay
  *                          byte-identical to pre-working-memory behavior.
  */
-export function buildSystemPrompt(input: {
+export function buildSystemPrompt(input: SystemPromptInput): string {
+  return buildSystemBlocks(input).join('')
+}
+
+export interface SystemPromptInput {
   role: string
   cadence: string
   recentThinking?: string
@@ -45,10 +49,28 @@ export function buildSystemPrompt(input: {
   nodeContent: string
   relatedMaterial?: string
   workingMemory?: string
-}): string {
+}
+
+/**
+ * The same prompt as `buildSystemPrompt`, split into the three prompt-cache
+ * blocks (docs/reads/voice-prompt-cache.md). `blocks.join('')` is the
+ * single-string prompt, byte for byte.
+ *
+ *   [0] role + the separator after it — identical on opener and follow-up,
+ *       the only prefix the two turn types share.
+ *   [1] cadence through NODE CONTENT — stable for the life of a session
+ *       (per turn type).
+ *   [2] RELATED MATERIAL + SURFACED THIS SESSION — volatile, '' when both are
+ *       absent. Carries its own LEADING separator, so block [1] is the same
+ *       bytes whether or not block [2] exists this turn (a trailing separator
+ *       on [1] would make its cache entry flip with block [2]'s presence).
+ */
+export type SystemBlocks = [role: string, stable: string, volatile: string]
+
+export function buildSystemBlocks(input: SystemPromptInput): SystemBlocks {
   const { role, cadence, recentThinking, connectionContext, nodeContent, relatedMaterial, workingMemory } = input
 
-  const sections: string[] = [role, '---', cadence]
+  const sections: string[] = [cadence]
 
   if (recentThinking && recentThinking.trim().length > 0) {
     sections.push(
@@ -70,15 +92,21 @@ export function buildSystemPrompt(input: {
     nodeContent,
   )
 
+  const volatile: string[] = []
+
   if (relatedMaterial && relatedMaterial.trim().length > 0) {
-    sections.push('---', 'RELATED MATERIAL', relatedMaterial)
+    volatile.push('---', 'RELATED MATERIAL', relatedMaterial)
   }
 
   if (workingMemory && workingMemory.trim().length > 0) {
-    sections.push('---', 'SURFACED THIS SESSION', workingMemory)
+    volatile.push('---', 'SURFACED THIS SESSION', workingMemory)
   }
 
-  return sections.join('\n\n')
+  return [
+    `${role}\n\n---\n\n`,
+    sections.join('\n\n'),
+    volatile.length > 0 ? `\n\n${volatile.join('\n\n')}` : '',
+  ]
 }
 
 const RECENT_THINKING_FRAMING =

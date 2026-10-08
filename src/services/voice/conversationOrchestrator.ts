@@ -2,7 +2,7 @@ import roleText from '../../../prompts/role.txt?raw'
 import cadenceOpeningText from '../../../prompts/cadence-opening.txt?raw'
 import cadenceFollowupText from '../../../prompts/cadence-followup.txt?raw'
 import { supabase } from '../supabaseClient'
-import { buildSystemPrompt } from './buildSystemPrompt'
+import { buildSystemBlocks, type SystemBlocks } from './buildSystemPrompt'
 
 const PROXY_URL = 'https://weave-media.fly.dev/api/claude'
 const MODEL = 'claude-opus-5'
@@ -26,20 +26,20 @@ export interface RunConversationTurnInput {
    */
   signal?: AbortSignal
   /**
-   * Phase 9 pre-assembled system prompt override. When provided, the
-   * orchestrator sends this verbatim and skips its own buildSystemPrompt
-   * call (so `connectionContext` / `nodeContent` are ignored). The
-   * caller is responsible for selecting cadence-opening vs
-   * cadence-followup when assembling. Opening turns use this so the
-   * fetched profile snapshot can be folded into the prompt upstream and
-   * the assembled string can be logged alongside voice.turn.started.
+   * Phase 9 pre-assembled system prompt override, as prompt-cache blocks
+   * (`buildSystemBlocks`). When provided, the orchestrator sends these
+   * verbatim and skips its own assembly (so `connectionContext` /
+   * `nodeContent` are ignored). The caller is responsible for selecting
+   * cadence-opening vs cadence-followup when assembling. Opening turns use
+   * this so the fetched profile snapshot can be folded into the prompt
+   * upstream and the joined string can be logged alongside voice.turn.started.
    * Follow-up turns omit it and let the orchestrator assemble as before.
    */
-  systemPrompt?: string
+  systemBlocks?: SystemBlocks
   /**
    * Phase 10B follow-up retrieval block. Threaded per-turn (it changes every
    * turn, unlike the fixed connectionContext / nodeContent) into the
-   * orchestrator's own buildSystemPrompt call. Ignored when `systemPrompt` is
+   * orchestrator's own assembly. Ignored when `systemBlocks` is
    * provided (opening turns pre-fold their own relatedMaterial upstream).
    * Absent / empty → the section is omitted, exactly like Phase 9.
    */
@@ -47,7 +47,7 @@ export interface RunConversationTurnInput {
   /**
    * Session working memory block (SURFACED THIS SESSION): everything
    * retrieval surfaced in prior turns, threaded per-turn exactly like
-   * `relatedMaterial` and ignored the same way when `systemPrompt` is
+   * `relatedMaterial` and ignored the same way when `systemBlocks` is
    * provided. Absent / empty → the section is omitted.
    */
   workingMemory?: string
@@ -88,15 +88,15 @@ export type ClaudeMarkerPhase =
 export async function* runConversationTurn(
   input: RunConversationTurnInput,
 ): AsyncGenerator<string, void, unknown> {
-  const { connectionContext, nodeContent, messages, signal, systemPrompt, relatedMaterial, workingMemory, onMarker } = input
+  const { connectionContext, nodeContent, messages, signal, systemBlocks, relatedMaterial, workingMemory, onMarker } = input
 
-  let system: string
-  if (systemPrompt && systemPrompt.length > 0) {
-    system = systemPrompt
+  let blocks: SystemBlocks
+  if (systemBlocks) {
+    blocks = systemBlocks
   } else {
     const hasPriorAssistant = messages.some((m) => m.role === 'assistant')
     const cadence = hasPriorAssistant ? cadenceFollowupText : cadenceOpeningText
-    system = buildSystemPrompt({
+    blocks = buildSystemBlocks({
       role: roleText,
       cadence,
       connectionContext,
@@ -127,7 +127,7 @@ export async function* runConversationTurn(
       max_tokens: MAX_TOKENS,
       thinking: { type: 'adaptive' },
       output_config: { effort: 'low' },
-      system,
+      system: toSystemParam(blocks),
       messages,
       stream: true,
     }),
@@ -227,4 +227,25 @@ export async function* runConversationTurn(
     throw new Error('Claude stream ended without message_stop')
   }
   onMarker?.('voice.claude.response_complete', { usage, stopReason })
+}
+
+export interface SystemTextBlock {
+  type: 'text'
+  text: string
+  cache_control?: { type: 'ephemeral' }
+}
+
+/**
+ * Prompt-cache layout (docs/reads/voice-prompt-cache.md): breakpoints on the
+ * role block (shared by opener and follow-ups) and on the session-stable
+ * block; the volatile block is unmarked, and omitted when empty because the
+ * API rejects empty text blocks.
+ */
+export function toSystemParam([role, stable, volatile]: SystemBlocks): SystemTextBlock[] {
+  const system: SystemTextBlock[] = [
+    { type: 'text', text: role, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
+  ]
+  if (volatile.length > 0) system.push({ type: 'text', text: volatile })
+  return system
 }
