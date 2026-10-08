@@ -51,6 +51,7 @@ vi.mock('../../supabaseClient', () => ({
 }))
 
 import { runConversationTurn, type ConversationMessage } from '../conversationOrchestrator'
+import type { SystemBlocks } from '../buildSystemPrompt'
 import { createVoiceSessionLogger } from '../voiceSessionLogger'
 
 const SSE_EVENTS = [
@@ -101,7 +102,7 @@ function pacedSseResponse(events: { type: string }[]): Response {
 
 async function runTurn(input: {
   messages: ConversationMessage[]
-  systemPrompt?: string
+  systemBlocks?: SystemBlocks
 }): Promise<string> {
   const logger = createVoiceSessionLogger({ scope: 'test', boardId: 'b1' })
   const correlationIds = { correlationId: 'turn-1', parentCorrelationId: 'session-1' }
@@ -110,7 +111,7 @@ async function runTurn(input: {
     connectionContext: 'ctx',
     nodeContent: 'nodes',
     messages: input.messages,
-    systemPrompt: input.systemPrompt,
+    systemBlocks: input.systemBlocks,
     onMarker: (phase, detail) => logger.event(phase, 'success', detail, correlationIds),
   })) {
     text += chunk
@@ -177,7 +178,7 @@ describe('voice.claude latency markers', () => {
   it('emits both markers on an opening turn (pre-assembled prompt, synthetic Begin.)', async () => {
     const text = await runTurn({
       messages: [{ role: 'user', content: 'Begin.' }],
-      systemPrompt: 'assembled opening prompt',
+      systemBlocks: ['role\n\n---\n\n', 'assembled opening prompt', ''],
     })
 
     expect(text).toBe('Hello there. Second sentence.')

@@ -30,7 +30,7 @@ import {
   runConversationTurn,
   type ConversationMessage,
 } from './conversationOrchestrator'
-import { buildSystemPrompt } from './buildSystemPrompt'
+import { buildSystemBlocks, type SystemBlocks } from './buildSystemPrompt'
 import { createSentenceSegmenter } from './sentenceSegmenter'
 import { transcribeAudio, type TranscribeAudioOutput } from './sttClient'
 import { fetchTtsStream } from './ttsStreamClient'
@@ -541,7 +541,7 @@ export class VadController {
     ])
     const snapshotFetchLatencyMs = Math.round(performance.now() - fetchStartedAt)
 
-    const assembledSystemPrompt = buildSystemPrompt({
+    const systemBlocks = buildSystemBlocks({
       role: roleText,
       cadence: cadenceOpeningText,
       recentThinking: snapshot?.narrative,
@@ -550,6 +550,7 @@ export class VadController {
       relatedMaterial: relatedMaterial ?? undefined,
       workingMemory: workingMemoryBlock ?? undefined,
     })
+    const assembledSystemPrompt = systemBlocks.join('')
 
     this.logger.event(
       'voice.turn.started',
@@ -572,7 +573,7 @@ export class VadController {
       workingMemoryEntryCount: workingMemoryEntries.length,
       correlationIds,
     })
-    void this.runOpeningTurn(assembledSystemPrompt)
+    void this.runOpeningTurn(systemBlocks)
   }
 
   // ------- Phase 10B retrieval -------
@@ -1446,7 +1447,7 @@ export class VadController {
    * processing_user_turn, so claudeFailed/ttsFailed (which require it)
    * would throw.
    */
-  private async runOpeningTurn(systemPrompt: string): Promise<void> {
+  private async runOpeningTurn(systemBlocks: SystemBlocks): Promise<void> {
     const initialState = this.store.getState()
     if (initialState.status !== 'assistant_speaking') return
 
@@ -1469,7 +1470,7 @@ export class VadController {
         claudeMessages: [{ role: 'user', content: 'Begin.' }],
         isOpening: true,
         correlationIds,
-        systemPrompt,
+        systemBlocks,
       })
     } catch (err) {
       if (abort.signal.aborted) return
@@ -1523,25 +1524,25 @@ export class VadController {
     isOpening: boolean
     correlationIds: { correlationId: string; parentCorrelationId: string }
     /**
-     * Phase 9: opening turn passes the pre-assembled prompt (assembled
-     * upstream in kickOffOpeningTurn so the snapshot fetch can run and
-     * the assembled string can be logged on voice.turn.started). Absent
-     * on follow-up turns; the orchestrator assembles those itself.
+     * Phase 9: opening turn passes the pre-assembled prompt blocks
+     * (assembled upstream in kickOffOpeningTurn so the snapshot fetch can
+     * run and the joined string can be logged on voice.turn.started).
+     * Absent on follow-up turns; the orchestrator assembles those itself.
      */
-    systemPrompt?: string
+    systemBlocks?: SystemBlocks
     /**
      * Phase 10B per-turn retrieval block. Follow-up turns pass it here so it
-     * threads into the orchestrator's own buildSystemPrompt call (it changes
+     * threads into the orchestrator's own block assembly (it changes
      * every turn, so it can't be a fixed session option). Opening turns leave
      * it undefined — their relatedMaterial is already folded into
-     * `systemPrompt` upstream, and the orchestrator ignores it when
-     * `systemPrompt` is set.
+     * `systemBlocks` upstream, and the orchestrator ignores it when
+     * `systemBlocks` is set.
      */
     relatedMaterial?: string
     /**
      * Session working memory (SURFACED THIS SESSION). Same threading contract
      * as `relatedMaterial`: follow-up turns pass it into the orchestrator's
-     * rebuild; opening turns pre-fold it into `systemPrompt` upstream.
+     * rebuild; opening turns pre-fold it into `systemBlocks` upstream.
      */
     workingMemory?: string
   }): Promise<void> {
@@ -1551,7 +1552,7 @@ export class VadController {
       claudeMessages,
       isOpening,
       correlationIds,
-      systemPrompt,
+      systemBlocks,
       relatedMaterial,
       workingMemory,
     } = args
@@ -1969,7 +1970,7 @@ export class VadController {
         nodeContent: this.opts.nodeContent,
         messages: claudeMessages,
         signal: abort.signal,
-        systemPrompt,
+        systemBlocks,
         relatedMaterial,
         workingMemory,
         onMarker: (phase, detail) =>
