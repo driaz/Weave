@@ -12,6 +12,18 @@ export interface TranscribeAudioOutput {
   durationMs: number
 }
 
+export const STT_TOO_LARGE_MESSAGE =
+  'That turn was too long to transcribe — try a shorter one'
+
+/**
+ * User-facing message for a failed /api/stt response. 413 gets a plain
+ * sentence; other statuses keep the raw proxy body for debugging.
+ */
+export function sttFailureMessage(status: number, errorBody: string): string {
+  if (status === 413) return STT_TOO_LARGE_MESSAGE
+  return `STT proxy error (${status}): ${errorBody.slice(0, 500)}`
+}
+
 /**
  * Upload an audio blob to the Whisper STT proxy at /api/stt and return
  * the transcript. JWT-gated via Supabase session token.
@@ -63,14 +75,21 @@ export async function transcribeAudio(
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '')
+    if (response.status === 413) {
+      console.error('[voice.stt.error]', {
+        recordingId,
+        statusCode: response.status,
+        audioSizeBytes,
+        errorBody: errorBody.slice(0, 500),
+      })
+      throw new Error(sttFailureMessage(response.status, errorBody))
+    }
     console.warn('[voice.stt.error]', {
       recordingId,
       statusCode: response.status,
       errorBody: errorBody.slice(0, 500),
     })
-    throw new Error(
-      `STT proxy error (${response.status}): ${errorBody.slice(0, 500)}`,
-    )
+    throw new Error(sttFailureMessage(response.status, errorBody))
   }
 
   const json = (await response.json()) as {

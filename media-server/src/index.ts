@@ -12,6 +12,7 @@ import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { verifyUserToken } from './auth.js'
 import { processMedia } from './process.js'
+import { isUploadTooLarge, STT_BODY_LIMIT, sttMultipartOptions } from './sttLimits.js'
 
 const PORT = Number(process.env.PORT ?? 3000)
 
@@ -19,8 +20,6 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
 if (!ANTHROPIC_API_KEY) {
   throw new Error('ANTHROPIC_API_KEY is required')
 }
-
-const STT_BODY_LIMIT = 10 * 1024 * 1024
 
 // Browsers send a CORS preflight (OPTIONS) for cross-origin POSTs that
 // carry Authorization + Content-Type: application/json — which every
@@ -39,13 +38,7 @@ await app.register(cors, {
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Playback-Id', 'X-Recording-Id'],
 })
-await app.register(multipart, {
-  limits: {
-    fileSize: STT_BODY_LIMIT,
-    files: 1,
-    fields: 0,
-  },
-})
+await app.register(multipart, sttMultipartOptions)
 
 app.get('/health', async () => ({ status: 'ok' }))
 
@@ -341,7 +334,19 @@ app.post('/api/stt', async (req, reply) => {
     return reply.badRequest(`expected file field "audio", got "${filePart.fieldname}"`)
   }
 
-  const audioBuffer = await filePart.toBuffer()
+  let audioBuffer: Buffer
+  try {
+    audioBuffer = await filePart.toBuffer()
+  } catch (err) {
+    if (isUploadTooLarge(err)) {
+      log.warn(
+        { phase: 'stt.upload_too_large', maxBytes: STT_BODY_LIMIT, mimetype: filePart.mimetype },
+        'stt upload over limit',
+      )
+      return reply.code(413).send({ error: 'stt_upload_too_large', maxBytes: STT_BODY_LIMIT })
+    }
+    throw err
+  }
   const audioSizeBytes = audioBuffer.length
   if (audioSizeBytes === 0) {
     return reply.badRequest('audio file is empty')
