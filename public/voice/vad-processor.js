@@ -53,6 +53,7 @@ class VadProcessor extends AudioWorkletProcessor {
     this.linearThreshold = 0;
     this.minSpeechSamples = 0;
     this.minSilenceSamples = 0;
+    this.preRollSamples = RING_BUFFER_SIZE;
 
     this.isArmed = false;
     this.isSpeaking = false;
@@ -86,6 +87,15 @@ class VadProcessor extends AudioWorkletProcessor {
           return;
         }
         this.linearThreshold = msg.rmsThreshold;
+        // preRollMs → samples at the context's actual rate, capped at the
+        // ring. Absent → whole ring (the pre-fix behaviour).
+        this.preRollSamples =
+          typeof msg.preRollMs === 'number' && msg.preRollMs >= 0
+            ? Math.min(
+                RING_BUFFER_SIZE,
+                Math.round((msg.preRollMs * sampleRate) / 1000),
+              )
+            : RING_BUFFER_SIZE;
         this.minSpeechSamples = Math.max(
           1,
           Math.ceil((msg.minSpeechDurationMs / 1000) * sampleRate),
@@ -158,9 +168,12 @@ class VadProcessor extends AudioWorkletProcessor {
       if (!this.isSpeaking) {
         this.aboveThresholdSampleCount += len;
         if (this.aboveThresholdSampleCount >= this.minSpeechSamples) {
+          // A turn's first speech_started opens the stream and posts the
+          // pre-roll. Re-triggers after a dip inside the same turn post
+          // nothing extra: the stream chunks already carry that audio, and
+          // re-posting the ring spliced duplicate audio into the upload.
+          const isTurnStart = !this.isStreaming;
           this.isSpeaking = true;
-          this.isStreaming = true;
-          this.speakingBufferPos = 0;
 
           this.port.postMessage({
             type: 'speech_started',
@@ -168,22 +181,28 @@ class VadProcessor extends AudioWorkletProcessor {
             rms: this.rmsEma,
           });
 
-          // Linearize the ring buffer (oldest sample is at writePos % size).
-          const preroll = new Float32Array(size);
-          const start = this.writePos % size;
-          let idx = 0;
-          for (let i = start; i < size; i++) preroll[idx++] = this.ringBuffer[i];
-          for (let i = 0; i < start; i++) preroll[idx++] = this.ringBuffer[i];
-          const seq = this.speakingSequence++;
-          this.port.postMessage(
-            {
-              type: 'audio_chunk',
-              samples: preroll,
-              isPreRoll: true,
-              sequence: seq,
-            },
-            [preroll.buffer],
-          );
+          if (isTurnStart) {
+            this.isStreaming = true;
+            this.speakingBufferPos = 0;
+
+            // Linearize the last preRollSamples of the ring, oldest first.
+            const n = this.preRollSamples;
+            const preroll = new Float32Array(n);
+            const start = (((this.writePos - n) % size) + size) % size;
+            for (let i = 0; i < n; i++) {
+              preroll[i] = this.ringBuffer[(start + i) % size];
+            }
+            const seq = this.speakingSequence++;
+            this.port.postMessage(
+              {
+                type: 'audio_chunk',
+                samples: preroll,
+                isPreRoll: true,
+                sequence: seq,
+              },
+              [preroll.buffer],
+            );
+          }
         }
       }
     } else {
