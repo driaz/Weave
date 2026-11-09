@@ -2,9 +2,9 @@
  * Encode mono Float32 PCM samples into a 16-bit WAV Blob.
  *
  * Used by the voice controller to turn the worklet's accumulated audio
- * chunks into something /api/stt can ingest. Whisper accepts the native
- * AudioContext sample rate (usually 48000 or 44100); the proxy resamples
- * server-side, so we send what we capture.
+ * chunks into something /api/stt can ingest. The header carries whatever
+ * rate it is given; the capture context runs at 16 kHz (Whisper's native
+ * rate), so that is what reaches the upload.
  */
 
 export function encodeWav(samples: Float32Array, sampleRate: number): Blob {

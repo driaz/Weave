@@ -76,6 +76,13 @@ import {
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
 const WORKLET_READY_TIMEOUT_MS = 1000
+/**
+ * Capture rate for the mic context. Whisper resamples every input to
+ * 16 kHz mono before inference, so anything above this is discarded
+ * server-side. The browser resamples the mic into the context with
+ * anti-aliasing; TTS plays through its own 24 kHz context.
+ */
+const CAPTURE_SAMPLE_RATE = 16000
 const SILENCE_TIMER_MS = 1500
 const VAD_RMS_THRESHOLD = 0.02
 const VAD_MIN_SPEECH_DURATION_MS = 200
@@ -899,7 +906,7 @@ export class VadController {
 
     let ctx: AudioContext
     try {
-      ctx = new AudioContext()
+      ctx = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       throw new VoiceError(
@@ -1211,7 +1218,7 @@ export class VadController {
     const turnId = initialState.turnId ?? ''
     const correlationIds = { correlationId: turnId, parentCorrelationId: sessionId }
 
-    const sampleRate = this.audioContext?.sampleRate ?? 48000
+    const sampleRate = this.audioContext?.sampleRate ?? CAPTURE_SAMPLE_RATE
     const merged = mergeFloat32(this.chunkAccumulator)
     this.chunkAccumulator = []
     this.lastSequence = -1

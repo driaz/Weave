@@ -176,3 +176,46 @@ describe('vad-processor pre-roll', () => {
     expect(pr[0]).toBe(0)
   })
 })
+
+describe('vad-processor stream chunks', () => {
+  const chunkLengths = (sampleRate: number) => {
+    const { out, send, feed } = createProcessor(sampleRate)
+    configure(send, 300)
+    feed(0, 1500)
+    send({ type: 'start' })
+    feed(0.5, 1000)
+    return out
+      .filter((m) => m.type === 'audio_chunk' && !m.isPreRoll)
+      .map((m) => m.samples!.length)
+  }
+
+  it('sizes chunks at 50 ms of the worklet rate', () => {
+    const at48 = chunkLengths(48000)
+    const at16 = chunkLengths(16000)
+    expect(at48.length).toBeGreaterThan(0)
+    expect(at16.length).toBeGreaterThan(0)
+    expect(new Set(at48)).toEqual(new Set([2400]))
+    expect(new Set(at16)).toEqual(new Set([800]))
+  })
+
+  it('keeps the speech/silence debounce in ms at 16 kHz', () => {
+    const { out, send, feed } = createProcessor(16000)
+    send({
+      type: 'configure',
+      rmsThreshold: 0.01,
+      minSpeechDurationMs: 200,
+      minSilenceDurationMs: 200,
+      preRollMs: 300,
+    })
+    feed(0, 1500)
+    send({ type: 'start' })
+    feed(0.5, 150) // EMA rise + 150 ms is under the 200 ms hold
+    expect(count(out, 'speech_started')).toBe(0)
+    feed(0.5, 150)
+    expect(count(out, 'speech_started')).toBe(1)
+    feed(0, 150)
+    expect(count(out, 'silence_started')).toBe(0)
+    feed(0, 150)
+    expect(count(out, 'silence_started')).toBe(1)
+  })
+})
