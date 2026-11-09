@@ -31,6 +31,7 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { GoogleGenAI } from '@google/genai'
+import { GEMINI_EMBEDDING_MODEL } from './embeddingModel.mjs'
 
 export const EMBEDDING_DIMS = 3072
 const OPEN_EDGE_MARKER = 'OPEN EDGE:'
@@ -149,7 +150,7 @@ export function parseSummary(raw) {
 // embed
 // ---------------------------------------------------------------------------
 
-// Same Gemini pipeline as utterances and edges: gemini-embedding-2-preview,
+// Same Gemini pipeline as utterances and edges: GEMINI_EMBEDDING_MODEL,
 // SEMANTIC_SIMILARITY, 3072 dims — byte-identical config to embedText()
 // (src/services/embeddingService.ts) and the script-side embed() in
 // backfill-edge-embeddings.mjs, so deposits live in the shared vector space.
@@ -163,7 +164,7 @@ export async function embedBodies(rows, geminiApiKey) {
   const out = []
   for (const row of rows) {
     const res = await ai.models.embedContent({
-      model: 'gemini-embedding-2-preview',
+      model: GEMINI_EMBEDDING_MODEL,
       contents: { parts: [{ text: row.body }] },
       config: { taskType: 'SEMANTIC_SIMILARITY' },
     })

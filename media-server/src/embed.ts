@@ -6,7 +6,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required')
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY })
-const MODEL = 'gemini-embedding-2-preview'
+// Mirrors GEMINI_EMBEDDING_MODEL in src/services/embeddingService.ts and
+// scripts/lib/embeddingModel.mjs — keep all three in lockstep.
+const MODEL = 'gemini-embedding-2'
 
 export interface MultimodalEmbedInput {
   text: string

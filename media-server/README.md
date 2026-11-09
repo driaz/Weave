@@ -41,7 +41,7 @@ The spec proposed sampling video at 1 FPS and sending up to 120 frames as image
 parts, with a fallback to 6 keyframes if the per-request image cap was hit.
 
 **Probe result** (`scripts/probe-embedding-multimodal.mjs` in the main repo):
-`gemini-embedding-2-preview` accepts `video/mp4` as `inlineData` directly.
+`gemini-embedding-2` accepts `video/mp4` as `inlineData` directly.
 A 5-second test MP4 sent as one part returns a 3072-dim vector. So the pipeline
 is just: `ffmpeg -t 120 trimmed.mp4` + send. No frame extraction, no 6-image cap
 to worry about.

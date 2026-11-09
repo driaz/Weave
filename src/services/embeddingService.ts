@@ -18,6 +18,10 @@ export type EmbedTrigger =
   | 'media_patch'
   | 'sweep'
 
+// Mirrored in media-server/src/embed.ts and scripts/lib/embeddingModel.mjs
+// (separate runtimes, no shared import) — keep all three in lockstep.
+const GEMINI_EMBEDDING_MODEL = 'gemini-embedding-2'
+
 /**
  * Hard character budget for composed embed text. The Gemini embedding
  * surface truncates silently at ~36.8k chars of English prose
@@ -294,7 +298,7 @@ export async function embedNode(
   }
 
   const response = await ai.models.embedContent({
-    model: 'gemini-embedding-2-preview',
+    model: GEMINI_EMBEDDING_MODEL,
     contents: {
       parts,
     },
@@ -396,7 +400,7 @@ export async function embedText(text: string): Promise<number[]> {
   if (!text.trim()) throw new Error('embedText: empty text')
 
   const response = await ai.models.embedContent({
-    model: 'gemini-embedding-2-preview',
+    model: GEMINI_EMBEDDING_MODEL,
     contents: { parts: [{ text }] },
     config: { taskType: 'SEMANTIC_SIMILARITY' },
   })

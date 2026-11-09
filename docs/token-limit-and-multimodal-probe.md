@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-23
 **Prod queries:** role `weave_readonly` @ `aws-1-us-east-2.pooler.supabase.com`, db `postgres` (Weave prod), via `WEAVE_PROD_RO_DATABASE_URL`. SELECTs only.
-**Gemini calls:** `gemini-embedding-2-preview`, `taskType: SEMANTIC_SIMILARITY`, no `outputDimensionality` — byte-identical config to every production call site. **49 embedding API calls total** (2 determinism, 28 bisection across three runs, 15 multimodal probe, 4 control floor). Three calls carried inline video+audio (~3.7M base64 chars each); the rest were text-only. No vector produced in this session touched any database — all live in scratchpad JSON and this doc.
+**Gemini calls:** `gemini-embedding-2`, `taskType: SEMANTIC_SIMILARITY`, no `outputDimensionality` — byte-identical config to every production call site. **49 embedding API calls total** (2 determinism, 28 bisection across three runs, 15 multimodal probe, 4 control floor). Three calls carried inline video+audio (~3.7M base64 chars each); the rest were text-only. No vector produced in this session touched any database — all live in scratchpad JSON and this doc.
 **Scripts:** throwaway, session scratchpad only (`embed-lib.mjs`, `task01.mjs`, `task1b.mjs`, `task1c.mjs`, `task2.mjs`, `control.mjs`). Not wired into anything.
 **Companions:** the four prior Issue-#2 read docs.
 
