@@ -113,7 +113,7 @@ Incidental: the RPC's ≥ 20-char thin-summary guard means one of the two imageC
 
 ## 2. Read 2 — every Gemini embedding call site
 
-All sites use the **same model string and API surface**: model `'gemini-embedding-2-preview'`, called through the `@google/genai` JS SDK's `ai.models.embedContent(...)` — i.e. the **Gemini API** (API-key auth: `VITE_GEMINI_API_KEY` client/scripts, `GEMINI_API_KEY` media-server), **not Vertex**. Every call sets `config: { taskType: 'SEMANTIC_SIMILARITY' }`, none sets `outputDimensionality` (default 3072 observed throughout).
+All sites use the **same model string and API surface**: model `'gemini-embedding-2'`, called through the `@google/genai` JS SDK's `ai.models.embedContent(...)` — i.e. the **Gemini API** (API-key auth: `VITE_GEMINI_API_KEY` client/scripts, `GEMINI_API_KEY` media-server), **not Vertex**. Every call sets `config: { taskType: 'SEMANTIC_SIMILARITY' }`, none sets `outputDimensionality` (default 3072 observed throughout).
 
 | # | Site | Call | Input caps before the call | Token counting / overflow handling |
 |---|---|---|---|---|
@@ -148,7 +148,7 @@ All 28 embedding rows whose `(node_id, board_id)` matches no current node are **
 
 ## 5. Open questions
 
-1. What is the authoritative input-token limit for `gemini-embedding-2-preview` via the Gemini API's `embedContent`, and how are inline video/audio parts tokenized against it? (The 120s video trim suggests an empirically-found media cap; no doc reference exists in code.)
+1. What is the authoritative input-token limit for `gemini-embedding-2` via the Gemini API's `embedContent`, and how are inline video/audio parts tokenized against it? (The 120s video trim suggests an empirically-found media cap; no doc reference exists in code.)
 2. ~~Does retrieval filter on `archived_at IS NULL`?~~ Answered in §1.6: no — `match_retrieval_context` and `extract-snapshot-themes` do not; `generate-profile-snapshot`'s main read does. Follow-on question: was the omission in 032–034 deliberate (leaning on `p_live_node_ids` as the sole liveness signal) or an oversight?
 3. Can the client id counter actually regress in prod (enabling the §1.4.3 same-cycle race), or is cross-generation reuse only via the counter-reset paths (`resetNodeIdCounter`) seen on board switch/delete?
 4. Should the fix design clear `archived_at` on successful re-embed (making upsert mean "this node is live"), or key embeddings on a generation-stable id instead? (Design question, not answered here.)

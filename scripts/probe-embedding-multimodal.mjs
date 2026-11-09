@@ -1,4 +1,4 @@
-// Probes whether gemini-embedding-2-preview accepts video and audio
+// Probes whether the Gemini embedding model accepts video and audio
 // inlineData parts. Prints which mime types succeed and which fail,
 // and the response shape for each case.
 //
@@ -9,6 +9,7 @@
 
 import { GoogleGenAI } from '@google/genai'
 import { readFileSync } from 'node:fs'
+import { GEMINI_EMBEDDING_MODEL } from './lib/embeddingModel.mjs'
 
 const apiKey = process.env.VITE_GEMINI_API_KEY
 if (!apiKey) {
@@ -17,7 +18,7 @@ if (!apiKey) {
 }
 
 const ai = new GoogleGenAI({ apiKey })
-const MODEL = 'gemini-embedding-2-preview'
+const MODEL = GEMINI_EMBEDDING_MODEL
 
 function loadBase64(path) {
   return readFileSync(path).toString('base64')

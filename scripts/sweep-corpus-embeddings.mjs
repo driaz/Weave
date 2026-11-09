@@ -75,6 +75,7 @@ import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { join } from 'node:path'
 import { WRITE_UNRESOLVED_PHASE } from './lib/processingLogPhases.mjs'
+import { GEMINI_EMBEDDING_MODEL } from './lib/embeddingModel.mjs'
 
 // --- Env (backfill-edge-embeddings.mjs pattern) -----------------------------
 const env = Object.fromEntries(
@@ -523,7 +524,7 @@ async function reembed(plan, record) {
 
     try {
       const response = await ai.models.embedContent({
-        model: 'gemini-embedding-2-preview',
+        model: GEMINI_EMBEDDING_MODEL,
         contents: { parts: [{ text: composed.text }] },
         config: { taskType: 'SEMANTIC_SIMILARITY' },
       })
