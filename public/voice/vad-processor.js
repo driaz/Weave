@@ -33,7 +33,9 @@
  */
 
 const RING_BUFFER_SIZE = 16384;
-const SPEAKING_BUFFER_SIZE = 2400;
+// Stream chunk length in ms; the sample count follows the context rate
+// (2,400 at 48 kHz, 800 at 16 kHz).
+const STREAM_CHUNK_MS = 50;
 const EMA_TIME_CONSTANT_MS = 20;
 const QUANTUM_SIZE = 128;
 const PROCESSOR_NAME = 'vad-processor';
@@ -61,7 +63,8 @@ class VadProcessor extends AudioWorkletProcessor {
     this.aboveThresholdSampleCount = 0;
     this.belowThresholdSampleCount = 0;
 
-    this.speakingBuffer = new Float32Array(SPEAKING_BUFFER_SIZE);
+    this.chunkSamples = Math.round((STREAM_CHUNK_MS * sampleRate) / 1000);
+    this.speakingBuffer = new Float32Array(this.chunkSamples);
     this.speakingBufferPos = 0;
     this.speakingSequence = 0;
 
@@ -226,7 +229,7 @@ class VadProcessor extends AudioWorkletProcessor {
     if (this.isStreaming) {
       for (let i = 0; i < len; i++) {
         this.speakingBuffer[this.speakingBufferPos++] = channel[i];
-        if (this.speakingBufferPos >= SPEAKING_BUFFER_SIZE) {
+        if (this.speakingBufferPos >= this.chunkSamples) {
           // Transfer a fresh copy so the worklet retains its own buffer.
           const chunk = new Float32Array(this.speakingBuffer);
           const seq = this.speakingSequence++;
