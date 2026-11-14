@@ -129,6 +129,38 @@ Run this whenever a migration adds or changes tables / functions / enums so the 
 
 See [`MIGRATIONS.md`](MIGRATIONS.md) for the full inventory of applied migrations and their purpose.
 
+## Planning layer
+
+### Where the plan lives
+
+Notion is canonical; this file points at it, never copies it.
+
+- **Weave Roadmap** (page `3caac72d-0de3-814f-b79a-c4df4f2a96ef`) — Current Focus is the top-of-queue statement; the *Last reconciled* line sits at the top.
+- **Weave Backlog** (data source `739cda63-40be-480c-88e3-27935c6be5fa`) — one row per item; Status open / frontier / closed; Next Action is the executable statement.
+- **Session Lineage** (page `3caac72d-0de3-8144-acc5-df64c91336cb`) — append-only record of every decision and run; corrections are new entries, never edits.
+- **Learnings & Decisions** (page `3caac72d-0de3-8120-a434-f76403139539`), **Standing Disciplines** (page `3caac72d-0de3-81f7-a27a-edc275469836`).
+
+Fetch known pages by ID with `notion-fetch`, never by search. Edit the Roadmap with targeted `update_content` old_str/new_str pairs only; never `replace_content` (it sweeps the embedded database). Append prose with `insert_content` position end. Row properties via `update_properties`.
+
+### Operating mode (since 2026-10-28)
+
+Claude decides and records. Daniel is asked only for irreversible or prod-touching actions: `supabase db push`, credentials, deletions, merges. When a decision could reasonably go either way, make the call, write the reasoning into the lineage entry, and continue; don't stop to ask. Stop only on the stop conditions in the dispatch.
+
+### Taking the next item
+
+When asked to "read the Roadmap and take the next item" (or started by a schedule):
+
+1. Read Roadmap Current Focus and the Backlog. The next item is the top of Current Focus unless it says otherwise; ties go to Status frontier, then issue over polish.
+2. Before the first edit, write the dispatch into the row's Notes: purpose, decisions of record restated, phases, non-goals, stop conditions, done criteria. Set Status frontier, Last Touched today.
+3. Execute. Phase 0 is always a read: file:line for every premise in the dispatch, written to `docs/reads/<slug>.md`. A contradicted premise is a stop-and-report, not a workaround.
+4. Verify on dev. Tests for every behaviour added; existing tests stay green and are never weakened.
+5. Open the PR (code-only or docs-only, never mixed; a read file goes in its own docs-only PR). Don't merge.
+6. Write back in this order: Session Lineage entry → row Notes (results, premises corrected, numbers) → row properties (Status, Gate, Next Action, Last Touched) → Roadmap Current Focus (new paragraph at the top, *Last reconciled* line updated). Say what the environment couldn't do.
+
+### Environment facts
+
+Cloud sessions: dev Supabase only (env vars `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` for the dev project); no prod credentials exist here and none should be sought. Prod reads and prod pushes are Daniel's, on his machine. `gh pr create` may be blocked; push the branch and report if the PR can't be opened. `.env` is not in the clone; tests that need it are skipped, and the list is in the PR for `chore/cloud-session-setup` (#78).
+
 ## Future Considerations (not yet implemented)
 
 - 3D spatial layout option (Three.js or React Three Fiber)
