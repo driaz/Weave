@@ -34,7 +34,10 @@ deno.lock
 
 # Supabase CLI temp files
 supabase/.temp/
-.claude/
+# Claude Code: local settings, launch config and worktrees stay private;
+# only the shared settings.json (cloud-session hook) is committed.
+.claude/*
+!.claude/settings.json
 
 # Local scratch output (session summary probes, etc.)
 tmp/
