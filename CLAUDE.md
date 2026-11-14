@@ -155,6 +155,7 @@ When asked to "read the Roadmap and take the next item" (or started by a schedul
 3. Execute. Phase 0 is always a read: file:line for every premise in the dispatch, written to `docs/reads/<slug>.md`. A contradicted premise is a stop-and-report, not a workaround.
 4. Verify on dev. Tests for every behaviour added; existing tests stay green and are never weakened.
 5. Open the PR (code-only or docs-only, never mixed; a read file goes in its own docs-only PR). Don't merge.
+   A cloud session pushes only its assigned branch unless the prompt names another; a Phase 0 read that is part of a build goes into the row's Notes, while a standalone read row produces `docs/reads/<slug>.md` in its own session.
 6. Write back in this order: Session Lineage entry → row Notes (results, premises corrected, numbers) → row properties (Status, Gate, Next Action, Last Touched) → Roadmap Current Focus (new paragraph at the top, *Last reconciled* line updated). Say what the environment couldn't do.
 
 ### Environment facts

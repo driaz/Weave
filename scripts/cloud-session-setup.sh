@@ -10,3 +10,4 @@ fi
 
 cd "$CLAUDE_PROJECT_DIR"
 npm ci --no-audit --no-fund
+(cd media-server && npm ci --no-audit --no-fund)
