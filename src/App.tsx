@@ -38,6 +38,7 @@ import { SaveErrorToast } from './components/SaveErrorToast'
 import { VoiceSessionCard } from './components/voice/VoiceSessionCard'
 import { useStaggeredEdges } from './hooks/useStaggeredEdges'
 import { useBoardStorage } from './hooks/useBoardStorage'
+import { keepLocalCreations } from './hooks/bootMerge'
 import { useProfileSnapshotBootstrap } from './hooks/useProfileSnapshotBootstrap'
 import type { Connection } from './api/claude'
 import type { WeaveMode } from './types/board'
@@ -192,6 +193,16 @@ export function App() {
   const prevHydratingRef = useRef(hydrating)
   const prevRollbackRef = useRef(rollbackSignal)
   const prevHydrationRevRef = useRef(hydrationRevision)
+  // The board as the store held it at the last run, and the canvas as it
+  // is now: a fetch-driven re-seed keeps nodes created before the fetch
+  // landed (bootMerge.ts, docs/reads/cold-load-gate.md).
+  const prevStoreBoardRef = useRef(currentBoard)
+  const nodesRef = useRef(nodes)
+  const connectionsRef = useRef(connections)
+  useEffect(() => {
+    nodesRef.current = nodes
+    connectionsRef.current = connections
+  }, [nodes, connections])
   useEffect(() => {
     const boardChanged = currentBoard.id !== prevBoardIdRef.current
     const hydrationJustFinished =
@@ -200,22 +211,43 @@ export function App() {
     const revalidated = hydrationRevision !== prevHydrationRevRef.current
 
     if (boardChanged || hydrationJustFinished || rolledBack || revalidated) {
-      const freshNodes = currentBoard.nodes.map((n) => ({
+      const freshNodes: Node[] = currentBoard.nodes.map((n) => ({
         id: n.id,
         type: n.type,
         position: n.position,
         data: n.data,
       }))
+      const seeded = prevStoreBoardRef.current
+      const fetchLanded =
+        (revalidated || hydrationJustFinished) &&
+        !boardChanged &&
+        !rolledBack &&
+        seeded.id === currentBoard.id
+      const next = fetchLanded
+        ? keepLocalCreations({
+            localNodes: nodesRef.current,
+            localConnections: connectionsRef.current,
+            seededIds: seeded.nodes.map((n) => n.id),
+            fetchedNodes: freshNodes,
+            fetchedConnections: currentBoard.connections,
+          })
+        : { nodes: freshNodes, connections: currentBoard.connections, keptIds: [] }
+      if (next.keptIds.length > 0) {
+        console.info(
+          `[Weave sync] kept ${next.keptIds.length} node(s) created before the first fetch — board=${currentBoard.id} ids=${next.keptIds.join(',')}`,
+        )
+      }
       detectRenderAnomaly({
         rendered: {
           id: currentBoard.id,
           name: currentBoard.name,
-          nodeCount: freshNodes.length,
+          nodeCount: next.nodes.length,
         },
         boards: allBoards,
       })
-      setNodes(freshNodes)
-      setConnections(currentBoard.connections)
+      setNodes(next.nodes)
+      setConnections(next.connections)
+      // Clean = server state, so kept nodes are saved by the next debounce.
       markBoardClean(currentBoard.id, freshNodes, currentBoard.connections)
       if (boardChanged) {
         setHighlightState(null)
@@ -223,14 +255,12 @@ export function App() {
       }
       prevBoardIdRef.current = currentBoard.id
     }
+    prevStoreBoardRef.current = currentBoard
     prevHydratingRef.current = hydrating
     prevRollbackRef.current = rollbackSignal
     prevHydrationRevRef.current = hydrationRevision
   }, [
-    currentBoard.id,
-    currentBoard.name,
-    currentBoard.nodes,
-    currentBoard.connections,
+    currentBoard,
     hydrating,
     rollbackSignal,
     hydrationRevision,

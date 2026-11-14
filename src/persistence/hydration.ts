@@ -44,23 +44,6 @@ export function emptyStore(): WeaveBoardsStore {
   }
 }
 
-function storeFromSingleBoard(board: Board): WeaveBoardsStore {
-  const serialized: SerializedBoard = {
-    id: board.id,
-    name: board.name,
-    nodes: [],
-    connections: [],
-    nodeIdCounter: 1,
-    createdAt: board.created_at,
-    updatedAt: board.updated_at,
-  }
-  return {
-    version: CURRENT_VERSION,
-    lastActiveBoard: board.id,
-    boards: { [board.id]: serialized },
-  }
-}
-
 function reverseCardType(cardType: string): string {
   switch (cardType) {
     case 'text':
@@ -239,34 +222,17 @@ async function boardFromSupabase(
   }
 }
 
-async function loadFullStateFromSupabase(
-  supabaseBoards: Board[],
-  preferredActiveId: string | null,
-): Promise<WeaveBoardsStore> {
-  const assembled = await Promise.all(
-    supabaseBoards.map(async (board) => {
-      const [dbNodes, dbEdges] = await Promise.all([
-        persistence.nodes.listByBoard(board.id),
-        persistence.edges.listByBoard(board.id),
-      ])
-      const serialized = await boardFromSupabase(board, dbNodes, dbEdges)
-      return [board.id, serialized] as const
-    }),
-  )
-
-  const boards: Record<BoardId, SerializedBoard> = {}
-  for (const [id, board] of assembled) boards[id] = board
-
-  const lastActiveBoard =
-    preferredActiveId && boards[preferredActiveId]
-      ? preferredActiveId
-      : supabaseBoards[0].id
-
-  return {
-    version: CURRENT_VERSION,
-    lastActiveBoard,
-    boards,
-  }
+/**
+ * Load one board's nodes and edges and assemble it for the canvas. The boot
+ * fetch calls this for the current board first, then for the rest, so each
+ * board's save gate opens on its own request (docs/reads/cold-load-gate.md).
+ */
+export async function loadBoardFromSupabase(board: Board): Promise<SerializedBoard> {
+  const [dbNodes, dbEdges] = await Promise.all([
+    persistence.nodes.listByBoard(board.id),
+    persistence.edges.listByBoard(board.id),
+  ])
+  return boardFromSupabase(board, dbNodes, dbEdges)
 }
 
 /**
@@ -331,44 +297,28 @@ export function writeStoreToCache(store: WeaveBoardsStore): void {
   }
 }
 
-export type HydrationOutcome =
-  | { kind: 'success'; store: WeaveBoardsStore; source: 'supabase' }
+export type BoardListOutcome =
+  | { kind: 'success'; boards: Board[] }
   | { kind: 'network-error'; reason: string }
 
 /**
- * Fetch the authoritative store from Supabase. Auto-creates an
- * Untitled board for first-time users so the canvas never renders
- * blank against an empty account.
+ * Fetch the board list from Supabase. Auto-creates an Untitled board for
+ * first-time users so the canvas never renders blank against an empty
+ * account.
  *
  * Auth errors are rethrown (ProtectedRoute bounces to /login on the
  * next render). Everything else is surfaced as a network-error
  * outcome so the caller can decide between "show the cache" and
  * "show the error state".
  */
-export async function fetchFromSupabase(
-  preferredActiveId: string | null,
-): Promise<HydrationOutcome> {
+export async function fetchBoardList(): Promise<BoardListOutcome> {
   try {
-    const supabaseBoards = await persistence.boards.list()
+    const boards = await persistence.boards.list()
+    if (boards.length > 0) return { kind: 'success', boards }
 
-    if (supabaseBoards.length > 0) {
-      const store = await loadFullStateFromSupabase(
-        supabaseBoards,
-        preferredActiveId,
-      )
-      // Cache write moved to caller — the bootstrap may apply a
-      // snap-back override to `lastActiveBoard` after this resolves,
-      // and we want the cached store to match the in-memory store.
-      logHydrationSource('supabase', 'fetched from Supabase')
-      return { kind: 'success', store, source: 'supabase' }
-    }
-
-    // Brand-new account: auto-create the first board so the canvas
-    // has something to render.
     const newBoard = await persistence.boards.create({ name: 'Untitled' })
-    const store = storeFromSingleBoard(newBoard)
     logHydrationSource('supabase', 'new user, auto-created first board')
-    return { kind: 'success', store, source: 'supabase' }
+    return { kind: 'success', boards: [newBoard] }
   } catch (err) {
     if (err instanceof AuthError) throw err
     const reason = err instanceof Error ? err.message : String(err)
