@@ -41,3 +41,7 @@ supabase/.temp/
 
 # Local scratch output (session summary probes, etc.)
 tmp/
+
+# Local planning scratch (never committed)
+plans/
+progress.md
