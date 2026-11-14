@@ -13,7 +13,8 @@ import { useAuth } from '../auth/AuthContext'
 import {
   buildStoreFromCache,
   emptyStore,
-  fetchFromSupabase,
+  fetchBoardList,
+  loadBoardFromSupabase,
   writeStoreToCache,
 } from '../persistence/hydration'
 import {
@@ -32,6 +33,11 @@ import {
 import { AuthError, persistence } from '../persistence'
 import { computeSaveSignature } from './saveSignature'
 import { createSaveGate, type SavePath } from './saveGate'
+import {
+  pickFirstBoard,
+  storeAfterFirstBoard,
+  storeWithFetchedBoard,
+} from './bootMerge'
 import {
   setBootFetchStatus,
   setLastRequestedBoardId,
@@ -258,63 +264,103 @@ export function useBoardStorage(
 
       setBootFetchStatus('pending')
 
-      try {
-        const outcome = await fetchFromSupabase(storeRef.current.lastActiveBoard)
-
-        if (outcome.kind === 'success') {
-          const next = outcome.store
-          const prev = storeRef.current
-          const finalNext = storeAfterBootFetch(prev, next)
-
-          // Mirror the (possibly snap-back-corrected) store to cache.
-          // Done here rather than inside fetchFromSupabase so the
-          // cached `lastActiveBoard` reflects the user's mid-fetch
-          // switch — otherwise refresh would snap them back to the
-          // pre-switch board.
-          writeStoreToCache(finalNext)
-
-          // The fresh fetch replaces the hydrated store unconditionally.
-          // (A content-blind comparison used to short-circuit this, so
-          // server-only node writes never reached a warm-booted session.)
-          // Every fetched board is now safe to save.
-          saveGate.markFetched(Object.keys(finalNext.boards))
-          const activeBoard = finalNext.boards[finalNext.lastActiveBoard]
-          if (activeBoard) resetNodeIdCounter(activeBoard.nodeIdCounter)
-          setStore(finalNext)
-          // Signal App.tsx to re-seed its React state from the
-          // freshly-fetched `currentBoard` and mark it clean, so the
-          // replacement itself never triggers a save. A cold boot
-          // re-seeds via `hydrating` going false instead.
-          if (hadCacheAtMountRef.current) {
-            setHydrationRevision((n) => n + 1)
-          }
-          setHydrationError(null)
-          setHydrating(false)
-          setBootFetchStatus('success')
-          return
-        }
-
-        // Network error from Supabase.
+      const failBoot = (reason: string) => {
         setBootFetchStatus('failed')
         if (hadCacheAtMountRef.current) {
           // Cache is live — keep serving it and warn in the console.
           logHydrationSource(
             'cache',
-            `supabase unreachable, staying on cache — ${outcome.reason}`,
+            `supabase unreachable, staying on cache — ${reason}`,
           )
           console.warn(
             '[Weave hydration] Supabase unreachable, using cached canvas',
-            outcome.reason,
+            reason,
           )
-          setHydrating(false)
         } else {
           // No cache + no network = hard error state.
-          logHydrationSource('error', outcome.reason)
+          logHydrationSource('error', reason)
           setHydrationError(
             'Could not reach Weave. Check your connection and try again.',
           )
-          setHydrating(false)
         }
+        setHydrating(false)
+      }
+
+      // A board's fetch landing: never step the id counter backwards past
+      // a node created on this board during the page load.
+      const adoptCounter = (board: SerializedBoard) =>
+        resetNodeIdCounter(Math.max(getNodeIdCounter(), board.nodeIdCounter))
+
+      try {
+        const list = await fetchBoardList()
+        if (list.kind === 'network-error') {
+          failBoot(list.reason)
+          return
+        }
+
+        // The board on screen loads first, in its own request, and its
+        // gate opens when that request lands (docs/reads/cold-load-gate.md).
+        const firstId = pickFirstBoard(list.boards, storeRef.current.lastActiveBoard)
+        const firstMeta = list.boards.find((b) => b.id === firstId)!
+        let first: SerializedBoard
+        try {
+          first = await loadBoardFromSupabase(firstMeta)
+        } catch (err) {
+          if (err instanceof AuthError) throw err
+          failBoot(err instanceof Error ? err.message : String(err))
+          return
+        }
+
+        const next = storeAfterFirstBoard(storeRef.current, list.boards, first)
+        // Mirror the (possibly snap-back-corrected) store to cache, so the
+        // cached `lastActiveBoard` reflects a mid-fetch switch.
+        writeStoreToCache(next)
+        // The fetch replaces the hydrated board unconditionally. It is now
+        // safe to save.
+        saveGate.markFetched([first.id])
+        if (next.lastActiveBoard === first.id) adoptCounter(first)
+        setStore(next)
+        // Signal App.tsx to re-seed its React state from the fetched
+        // `currentBoard`, keeping nodes created before the fetch landed. A
+        // cold boot re-seeds via `hydrating` going false instead.
+        if (hadCacheAtMountRef.current) {
+          setHydrationRevision((n) => n + 1)
+        }
+        logHydrationSource('supabase', 'fetched from Supabase')
+        setHydrationError(null)
+        setHydrating(false)
+        setBootFetchStatus('success')
+
+        // The other boards, in parallel; each opens its own gate. A failed
+        // board stays closed: its saves are dropped rather than write the
+        // cache over the server.
+        await Promise.all(
+          list.boards
+            .filter((meta) => meta.id !== first.id)
+            .map(async (meta) => {
+              let board: SerializedBoard
+              try {
+                board = await loadBoardFromSupabase(meta)
+              } catch (err) {
+                if (err instanceof AuthError) throw err
+                console.warn(
+                  `[Weave hydration] board fetch failed, saves stay blocked — board=${meta.id}`,
+                  err,
+                )
+                return
+              }
+              const onScreen = storeRef.current.lastActiveBoard === board.id
+              saveGate.markFetched([board.id])
+              if (onScreen) adoptCounter(board)
+              setStore((prev) => storeWithFetchedBoard(prev, board))
+              putBoardCache(board.id, {
+                nodes: board.nodes,
+                connections: board.connections,
+                updatedAt: board.updatedAt,
+              })
+              if (onScreen) setHydrationRevision((n) => n + 1)
+            }),
+        )
       } catch (err) {
         setBootFetchStatus('failed')
         if (err instanceof AuthError) {
@@ -741,21 +787,5 @@ export function useBoardStorage(
   }
 }
 
-/**
- * The store that replaces the hydrated one when the boot fetch lands:
- * always the fetch result, whatever the cache held. One exception — the
- * snap-back guard: `fetched.lastActiveBoard` was frozen as
- * `preferredActiveId` when the fetch started. If the user switched boards
- * during the await, keep their choice — but only if Supabase still knows
- * about that board (otherwise fall through to whatever Supabase returned
- * rather than render an undefined board).
- */
-export function storeAfterBootFetch(
-  prev: WeaveBoardsStore,
-  fetched: WeaveBoardsStore,
-): WeaveBoardsStore {
-  return prev.lastActiveBoard !== fetched.lastActiveBoard &&
-    fetched.boards[prev.lastActiveBoard]
-    ? { ...fetched, lastActiveBoard: prev.lastActiveBoard }
-    : fetched
-}
+// Kept importable from here for the save-gate tests.
+export { storeAfterBootFetch } from './bootMerge'
