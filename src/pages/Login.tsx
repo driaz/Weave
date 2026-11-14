@@ -1,7 +1,7 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import { supabase } from '../services/supabaseClient'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 
 const PAPER_GRAIN_URL =
   "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Ccircle cx='2' cy='2' r='0.6' fill='%232a2521' fill-opacity='0.05'/%3E%3C/svg%3E\")"
@@ -127,13 +127,19 @@ export function Login() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(() =>
+    searchParams.get('error'),
+  )
   const [hovered, setHovered] = useState(false)
 
-  useEffect(() => {
+  // A new ?error= in the URL replaces any shown error; adjusted during
+  // render rather than in an effect.
+  const [seenSearchParams, setSeenSearchParams] = useState(searchParams)
+  if (seenSearchParams !== searchParams) {
+    setSeenSearchParams(searchParams)
     const queryError = searchParams.get('error')
     if (queryError) setError(queryError)
-  }, [searchParams])
+  }
 
   if (loading) {
     return (
