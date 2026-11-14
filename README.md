@@ -93,7 +93,7 @@ Start the dev server:
 npm run dev
 ```
 
-See [`Claude.md`](Claude.md#supabase-environments) for migration promotion workflow and [`MIGRATIONS.md`](MIGRATIONS.md) for the full migration inventory.
+See [`CLAUDE.md`](CLAUDE.md#supabase-environments) for migration promotion workflow and [`MIGRATIONS.md`](MIGRATIONS.md) for the full migration inventory.
 
 ## Board Persistence
 

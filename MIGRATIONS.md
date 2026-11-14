@@ -2,7 +2,7 @@
 
 Inventory of every SQL migration applied to the Weave Supabase schema. Entries are in apply order — the same order they're executed by `supabase db push`.
 
-Two projects exist: **Weave-Dev** (`bxbhjybahfyeqytwpkry`) and **Weave** prod (`wndfikmpifyqkgivmnwv`). All migrations below have been applied to both unless otherwise noted. See [`Claude.md`](Claude.md#supabase-environments) for the promotion workflow.
+Two projects exist: **Weave-Dev** (`bxbhjybahfyeqytwpkry`) and **Weave** prod (`wndfikmpifyqkgivmnwv`). All migrations below have been applied to both unless otherwise noted. See [`CLAUDE.md`](CLAUDE.md#supabase-environments) for the promotion workflow.
 
 When bootstrapping a new Supabase project, apply these in order. The pgvector extension must be installed before migration 002 (Supabase dashboard → **Database → Extensions**).
 
