@@ -1,4 +1,4 @@
-import { createContext, useContext, type CSSProperties } from 'react'
+import { useContext, type CSSProperties } from 'react'
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -9,15 +9,7 @@ import {
 import type { WeaveMode } from '../types/board'
 import type { Connection } from '../api/claude'
 import { getEdgeColor } from '../utils/edgeColors'
-
-type EdgeLabelClickHandler = (
-  connection: Connection,
-  position: { x: number; y: number },
-) => void
-
-export const EdgeLabelClickContext = createContext<EdgeLabelClickHandler>(
-  () => {},
-)
+import { EdgeLabelClickContext } from './EdgeLabelClickContext'
 
 export type WeaveEdgeData = {
   label: string

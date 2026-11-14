@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import { supabase } from '../services/supabaseClient'
 import { profileSnapshotStore } from '../services/profileSnapshot/profileSnapshotStore'
 

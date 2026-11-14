@@ -86,15 +86,17 @@ export function BoardSwitcher({
     }
   }, [renamingId])
 
-  useEffect(() => {
-    if (!pendingRenameId) return
+  // Enter rename mode once a just-created board shows up in allBoards.
+  // Adjusted during render rather than in an effect; clearing
+  // pendingRenameId ends the loop after one extra render.
+  if (pendingRenameId) {
     const board = allBoards.find((b) => b.id === pendingRenameId)
     if (board) {
       setRenamingId(board.id)
       setRenameValue(board.name)
       setPendingRenameId(null)
     }
-  }, [pendingRenameId, allBoards])
+  }
 
   useEffect(() => {
     if (!confirmDeleteId) return

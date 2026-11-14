@@ -15,11 +15,8 @@ import { LinkCardNode } from './components/LinkCardNode'
 import { PdfCardNode } from './components/PdfCardNode'
 import { AddNodeButton } from './components/AddNodeButton'
 import { WeaveButton } from './components/WeaveButton'
-import {
-  WeaveEdge,
-  EdgeLabelClickContext,
-  type WeaveEdgeData,
-} from './components/WeaveEdge'
+import { WeaveEdge, type WeaveEdgeData } from './components/WeaveEdge'
+import { EdgeLabelClickContext } from './components/EdgeLabelClickContext'
 import { EdgeDetailPopup } from './components/EdgeDetailPopup'
 import { BoardSwitcher } from './components/BoardSwitcher'
 import { BrandChrome } from './components/BrandChrome'

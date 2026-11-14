@@ -9,7 +9,7 @@ import type {
 } from '../types/board'
 import { resetNodeIdCounter, getNodeIdCounter } from '../utils/nodeId'
 import { supabase } from '../services/supabaseClient'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import {
   buildStoreFromCache,
   emptyStore,
