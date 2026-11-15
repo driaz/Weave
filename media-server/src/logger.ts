@@ -122,6 +122,10 @@ export function createNodeLogger(nodeId: string, boardId: string, userId: string
         ? await appendNodeProcessingLog(resolution.uuid, event.phase, event.outcome, toDetail(event))
         : await logUnresolvedWrite(ref, resolution, 'fly.logger.persist', 'processing_log', {
             intended_phase: event.phase,
+            // The row's own outcome is 'skipped'; these say how the run
+            // ended and how long it took, so a race can be counted by query.
+            intended_outcome: event.outcome,
+            ...(event.durationMs !== undefined ? { duration_ms: event.durationMs } : {}),
           })
       if (error) {
         emit(

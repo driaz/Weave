@@ -152,7 +152,7 @@ describe.skipIf(!hasServiceRole())('node_processing_log (043, integration)', () 
     await expect(
       fly.patchNodeData({ nodeId: '999', boardId: board.id, userId: user.userId, patch: { media_analysis: 'x' } }),
     ).rejects.toThrow(/unresolved/)
-    await flyLogger.createNodeLogger('999', board.id, user.userId).persist('media.pipeline', 'failed')
+    await flyLogger.createNodeLogger('999', board.id, user.userId).persist('media.pipeline', 'failed', undefined, 1100)
     expect(await boardSnapshot()).toBe(snap)
 
     const patchRows = await unresolvedRows('999', 'fly.patchNodeData')
@@ -162,7 +162,7 @@ describe.skipIf(!hasServiceRole())('node_processing_log (043, integration)', () 
     })
     const logRowsUnresolved = await unresolvedRows('999', 'fly.logger.persist')
     expect(logRowsUnresolved).toHaveLength(1)
-    expect(logRowsUnresolved[0].detail).toMatchObject({ intended_key: 'processing_log', intended_phase: 'media.pipeline', match_count: 0 })
+    expect(logRowsUnresolved[0].detail).toMatchObject({ intended_key: 'processing_log', intended_phase: 'media.pipeline', intended_outcome: 'failed', duration_ms: 1100, match_count: 0 })
   })
 
   it('T2: two matches → no node mutation, exactly one write.unresolved row per writer', async () => {
@@ -186,7 +186,8 @@ describe.skipIf(!hasServiceRole())('node_processing_log (043, integration)', () 
     expect(patchRows[0].detail).toMatchObject({ intended_key: 'contentDescription', match_count: 2 })
     const logRowsUnresolved = await unresolvedRows('7', 'fly.logger.persist')
     expect(logRowsUnresolved).toHaveLength(1)
-    expect(logRowsUnresolved[0].detail).toMatchObject({ intended_key: 'processing_log', match_count: 2 })
+    expect(logRowsUnresolved[0].detail).toMatchObject({ intended_key: 'processing_log', intended_outcome: 'success', match_count: 2 })
+    expect(logRowsUnresolved[0].detail).not.toHaveProperty('duration_ms')
   })
 
   it('T4: RLS — owner sees own rows only; stranger and anonymous see none; null-node rows service-only', async () => {
