@@ -168,7 +168,7 @@ Cloud sessions (rule of record since 2026-11-15, Session Lineage):
 - A read row that finds the connector unavailable stops and reports.
 - Postgres connections cannot leave a cloud session (outbound traffic is HTTP/HTTPS only), so `--db-url` does not work here.
 
-Prod pushes are Daniel's, on his machine, as are prod reads over the read-only URL. `gh pr create` may be blocked; push the branch and report if the PR can't be opened. `.env` is not in the clone; tests that need it are skipped, and the list is in the PR for `chore/cloud-session-setup` (#78).
+Prod pushes are Daniel's, on his machine, as are prod reads over the read-only URL. Merging a PR that changes `media-server/` deploys the media server to Fly (`.github/workflows/fly-deploy.yml`), so a PR that needs a migration says so at the top of its description: the prod push comes before the merge. `gh pr create` may be blocked; push the branch and report if the PR can't be opened. `.env` is not in the clone; tests that need it are skipped, and the list is in the PR for `chore/cloud-session-setup` (#78).
 
 ## Future Considerations (not yet implemented)
 

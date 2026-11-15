@@ -1,0 +1,42 @@
+name: Fly Deploy (media-server)
+
+# Deploys the media server to Fly when a change under media-server/ lands on
+# main. Merging the PR is the deploy gate; nothing here runs on a branch.
+#
+# Schema before code: if a change needs a Supabase migration, apply it to
+# prod BEFORE merging (CLAUDE.md, Migration promotion workflow, step 4).
+#
+# Needs one repository secret, FLY_API_TOKEN: a deploy token scoped to the
+# weave-media app (`fly tokens create deploy -a weave-media`).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'media-server/**'
+      - '!media-server/**/*.md'
+  workflow_dispatch:
+
+# One deploy at a time; a second merge waits for the first to finish.
+concurrency:
+  group: fly-deploy-media-server
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy weave-media
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: media-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # Builds on Fly's remote builder from media-server/Dockerfile and waits
+      # for the /health check in fly.toml before reporting success.
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
