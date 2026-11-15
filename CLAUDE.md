@@ -82,7 +82,7 @@ Hard-won rules from prior sittings. Each exists because it was violated once.
 - **Checkout currency.** Cut branches from a freshly-fetched `origin/main`, never from local `main`. `git fetch` precedes checkout, always — a branch cut from a stale base inherits its blind spots silently, and nothing in the working tree announces it.
 - **Absence claims.** A negative result is a claim about the search space, not about the world. Before asserting that something does not exist, state the preconditions the search space itself depends on — checkout currency, RLS visibility, migration state. "Not in my working tree" is not "does not exist."
 - **Missing tooling.** A missing tool (scanner, CLI, linter) is a stop-and-report, not a self-install decision.
-- **Database auth.** Connect via `--db-url` (the read-only URL for reads). Never the Supabase Management API, never CLI auth flows, never keychain prompts. On any auth failure: stop and report — never retry with elevated credentials. This governs how a session reaches a database; applying migrations remains the human terminal ceremony documented under *Migration promotion workflow*.
+- **Database auth.** Connect via `--db-url` (the read-only URL for reads). Never the Supabase Management API, never CLI auth flows, never keychain prompts. On any auth failure: stop and report — never retry with elevated credentials. This governs how a session reaches a database; applying migrations remains the human terminal ceremony documented under *Migration promotion workflow*. In a cloud session `--db-url` is unavailable; prod reads there use the read-only Supabase connector described under *Environment facts*, which is the sanctioned path and the only exception to this rule.
 - **Batch cardinality.** For every inventory or batch operation: state the expected count (derived independently of the processing loop), state the processed count, and compare before declaring done. On mismatch, halt and re-derive both sides independently — never adjust expected to match processed.
 
 ## Development Environment
@@ -160,7 +160,15 @@ When asked to "read the Roadmap and take the next item" (or started by a schedul
 
 ### Environment facts
 
-Cloud sessions: dev Supabase only (env vars `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` for the dev project); no prod credentials exist here and none should be sought. Prod reads and prod pushes are Daniel's, on his machine. `gh pr create` may be blocked; push the branch and report if the PR can't be opened. `.env` is not in the clone; tests that need it are skipped, and the list is in the PR for `chore/cloud-session-setup` (#78).
+Cloud sessions (rule of record since 2026-11-15, Session Lineage):
+
+- Every cloud session runs in the `weave-dev` environment: env vars `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` for the dev project, plus `E2E_DEV_EMAIL` / `E2E_DEV_PASSWORD` for a dev-only test user. The login screen is GitHub OAuth, which a session cannot complete, so a browser check signs that user in programmatically.
+- No prod credential (service key, database URL, or password) goes in any cloud environment, and none should be sought.
+- Prod reads go through the read-only Supabase connector, enabled on the session for read rows only. It is scoped to the prod project (`wndfikmpifyqkgivmnwv`) and cannot write. It runs as `supabase_read_only_user`, which bypasses RLS and sees every table.
+- A read row that finds the connector unavailable stops and reports.
+- Postgres connections cannot leave a cloud session (outbound traffic is HTTP/HTTPS only), so `--db-url` does not work here.
+
+Prod pushes are Daniel's, on his machine, as are prod reads over the read-only URL. `gh pr create` may be blocked; push the branch and report if the PR can't be opened. `.env` is not in the clone; tests that need it are skipped, and the list is in the PR for `chore/cloud-session-setup` (#78).
 
 ## Future Considerations (not yet implemented)
 
