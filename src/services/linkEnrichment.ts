@@ -2,6 +2,7 @@ import { embedNodeAsync } from './embeddingService'
 import { fetchTweetImage, extractYouTubeUrlFromText, type LinkMetadata } from '../utils/linkUtils'
 import { fetchTranscript } from '../utils/transcriptUtils'
 import { supabase } from './supabaseClient'
+import { waitForFirstSave } from './firstSave'
 import type { NodeLogger } from '../utils/logger'
 
 const WEAVE_MEDIA_URL = import.meta.env.VITE_WEAVE_MEDIA_URL as string | undefined
@@ -399,18 +400,30 @@ async function fetchTweetDescription(opts: {
 }
 
 /**
+ * How long the trigger waits for the card's first confirmed save before
+ * giving up. Prod first saves land ~1–6 s after the drop; the slowest on
+ * record took 23.4 s (docs/reads/trigger-before-save.md §3).
+ */
+export const FIRST_SAVE_TIMEOUT_MS = 30_000
+
+/**
  * POST to the Fly media server to kick off the multimodal pipeline.
  * Best-effort: if the env var isn't set (local dev without the server,
  * preview deploys), no JWT is available, or the network call fails, we
- * silently skip — the client-side text embedding still lands at the 8s
- * mark and the node is functional.
+ * silently skip — the client-side text embedding still lands and the
+ * node is functional.
  *
- * Returns true if a request was actually attempted (env + supabase + token
- * all available); false if we no-opped early. Network errors after the
- * fetch is sent still return true — the request was fired even if it
- * later failed.
+ * The POST waits for the first confirmed Supabase save that includes this
+ * card: Fly resolves the node row at write time, and a run that finishes
+ * before the row exists loses its writes (docs/reads/trigger-before-save.md).
+ * If no such save arrives within FIRST_SAVE_TIMEOUT_MS the POST is never
+ * sent and one `media.trigger skipped` entry is persisted instead.
+ *
+ * Returns true if a request was scheduled (env + supabase available);
+ * false if we no-opped early. A later skip (no save, no token) or a
+ * network failure still returns true.
  */
-function triggerMediaPipeline(opts: {
+export function triggerMediaPipeline(opts: {
   boardId: string
   nodeId: string
   url: string
@@ -432,6 +445,15 @@ function triggerMediaPipeline(opts: {
 
   void (async () => {
     try {
+      const saved = await waitForFirstSave(opts.boardId, opts.nodeId, FIRST_SAVE_TIMEOUT_MS)
+      if (!saved) {
+        opts.logger?.persist('media.trigger', 'skipped', {
+          reason: 'first-save-timeout',
+          timeoutMs: FIRST_SAVE_TIMEOUT_MS,
+          nodeType: opts.nodeType,
+        })
+        return
+      }
       const { data } = await supabase!.auth.getSession()
       const token = data.session?.access_token
       if (!token) {

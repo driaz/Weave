@@ -33,6 +33,7 @@ import {
 import { AuthError, persistence } from '../persistence'
 import { computeSaveSignature } from './saveSignature'
 import { createSaveGate, type SavePath } from './saveGate'
+import { notifyBoardSaved } from '../services/firstSave'
 import {
   pickFirstBoard,
   storeAfterFirstBoard,
@@ -528,6 +529,8 @@ export function useBoardStorage(
           if (storeRef.current.lastActiveBoard === boardId) {
             onEdgeIdsSavedRef.current?.(edgeIds)
           }
+          // Release work gated on a card's row existing (media trigger).
+          notifyBoardSaved(boardId, fullNodes.map((n) => n.id))
           drainSideEffects(boardId)
         } else {
           // Rollback. `storeRef` never advanced past the pre-save
