@@ -94,6 +94,15 @@ curl http://localhost:3000/health
 
 ## Deployment
 
+Automatic: a change under `media-server/` that merges to `main` is deployed by
+[`.github/workflows/fly-deploy.yml`](../.github/workflows/fly-deploy.yml)
+(Markdown-only changes are skipped). It needs the `FLY_API_TOKEN` repository
+secret, a deploy token from `fly tokens create deploy -a weave-media`. The
+same workflow can be run by hand from the repository's Actions tab. If a
+change needs a migration, apply it to prod before merging.
+
+Manual, from this directory, still works and is how secrets are set:
+
 ```bash
 fly deploy             # uses Dockerfile + fly.toml
 fly secrets set SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
