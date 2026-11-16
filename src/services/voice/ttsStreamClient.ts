@@ -38,7 +38,9 @@ export async function fetchTtsStream(
       'Content-Type': 'application/json',
       'X-Playback-Id': input.playbackId,
     },
-    body: JSON.stringify({ text: input.text }),
+    // DO NOT MERGE: preview-only listening test for eleven_v4_turbo.
+    // Needs the media-server allowlist (PR #90) live on Fly.
+    body: JSON.stringify({ text: input.text, model_id: 'eleven_v4_turbo' }),
     signal: input.signal,
   })
 
