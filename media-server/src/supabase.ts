@@ -276,7 +276,8 @@ export async function upsertEmbedding(opts: {
   composed: ComposedEmbedText
   embedding: number[]
   hasVideo: boolean
-  durationSeconds: number
+  /** null when unknown (YouTube URL path has no ffprobe). */
+  durationSeconds: number | null
 }): Promise<{ embedGeneration: number }> {
   // Lifecycle provenance: read the previous generation counter off the
   // existing row. Never gates the write — last-write-wins by design.
