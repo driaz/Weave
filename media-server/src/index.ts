@@ -12,6 +12,7 @@ import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { verifyUserToken } from './auth.js'
 import { processMedia } from './process.js'
+import { buildTtsStreamUpstreamBody, resolveTtsStreamModel, TTS_STREAM_MODELS } from './ttsStreamModel.js'
 import { isUploadTooLarge, STT_BODY_LIMIT, sttMultipartOptions } from './sttLimits.js'
 
 const PORT = Number(process.env.PORT ?? 3000)
@@ -77,6 +78,10 @@ interface TtsBody {
   text: string
 }
 
+interface TtsStreamBody extends TtsBody {
+  model_id?: unknown
+}
+
 const TTS_MAX_TEXT_LENGTH = 5000
 
 app.post<{ Body: TtsBody }>('/api/tts', async (req, reply) => {
@@ -137,7 +142,7 @@ app.post<{ Body: TtsBody }>('/api/tts', async (req, reply) => {
   return reply.send(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>))
 })
 
-app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
+app.post<{ Body: TtsStreamBody }>('/api/tts-stream', async (req, reply) => {
   // Client mints a playbackId per listen-button click and sends it in
   // X-Playback-Id so the full turn (client logs + Fly logs) can be joined.
   // Missing header → 'unattributed' placeholder so the field is always
@@ -161,12 +166,16 @@ app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
   const userId = await verifyUserToken(auth.slice('Bearer '.length))
   if (!userId) return reply.unauthorized('invalid token')
 
-  const { text } = req.body ?? ({} as TtsBody)
+  const { text, model_id: requestedModel } = req.body ?? ({} as TtsStreamBody)
   if (typeof text !== 'string' || text.trim().length === 0) {
     return reply.badRequest('text is required')
   }
   if (text.length > TTS_MAX_TEXT_LENGTH) {
     return reply.badRequest(`text exceeds max length of ${TTS_MAX_TEXT_LENGTH} characters`)
+  }
+  const model = resolveTtsStreamModel(requestedModel)
+  if (!model) {
+    return reply.badRequest(`model_id must be one of: ${TTS_STREAM_MODELS.join(', ')}`)
   }
 
   const apiKey = process.env.ELEVENLABS_API_KEY
@@ -181,7 +190,7 @@ app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
     return reply.code(500).send({ error: 'ElevenLabs voice ID not configured' })
   }
 
-  log.info({ phase: 'tts-stream.request', textLength: text.length }, 'tts-stream request received')
+  log.info({ phase: 'tts-stream.request', textLength: text.length, model }, 'tts-stream request received')
 
   // output_format must be a query param, NOT a body field — ElevenLabs silently
   // ignores it in the body and falls back to mp3, which breaks the PCM pipeline.
@@ -196,16 +205,7 @@ app.post<{ Body: TtsBody }>('/api/tts-stream', async (req, reply) => {
         'xi-api-key': apiKey,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        text,
-        model_id: 'eleven_turbo_v2_5',
-        voice_settings: {
-          stability: 0.6,
-          similarity_boost: 0.8,
-          style: 0.2,
-          use_speaker_boost: true,
-        },
-      }),
+      body: buildTtsStreamUpstreamBody(text, model),
     })
   } catch (err) {
     log.error({ err, phase: 'tts-stream.upstream' }, 'ElevenLabs request failed')
