@@ -1,6 +1,7 @@
 import { GoogleGenAI, ThinkingLevel, type Part } from '@google/genai'
 import { readFile } from 'node:fs/promises'
 import { retryOn503 } from './retry.js'
+import { youtubeVideoPart } from './youtubeUrl.js'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required')
@@ -91,22 +92,30 @@ export interface AnalyzeMediaInput {
   videoPath?: string
   /** Path to the standalone audio track. Used alone for the audio-only tier. */
   audioPath?: string
+  /** Public YouTube URL. Gemini reads the video itself; nothing is downloaded. */
+  youtubeUrl?: string
 }
 
 /**
- * Run Gemini media analysis. Two modes, picked by the caller based on duration:
- *  - videoPath set → full video+audio analysis (under-10-min tier)
- *  - audioPath only → audio-only analysis (over-10-min tier)
+ * Run Gemini media analysis. Three modes, picked by the caller:
+ *  - youtubeUrl set → video+audio by URL (YouTube, first 15 min)
+ *  - videoPath set → full video+audio analysis (tweets, under-10-min tier)
+ *  - audioPath only → audio-only analysis (tweets, over-10-min tier)
  *
  * Returns the analysis text or empty string on failure (never throws — analysis
  * is best-effort; the embedding still ships even if this fails).
  */
 export async function analyzeMedia(input: AnalyzeMediaInput): Promise<string> {
-  const { videoPath, audioPath } = input
+  const { videoPath, audioPath, youtubeUrl } = input
   const parts: Part[] = []
   let prompt: string
 
-  if (videoPath) {
+  if (youtubeUrl) {
+    const videoPart = youtubeVideoPart(youtubeUrl)
+    if (!videoPart) return ''
+    prompt = PROMPT_VIDEO_AUDIO
+    parts.push({ text: prompt }, videoPart)
+  } else if (videoPath) {
     prompt = PROMPT_VIDEO_AUDIO
     const data = (await readFile(videoPath)).toString('base64')
     parts.push({ text: prompt }, { inlineData: { mimeType: 'video/mp4', data } })

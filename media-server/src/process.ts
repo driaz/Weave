@@ -29,7 +29,12 @@ void EMBEDDING_TRIM_SECONDS
 const LONG_FORM_THRESHOLD_SECONDS = 600
 
 /**
- * Full pipeline. Two analysis tiers based on ffprobe duration:
+ * Full pipeline. YouTube goes by URL: Gemini reads the public video itself
+ * (first 15 min, youtubeUrl.ts) — no download, no ffprobe, no tiers, and so
+ * no duration (duration_seconds is written as null). yt-dlp on Fly fails
+ * YouTube's bot check, which left every YouTube card without analysis.
+ *
+ * Tweets download via yt-dlp and pick a tier on ffprobe duration:
  *
  *   Under 10 min: full video+audio → analyze.
  *   Over  10 min: full audio → analyze.
@@ -51,13 +56,13 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
   const startedAt = Date.now()
   const workDir = await mkdtemp(join(tmpdir(), `weave-media-${opts.nodeId}-`))
 
-  let tier: 'short' | 'long' | 'unknown' = 'unknown'
+  let tier: 'short' | 'long' | 'url' | 'unknown' = 'unknown'
   let transcriptOk = false
   let analysisOk = false
   let analysisLen = 0
   let embedOk = false
   let embedDims = 0
-  let durationSeconds = 0
+  let durationSeconds: number | null = null
   let patchOk = false
   let upsertOk = false
   let descriptionOk = false
@@ -66,18 +71,6 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
   logger.debug('media.pipeline.start', 'success', { url: opts.url, nodeType: opts.nodeType })
 
   try {
-    const downloadStart = Date.now()
-    const videoPath = await downloadVideo(opts.url, workDir)
-    logger.debug('media.download', 'success', { workDir }, Date.now() - downloadStart)
-
-    const probeStart = Date.now()
-    durationSeconds = await probeDuration(videoPath)
-    logger.debug('media.probe', 'success', { durationSeconds }, Date.now() - probeStart)
-
-    const isLongForm = durationSeconds > LONG_FORM_THRESHOLD_SECONDS
-    tier = isLongForm ? 'long' : 'short'
-    logger.debug('media.tier', 'success', { tier, durationSeconds })
-
     const transcriptStart = Date.now()
     // Uncapped — the budget is enforced at composition (EMBED_TEXT_MAX_CHARS,
     // transcript-tail-only), not by a blind slice.
@@ -92,9 +85,27 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
       return t
     })
 
-    const mediaAnalysis = isLongForm
-      ? await runLongFormAnalysis(videoPath, workDir, logger)
-      : await runShortFormAnalysis(videoPath, logger)
+    let mediaAnalysis: string
+    if (opts.nodeType === 'youtube') {
+      tier = 'url'
+      mediaAnalysis = await runYouTubeUrlAnalysis(opts.url, logger)
+    } else {
+      const downloadStart = Date.now()
+      const videoPath = await downloadVideo(opts.url, workDir)
+      logger.debug('media.download', 'success', { workDir }, Date.now() - downloadStart)
+
+      const probeStart = Date.now()
+      const probed = await probeDuration(videoPath)
+      durationSeconds = probed
+      logger.debug('media.probe', 'success', { durationSeconds }, Date.now() - probeStart)
+
+      tier = probed > LONG_FORM_THRESHOLD_SECONDS ? 'long' : 'short'
+      logger.debug('media.tier', 'success', { tier, durationSeconds })
+
+      mediaAnalysis = tier === 'long'
+        ? await runLongFormAnalysis(videoPath, workDir, logger)
+        : await runShortFormAnalysis(videoPath, logger)
+    }
 
     analysisOk = mediaAnalysis.length > 0
     analysisLen = mediaAnalysis.length
@@ -196,7 +207,7 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
       userId: opts.userId,
       composed,
       embedding,
-      hasVideo: !isLongForm,
+      hasVideo: tier !== 'long',
       durationSeconds,
     })
     upsertOk = true
@@ -248,6 +259,21 @@ export async function processMedia(opts: ProcessMediaOptions): Promise<void> {
   } finally {
     await cleanup(workDir)
   }
+}
+
+async function runYouTubeUrlAnalysis(
+  url: string,
+  logger: NodeLogger,
+): Promise<string> {
+  const analyzeStart = Date.now()
+  const mediaAnalysis = await analyzeMedia({ youtubeUrl: url })
+  logger.debug(
+    'media.analyze',
+    mediaAnalysis ? 'success' : 'degraded',
+    { tier: 'url', analysisLen: mediaAnalysis.length },
+    Date.now() - analyzeStart,
+  )
+  return mediaAnalysis
 }
 
 async function runShortFormAnalysis(
