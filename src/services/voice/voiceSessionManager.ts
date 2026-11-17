@@ -24,6 +24,7 @@ import {
 } from './vadController'
 import { voiceSessionStore } from './voiceSessionStore'
 import { voiceSessionController } from './voiceSessionController'
+import { warmMediaConnection } from './warmMediaConnection'
 import type { AnchorHint, BoardSnapshot } from '../../persistence'
 
 let activeController: VadController | null = null
@@ -65,6 +66,10 @@ export async function beginVoiceSession(
   // failure is logged to console; subsequent recordUtterance calls
   // will throw "no active session" and the controller-side wiring
   // already swallows those (see VadController persistence hooks).
+  // Open the TLS connection to the media server now, so the opener's
+  // Claude and TTS requests don't pay for the handshake later.
+  warmMediaConnection()
+
   const { anchorEdgeId, anchorHint, boardSnapshot, ...vadOpts } = opts
   try {
     await voiceSessionController.startSession({
