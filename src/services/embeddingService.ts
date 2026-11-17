@@ -87,7 +87,7 @@ function joinWithBudget(
 /**
  * Build the parts array and content summary for a given node type + data.
  */
-function buildPartsForNode(
+export function buildPartsForNode(
   nodeType: string,
   data: Record<string, unknown>,
 ): ComposedParts | null {
@@ -111,7 +111,20 @@ function buildPartsForNode(
       const imageDataUrl = data.imageDataUrl as string | undefined
       const fileName = data.fileName as string | undefined
       const label = data.label as string | undefined
+      const mediaAnalysis = asTrimmedString(data.media_analysis)
 
+      if (mediaAnalysis) {
+        // Image card recipe (#17): label (else fileName) — media_analysis.
+        // Text-only, mirroring the media server's composition; the pixels
+        // were analysed once at ingest.
+        const composed = [label || fileName || 'Image', mediaAnalysis].join(' — ')
+        parts.push({ text: composed })
+        summary = composed
+        hadAnalysis = true
+        break
+      }
+
+      // Fallback until analysis lands (or if it never does): pixels + label.
       if (!imageDataUrl) return null
 
       const parsed = parseDataUrl(imageDataUrl)
@@ -177,9 +190,9 @@ function buildPartsForNode(
         const imageBase64 = data.imageBase64 as string | undefined
         const imageMimeType = data.imageMimeType as string | undefined
         if (imageBase64 && imageMimeType) {
-          // Image tweet: deliberately untouched in PR-1, inline image part
-          // included. Text-only here would embed boilerplate (worse than
-          // pixels-maybe); these convert when #17 produces analysis text.
+          // Image tweet with no analysis yet: inline image part included.
+          // Text-only here would embed boilerplate (worse than pixels-maybe).
+          // Once #17's photo analysis lands, the recipe above takes over.
           const textSegments = [authorName, authorHandle, tweetText, domain].filter(Boolean)
           const combinedText = textSegments.join(' — ')
           parts.push({ text: combinedText })

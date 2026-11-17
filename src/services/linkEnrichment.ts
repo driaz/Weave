@@ -426,8 +426,9 @@ export const FIRST_SAVE_TIMEOUT_MS = 30_000
 export function triggerMediaPipeline(opts: {
   boardId: string
   nodeId: string
+  /** '' for image cards — the server reads their bytes from Storage. */
   url: string
-  nodeType: 'youtube' | 'twitter'
+  nodeType: 'youtube' | 'twitter' | 'image'
   logger?: NodeLogger
 }): boolean {
   if (!WEAVE_MEDIA_URL) {
