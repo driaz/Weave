@@ -47,7 +47,7 @@ interface ProcessBody {
   node_id: string
   board_id: string
   url: string
-  node_type: 'youtube' | 'twitter'
+  node_type: 'youtube' | 'twitter' | 'image'
 }
 
 app.post<{ Body: ProcessBody }>('/process', async (req, reply) => {
@@ -59,16 +59,17 @@ app.post<{ Body: ProcessBody }>('/process', async (req, reply) => {
   if (!userId) return reply.unauthorized('invalid token')
 
   const { node_id, board_id, url, node_type } = req.body ?? ({} as ProcessBody)
-  if (!node_id || !board_id || !url || !node_type) {
-    return reply.badRequest('node_id, board_id, url, node_type required')
+  if (node_type !== 'youtube' && node_type !== 'twitter' && node_type !== 'image') {
+    return reply.badRequest('node_type must be youtube, twitter or image')
   }
-  if (node_type !== 'youtube' && node_type !== 'twitter') {
-    return reply.badRequest('node_type must be youtube or twitter')
+  // Image cards have no URL — the server reads their bytes from Storage.
+  if (!node_id || !board_id || !node_type || (node_type !== 'image' && !url)) {
+    return reply.badRequest('node_id, board_id, node_type required (and url unless image)')
   }
 
   // Fire-and-forget. Errors are logged inside processMedia; the client
   // doesn't wait — the embedding + media_analysis land async via Supabase.
-  processMedia({ nodeId: node_id, boardId: board_id, url, nodeType: node_type, userId })
+  processMedia({ nodeId: node_id, boardId: board_id, url: url ?? '', nodeType: node_type, userId })
     .catch((err) => app.log.error({ err, nodeId: node_id }, 'processMedia failed'))
 
   return reply.code(202).send({ accepted: true })

@@ -87,6 +87,56 @@ points. Write as plain prose.
 This metadata will be read by a reasoning system, not displayed to the
 user directly.`
 
+const PROMPT_IMAGE = `You are analyzing an image for a content reasoning system. Your
+analysis will be stored as metadata and used by a separate AI to find
+thematic connections between pieces of content a user has collected.
+The image itself will not be shown to that AI — your description stands
+in for it, so it has to carry what matters.
+
+Cover:
+- What is depicted: subject, setting, and anything a reader would need
+  to recognise it (a person, a place, a product, a chart, a document).
+- Any text in the image: transcribe it verbatim when short (captions,
+  headlines, memes, chart titles, screenshot text); summarise it when
+  long. Screenshots and memes often carry their meaning in the text.
+- Composition and framing: what's centered, what's obscured, scale,
+  point of view. How does the framing direct attention?
+- Light, color and style: not labels like "dark" — what the palette and
+  treatment communicate (documentary, staged, nostalgic, clinical).
+- What the image is DOING: its tone, argument or joke, and what it
+  implies beyond what it literally shows.
+
+Describe mechanics with enough interpretation to be useful. "A
+low-angle shot isolating the figure against an empty sky, making the
+subject look both heroic and alone" is useful. "A nice photo of a
+person" is not.
+
+3-6 sentences. Dense, precise, no filler.
+
+Do not use any markdown formatting — no bold, no headers, no bullet
+points. Write as plain prose.
+
+This metadata will be read by a reasoning system, not displayed to the
+user directly.`
+
+/**
+ * Tweet photos: the caption exists separately (it's in the embed and the
+ * weave call already), so the model reads it for context and describes the
+ * image's relationship to it instead of restating it.
+ */
+export function buildImagePrompt(caption?: string): string {
+  const trimmed = caption?.trim()
+  if (!trimmed) return PROMPT_IMAGE
+  return `${PROMPT_IMAGE}
+
+This image was attached to a post. The post's text is stored separately —
+don't repeat it. Say how the image relates to it: does it illustrate,
+evidence, undercut, or joke about what the text says?
+
+POST TEXT:
+${trimmed}`
+}
+
 export interface AnalyzeMediaInput {
   /** Path to the source video. Sent in full when present (under-10-min tier). */
   videoPath?: string
@@ -94,10 +144,15 @@ export interface AnalyzeMediaInput {
   audioPath?: string
   /** Public YouTube URL. Gemini reads the video itself; nothing is downloaded. */
   youtubeUrl?: string
+  /** Raw image bytes (image cards, tweet photos). */
+  image?: { data: Buffer; mimeType: string }
+  /** Tweet text for the image prompt's context. Image mode only. */
+  caption?: string
 }
 
 /**
- * Run Gemini media analysis. Three modes, picked by the caller:
+ * Run Gemini media analysis. Four modes, picked by the caller:
+ *  - image set → image analysis (image cards, tweet photos — #17)
  *  - youtubeUrl set → video+audio by URL (YouTube, first 15 min)
  *  - videoPath set → full video+audio analysis (tweets, under-10-min tier)
  *  - audioPath only → audio-only analysis (tweets, over-10-min tier)
@@ -106,11 +161,17 @@ export interface AnalyzeMediaInput {
  * is best-effort; the embedding still ships even if this fails).
  */
 export async function analyzeMedia(input: AnalyzeMediaInput): Promise<string> {
-  const { videoPath, audioPath, youtubeUrl } = input
+  const { videoPath, audioPath, youtubeUrl, image, caption } = input
   const parts: Part[] = []
   let prompt: string
 
-  if (youtubeUrl) {
+  if (image) {
+    prompt = buildImagePrompt(caption)
+    parts.push(
+      { text: prompt },
+      { inlineData: { mimeType: image.mimeType, data: image.data.toString('base64') } },
+    )
+  } else if (youtubeUrl) {
     const videoPart = youtubeVideoPart(youtubeUrl)
     if (!videoPart) return ''
     prompt = PROMPT_VIDEO_AUDIO

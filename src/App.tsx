@@ -50,7 +50,7 @@ import { trackEvent } from './services/eventTracker'
 import { BoardIdContext } from './hooks/useBoardId'
 import { CancelNodeSelectContext } from './hooks/useCancelNodeSelect'
 import { embedNodeAsync, embedEdgeAsync } from './services/embeddingService'
-import { enrichLinkNode } from './services/linkEnrichment'
+import { enrichLinkNode, triggerMediaPipeline } from './services/linkEnrichment'
 import { buildProcessingLogAppender, createNodeLogger } from './utils/logger'
 import { detectRenderAnomaly } from './utils/renderAnomaly'
 
@@ -474,6 +474,15 @@ export function App() {
           },
           imageLogger,
         )
+        // #17: analysis-at-ingest on the media server, after the first save
+        // has put the bytes in Storage.
+        triggerMediaPipeline({
+          boardId: currentBoard.id,
+          nodeId,
+          url: '',
+          nodeType: 'image',
+          logger: imageLogger,
+        })
         offset++
       }
 

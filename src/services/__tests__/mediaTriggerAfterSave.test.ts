@@ -75,6 +75,22 @@ describe('triggerMediaPipeline waits for the first confirmed save', () => {
     resetFirstSaveSignal()
   })
 
+  it('image cards (#17) post node_type image with no url, after the save', async () => {
+    const { triggerMediaPipeline, notifyBoardSaved, resetFirstSaveSignal } = await load()
+
+    triggerMediaPipeline({ boardId: BOARD, nodeId: NODE, url: '', nodeType: 'image' })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    notifyBoardSaved(BOARD, [NODE])
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({ node_id: NODE, board_id: BOARD, url: '', node_type: 'image' })
+    resetFirstSaveSignal()
+  })
+
   it('never fires before the card is saved', async () => {
     const { triggerMediaPipeline, notifyBoardSaved, FIRST_SAVE_TIMEOUT_MS, resetFirstSaveSignal } = await load()
 

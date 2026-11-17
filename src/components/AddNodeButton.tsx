@@ -7,7 +7,7 @@ import { isPdfFile, renderPdfThumbnail } from '../utils/pdfUtils'
 import { trackEvent } from '../services/eventTracker'
 import { useBoardId } from '../hooks/useBoardId'
 import { embedNodeAsync } from '../services/embeddingService'
-import { enrichLinkNode } from '../services/linkEnrichment'
+import { enrichLinkNode, triggerMediaPipeline } from '../services/linkEnrichment'
 import { buildProcessingLogAppender, createNodeLogger } from '../utils/logger'
 
 export function AddNodeButton() {
@@ -122,6 +122,15 @@ export function AddNodeButton() {
         },
         imageLogger,
       )
+      // #17: analysis-at-ingest on the media server, after the first save
+      // has put the bytes in Storage.
+      triggerMediaPipeline({
+        boardId,
+        nodeId,
+        url: '',
+        nodeType: 'image',
+        logger: imageLogger,
+      })
 
       e.target.value = ''
     },

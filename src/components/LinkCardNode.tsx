@@ -30,6 +30,11 @@ export type LinkCardData = {
    * linkCards (not Twitter, not generic).
    */
   contentDescription?: string
+  /**
+   * Media-server Gemini analysis (Fly pipeline): video/audio for video
+   * tweets and YouTube, the attached photo for photo tweets (#17).
+   */
+  media_analysis?: string
 }
 
 const CARD_WIDTH = 250

@@ -16,6 +16,8 @@ export type ImageCardData = {
   imageDataUrl: string
   fileName: string
   label: string
+  /** Media-server Gemini analysis of the image, written once at ingest (#17). */
+  media_analysis?: string
 }
 
 const CARD_WIDTH = 250
