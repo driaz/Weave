@@ -83,6 +83,7 @@ export function useStaggeredEdges(
           activeLayer,
           connection: conn,
           isHighlighted,
+          isDimmed: highlightState != null && !isHighlighted,
         },
       }
     })

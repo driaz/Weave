@@ -169,6 +169,50 @@ body {
   animation: edge-highlight-pulse 0.8s ease-in-out 2;
 }
 
+/* Selected-node edge highlight variants (preview: ?edgeHl=a|b|c) */
+.edge-hl-casing {
+  stroke: var(--w-card);
+  opacity: 0.95;
+  pointer-events: none;
+}
+
+.edge-hl-a {
+  stroke: var(--w-edge-ink) !important;
+  opacity: 1 !important;
+}
+
+.edge-hl-c {
+  opacity: 1 !important;
+}
+
+@keyframes edge-hl-b-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 1.5px var(--w-edge-stroke)) drop-shadow(0 0 6px var(--w-edge-stroke));
+  }
+  50% {
+    filter: drop-shadow(0 0 2px var(--w-edge-stroke)) drop-shadow(0 0 12px var(--w-edge-stroke));
+  }
+}
+
+.edge-hl-b {
+  stroke: #fffbf2 !important;
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 1.5px var(--w-edge-stroke)) drop-shadow(0 0 6px var(--w-edge-stroke));
+  animation: edge-hl-b-pulse 0.8s ease-in-out 2;
+}
+
+.edge-dimmed {
+  opacity: 0.12 !important;
+}
+
+.react-flow__node.node-dimmed {
+  opacity: 0.35;
+}
+
+.react-flow__node {
+  transition: opacity 200ms ease;
+}
+
 /* Tweet embed: hide raw blockquote, show spinner, reveal after hydration */
 .tweet-embed-container {
   position: relative;

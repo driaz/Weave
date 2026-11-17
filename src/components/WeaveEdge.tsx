@@ -10,6 +10,9 @@ import type { WeaveMode } from '../types/board'
 import type { Connection } from '../api/claude'
 import { getEdgeColor } from '../utils/edgeColors'
 import { EdgeLabelClickContext } from './EdgeLabelClickContext'
+import { getEdgeHighlightVariant } from '../utils/edgeHighlight'
+
+const HL_VARIANT = getEdgeHighlightVariant()
 
 export type WeaveEdgeData = {
   label: string
@@ -23,6 +26,7 @@ export type WeaveEdgeData = {
   activeLayer?: WeaveMode
   connection?: Connection
   isHighlighted?: boolean
+  isDimmed?: boolean
 }
 
 const OFFSET_PX = 60
@@ -149,20 +153,45 @@ export function WeaveEdge({
     (edgeData.mode ?? 'weave') === edgeData.activeLayer
   const pathOpacity = active ? 0.7 : 0.05
 
+  const lit = active && edgeData.isHighlighted
+  const dimmed = active && edgeData.isDimmed && HL_VARIANT === 'c'
+  const hlClass =
+    HL_VARIANT === 'current' ? 'edge-highlight' : `edge-hl-${HL_VARIANT}`
+  const litWidth =
+    HL_VARIANT === 'current'
+      ? strokeWidth
+      : HL_VARIANT === 'a'
+        ? strokeWidth + 2
+        : strokeWidth + 1.5
+  const casing = lit && (HL_VARIANT === 'a' || HL_VARIANT === 'c')
+
   return (
     <>
+      {casing && (
+        <path
+          d={edgePath}
+          fill="none"
+          className="edge-hl-casing"
+          strokeWidth={litWidth + 6}
+          strokeLinecap="round"
+        />
+      )}
       <BaseEdge
         id={id}
         path={edgePath}
         interactionWidth={0}
-        className={edgeData.isHighlighted ? 'edge-highlight' : undefined}
+        className={
+          lit ? hlClass : dimmed ? 'edge-dimmed' : undefined
+        }
         style={{
           stroke: colors.stroke,
-          strokeWidth,
+          strokeWidth: lit ? litWidth : strokeWidth,
           opacity: pathOpacity,
           transition: 'opacity 200ms ease',
           pointerEvents: 'none',
           ['--w-edge-glow' as string]: colors.glow,
+          ['--w-edge-stroke' as string]: colors.stroke,
+          ['--w-edge-ink' as string]: colors.ink,
         } as CSSProperties}
       />
 
@@ -178,8 +207,11 @@ export function WeaveEdge({
               backgroundColor: colors.bg,
               borderWidth: '1px',
               borderStyle: 'solid',
-              borderColor: colors.border,
+              borderColor:
+                lit && HL_VARIANT !== 'current' ? colors.stroke : colors.border,
               color: colors.text,
+              opacity: dimmed ? 0.15 : 1,
+              transition: 'opacity 200ms ease',
               boxShadow: edgeData.isHighlighted
                 ? `0 0 0 3px ${colors.glow}`
                 : undefined,
