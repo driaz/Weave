@@ -321,6 +321,14 @@ export class VadController {
   // their globally-unique UUIDs can't collide with bare client node ids.
   private depositCorpus: DepositCorpusRow[] | null = null
   private readonly surfacedDepositIds = new Set<string>()
+  // Opener-only: working-memory admissions still in flight. The opener runs
+  // its deposit band in the background (its output can't reach the opener's
+  // own prompt — working memory is snapshotted before retrieval), so the
+  // corpus download stays off the opener's critical path. Both bands' admissions
+  // land here in their original order (deposits, then node); the next turn
+  // awaits this before taking its working-memory snapshot, so its prompt is
+  // the same as if the opener had waited. Null when nothing is pending.
+  private pendingRetrievalAdmissions: Promise<void> | null = null
 
   constructor(opts: VadControllerOptions) {
     this.opts = opts
@@ -532,6 +540,7 @@ export class VadController {
     // it surfaces. Always empty on a fresh session's opening; wired anyway so
     // the two assembly paths stay uniform (and a retried opening after a
     // surfacing turn renders correctly).
+    await this.awaitPendingRetrievalAdmissions()
     const workingMemoryEntries = [...this.workingMemory.values()]
     const workingMemoryBlock = buildWorkingMemoryBlock(workingMemoryEntries)
 
@@ -599,7 +608,7 @@ export class VadController {
       const client = requireClient()
       const queryVector = await lookupEdgeQueryVector(client, this.opts.boardId, conn)
       if (!queryVector) return null
-      return await this.runRetrieval(client, queryVector)
+      return await this.runRetrieval(client, queryVector, { depositsInBackground: true })
     } catch (err) {
       console.warn(
         '[VadController] opening retrieval failed; proceeding without relatedMaterial:',
@@ -622,11 +631,64 @@ export class VadController {
   private async runRetrieval(
     client: ReturnType<typeof requireClient>,
     queryVector: number[],
+    opts: { depositsInBackground?: boolean } = {},
   ): Promise<string | null> {
-    // Deposit band first: it needs no anchor connection, so it runs even on
-    // follow-up turns without one (where the node band below early-returns).
-    await this.runDepositBand(client, queryVector)
+    if (!opts.depositsInBackground) {
+      // Deposit band first: it needs no anchor connection, so it runs even on
+      // follow-up turns without one (where the node band below early-returns).
+      await this.runDepositBand(client, queryVector)
+      const node = await this.runNodeBand(client, queryVector)
+      node?.admit()
+      return node?.block ?? null
+    }
 
+    // Opener: the deposit band (first-call corpus download, ≈2.8 MB in prod)
+    // runs alongside the node band instead of ahead of it, and nobody awaits
+    // it here. Admissions keep their original order — deposits, then node —
+    // via the pending chain, so working memory (and its overflow eviction
+    // order) ends up exactly as the serial path leaves it.
+    const s = this.store.getState()
+    const corr = {
+      correlationId: s.turnId ?? undefined,
+      parentCorrelationId: s.sessionId ?? undefined,
+    }
+    const depositsDone = this.runDepositBand(client, queryVector, corr)
+    this.pendingRetrievalAdmissions = depositsDone
+    const node = await this.runNodeBand(client, queryVector)
+    if (node) {
+      this.pendingRetrievalAdmissions = depositsDone.then(() => node.admit())
+    }
+    return node?.block ?? null
+  }
+
+  /**
+   * Wait for the opener's background admissions, if any. Never throws: the
+   * deposit band swallows its own failures, and a failed node admission must
+   * not block a turn.
+   */
+  private async awaitPendingRetrievalAdmissions(): Promise<void> {
+    const pending = this.pendingRetrievalAdmissions
+    if (!pending) return
+    try {
+      await pending
+    } catch (err) {
+      console.warn('[VadController] background retrieval admission failed:', err)
+    } finally {
+      if (this.pendingRetrievalAdmissions === pending) this.pendingRetrievalAdmissions = null
+    }
+  }
+
+  /**
+   * Node band: exclusion set, 10A RPC, floor, once-per-session novelty filter,
+   * `relatedMaterial` block. Marks the novel rows as surfaced immediately (the
+   * novelty filter is per-band and independent of the deposit band) but leaves
+   * the working-memory admission to the returned `admit`, so the caller
+   * controls admission order. Null when retrieval is disabled (no anchor).
+   */
+  private async runNodeBand(
+    client: ReturnType<typeof requireClient>,
+    queryVector: number[],
+  ): Promise<{ block: string | null; admit: () => void } | null> {
     const conn = this.opts.anchorConnection
     if (!conn) return null
 
@@ -672,12 +734,13 @@ export class VadController {
 
     const novel = filterUnseen(floored, this.surfacedRefIds)
     const block = buildRelatedMaterial(novel)
-    if (block) {
-      // The whole block is injected this turn → every novel row has surfaced.
-      for (const r of novel) this.surfacedRefIds.add(r.ref_id)
+    // The whole block is injected this turn → every novel row has surfaced.
+    if (block) for (const r of novel) this.surfacedRefIds.add(r.ref_id)
+    const admit = (): void => {
+      if (!block) return
       // ...and enters working memory for every subsequent turn's prompt
-      // (uniform for opening and follow-up turns — this shared tail is the
-      // single admission point).
+      // (uniform for opening and follow-up turns — this is the single node
+      // admission point).
       this.retrievalTurnOrdinal += 1
       admitToWorkingMemory(
         this.workingMemory,
@@ -697,7 +760,7 @@ export class VadController {
           this.logger.event('voice.context.working_memory_admit', 'success', { ...info }),
       )
     }
-    return block
+    return { block, admit }
   }
 
   /**
@@ -717,6 +780,12 @@ export class VadController {
   private async runDepositBand(
     client: ReturnType<typeof requireClient>,
     queryVector: number[],
+    /**
+     * Correlation ids captured when the band was launched. The opener runs it
+     * in the background, where the store may have moved on to the next turn by
+     * the time it logs. Absent → read from the store at log time.
+     */
+    launchCorr?: { correlationId?: string; parentCorrelationId?: string },
   ): Promise<void> {
     try {
       if (this.depositCorpus === null) {
@@ -727,7 +796,7 @@ export class VadController {
           'voice.retrieval.deposit_corpus',
           'success',
           { scanned, dropped, loaded: corpus.length },
-          {
+          launchCorr ?? {
             correlationId: s0.turnId ?? undefined,
             parentCorrelationId: s0.sessionId ?? undefined,
           },
@@ -744,7 +813,7 @@ export class VadController {
 
       const currentBoard = this.opts.boardId
       const state = this.store.getState()
-      const corr = {
+      const corr = launchCorr ?? {
         correlationId: state.turnId ?? undefined,
         parentCorrelationId: state.sessionId ?? undefined,
       }
@@ -1337,6 +1406,11 @@ export class VadController {
     // double-render alongside their own RELATED MATERIAL appearance. Computed
     // outside the embed guard: prior surfaced material renders even when this
     // turn's embed failed and retrieval is skipped.
+    // The opener's deposit band may still be admitting in the background
+    // (normally finished long before the first follow-up); wait for it so this
+    // prompt sees what the serial path would have admitted.
+    await this.awaitPendingRetrievalAdmissions()
+    if (abort.signal.aborted) return
     const workingMemoryEntries = [...this.workingMemory.values()]
     const workingMemoryBlock = buildWorkingMemoryBlock(workingMemoryEntries)
 
