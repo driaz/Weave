@@ -1,4 +1,4 @@
-import { useContext, type CSSProperties } from 'react'
+import { useContext } from 'react'
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -23,6 +23,7 @@ export type WeaveEdgeData = {
   activeLayer?: WeaveMode
   connection?: Connection
   isHighlighted?: boolean
+  isDimmed?: boolean
 }
 
 const OFFSET_PX = 60
@@ -149,21 +150,37 @@ export function WeaveEdge({
     (edgeData.mode ?? 'weave') === edgeData.activeLayer
   const pathOpacity = active ? 0.7 : 0.05
 
+  // Selected-node focus: connected edges go full-strength on a white
+  // casing; everything outside the highlight dims (see index.css).
+  const lit = active && edgeData.isHighlighted
+  const dimmed = active && edgeData.isDimmed
+  const litWidth = strokeWidth + 1.5
+
   return (
     <>
+      {lit && (
+        <path
+          d={edgePath}
+          fill="none"
+          className="edge-hl-casing"
+          strokeWidth={litWidth + 6}
+          strokeLinecap="round"
+        />
+      )}
       <BaseEdge
         id={id}
         path={edgePath}
         interactionWidth={0}
-        className={edgeData.isHighlighted ? 'edge-highlight' : undefined}
+        className={
+          lit ? 'edge-highlight' : dimmed ? 'edge-dimmed' : undefined
+        }
         style={{
           stroke: colors.stroke,
-          strokeWidth,
+          strokeWidth: lit ? litWidth : strokeWidth,
           opacity: pathOpacity,
           transition: 'opacity 200ms ease',
           pointerEvents: 'none',
-          ['--w-edge-glow' as string]: colors.glow,
-        } as CSSProperties}
+        }}
       />
 
       {active && (
@@ -178,8 +195,10 @@ export function WeaveEdge({
               backgroundColor: colors.bg,
               borderWidth: '1px',
               borderStyle: 'solid',
-              borderColor: colors.border,
+              borderColor: lit ? colors.stroke : colors.border,
               color: colors.text,
+              opacity: dimmed ? 0.15 : 1,
+              transition: 'opacity 200ms ease',
               boxShadow: edgeData.isHighlighted
                 ? `0 0 0 3px ${colors.glow}`
                 : undefined,

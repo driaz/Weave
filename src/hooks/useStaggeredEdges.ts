@@ -14,77 +14,88 @@ export function useStaggeredEdges(
   activeLayer: WeaveMode = 'weave',
   highlightState: HighlightState = null,
 ): Edge<WeaveEdgeData>[] {
-  return useMemo(() => {
-    // Group by normalised source-target pair to detect parallel edges
-    const pairGroups = new Map<string, number[]>()
-    connections.forEach((conn, index) => {
-      const source = stripNodePrefix(conn.from)
-      const target = stripNodePrefix(conn.to)
-      const key = [source, target].sort().join('::')
-      if (!pairGroups.has(key)) pairGroups.set(key, [])
-      pairGroups.get(key)!.push(index)
-    })
+  return useMemo(
+    () => buildWeaveEdges(connections, activeLayer, highlightState),
+    [connections, activeLayer, highlightState],
+  )
+}
 
-    // Pre-compute highlight match values
-    const hlNodeId =
-      highlightState?.type === 'node' ? highlightState.nodeId : null
-    const hlFrom =
-      highlightState?.type === 'connection'
-        ? stripNodePrefix(highlightState.connection.from)
-        : null
-    const hlTo =
-      highlightState?.type === 'connection'
-        ? stripNodePrefix(highlightState.connection.to)
-        : null
-    const hlMode: WeaveMode | null =
-      highlightState?.type === 'connection'
-        ? (highlightState.connection.mode ?? 'weave')
-        : null
+/** Pure edge builder behind useStaggeredEdges (exported for tests). */
+export function buildWeaveEdges(
+  connections: Connection[],
+  activeLayer: WeaveMode,
+  highlightState: HighlightState,
+): Edge<WeaveEdgeData>[] {
+  // Group by normalised source-target pair to detect parallel edges
+  const pairGroups = new Map<string, number[]>()
+  connections.forEach((conn, index) => {
+    const source = stripNodePrefix(conn.from)
+    const target = stripNodePrefix(conn.to)
+    const key = [source, target].sort().join('::')
+    if (!pairGroups.has(key)) pairGroups.set(key, [])
+    pairGroups.get(key)!.push(index)
+  })
 
-    return connections.map((conn, index) => {
-      const source = stripNodePrefix(conn.from)
-      const target = stripNodePrefix(conn.to)
-      const key = [source, target].sort().join('::')
-      const group = pairGroups.get(key)!
-      const posInGroup = group.indexOf(index)
-      const total = group.length
-      // Center offsets: 1 edge → 0, 2 edges → -0.5/+0.5, 3 → -1/0/+1
-      const edgeOffset =
-        total <= 1 ? 0 : posInGroup - (total - 1) / 2
+  // Pre-compute highlight match values
+  const hlNodeId =
+    highlightState?.type === 'node' ? highlightState.nodeId : null
+  const hlFrom =
+    highlightState?.type === 'connection'
+      ? stripNodePrefix(highlightState.connection.from)
+      : null
+  const hlTo =
+    highlightState?.type === 'connection'
+      ? stripNodePrefix(highlightState.connection.to)
+      : null
+  const hlMode: WeaveMode | null =
+    highlightState?.type === 'connection'
+      ? (highlightState.connection.mode ?? 'weave')
+      : null
 
-      const onActiveLayer = (conn.mode ?? 'weave') === activeLayer
-      let isHighlighted = false
-      if (hlNodeId != null) {
-        isHighlighted =
-          onActiveLayer && (source === hlNodeId || target === hlNodeId)
-      } else if (hlFrom != null && hlTo != null) {
-        // Same node pair AND same mode — sibling edges in other modes
-        // (e.g. a Standard connection between A and B alongside a
-        // Find Tensions one) should stay un-highlighted.
-        const connMode: WeaveMode = conn.mode ?? 'weave'
-        isHighlighted =
-          source === hlFrom && target === hlTo && connMode === hlMode
-      }
+  return connections.map((conn, index) => {
+    const source = stripNodePrefix(conn.from)
+    const target = stripNodePrefix(conn.to)
+    const key = [source, target].sort().join('::')
+    const group = pairGroups.get(key)!
+    const posInGroup = group.indexOf(index)
+    const total = group.length
+    // Center offsets: 1 edge → 0, 2 edges → -0.5/+0.5, 3 → -1/0/+1
+    const edgeOffset =
+      total <= 1 ? 0 : posInGroup - (total - 1) / 2
 
-      return {
-        id: `weave-${source}-${target}-${index}`,
-        source,
-        target,
-        type: 'weave' as const,
-        data: {
-          label: conn.label,
-          explanation: conn.explanation,
-          type: conn.type,
-          strength: conn.strength,
-          surprise: conn.surprise,
-          mode: conn.mode,
-          connectionIndex: index,
-          edgeOffset,
-          activeLayer,
-          connection: conn,
-          isHighlighted,
-        },
-      }
-    })
-  }, [connections, activeLayer, highlightState])
+    const onActiveLayer = (conn.mode ?? 'weave') === activeLayer
+    let isHighlighted = false
+    if (hlNodeId != null) {
+      isHighlighted =
+        onActiveLayer && (source === hlNodeId || target === hlNodeId)
+    } else if (hlFrom != null && hlTo != null) {
+      // Same node pair AND same mode — sibling edges in other modes
+      // (e.g. a Standard connection between A and B alongside a
+      // Find Tensions one) should stay un-highlighted.
+      const connMode: WeaveMode = conn.mode ?? 'weave'
+      isHighlighted =
+        source === hlFrom && target === hlTo && connMode === hlMode
+    }
+
+    return {
+      id: `weave-${source}-${target}-${index}`,
+      source,
+      target,
+      type: 'weave' as const,
+      data: {
+        label: conn.label,
+        explanation: conn.explanation,
+        type: conn.type,
+        strength: conn.strength,
+        surprise: conn.surprise,
+        mode: conn.mode,
+        connectionIndex: index,
+        edgeOffset,
+        activeLayer,
+        connection: conn,
+        isHighlighted,
+        isDimmed: highlightState != null && !isHighlighted,
+      },
+    }
+  })
 }

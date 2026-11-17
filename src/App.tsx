@@ -53,6 +53,7 @@ import { embedNodeAsync, embedEdgeAsync } from './services/embeddingService'
 import { enrichLinkNode, triggerMediaPipeline } from './services/linkEnrichment'
 import { buildProcessingLogAppender, createNodeLogger } from './utils/logger'
 import { detectRenderAnomaly } from './utils/renderAnomaly'
+import { getLitNodeIds } from './utils/edgeHighlight'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -134,6 +135,15 @@ export function App() {
     Edge<WeaveEdgeData>
   > | null>(null)
   const edges = useStaggeredEdges(connections, activeLayer, highlightState)
+  // While a node or connection is highlighted, dim every node outside
+  // its neighbourhood. Display-only: `nodes` (what gets saved) is untouched.
+  const displayNodes = useMemo(() => {
+    const lit = getLitNodeIds(connections, activeLayer, highlightState)
+    if (!lit) return nodes
+    return nodes.map((n) =>
+      lit.has(n.id) ? n : { ...n, className: 'node-dimmed' },
+    )
+  }, [nodes, connections, activeLayer, highlightState])
 
   // Defer node_selected emission so double-clicks (which fire two
   // single clicks before dblclick) can cancel it when a lightbox
@@ -678,7 +688,7 @@ export function App() {
           <WeavingShimmer mode={weavingMode} />
           <ThinkingPanel mode={weavingMode} />
           <ReactFlow
-            nodes={nodes}
+            nodes={displayNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}

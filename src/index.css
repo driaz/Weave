@@ -154,19 +154,28 @@ body {
   animation: selected-node-pulse 0.8s ease-in-out 2;
 }
 
-@keyframes edge-highlight-pulse {
-  0%, 100% {
-    filter: drop-shadow(0 0 4px var(--w-edge-glow, rgba(0, 0, 0, 0.2)));
-  }
-  50% {
-    filter: drop-shadow(0 0 10px var(--w-edge-glow, rgba(0, 0, 0, 0.2)));
-  }
+/* Selected-node focus: connected edges sit on a white casing at full
+   strength; edges, labels and nodes outside the highlight dim. */
+.edge-hl-casing {
+  stroke: var(--w-card);
+  opacity: 0.95;
+  pointer-events: none;
 }
 
 .edge-highlight {
   opacity: 1 !important;
-  filter: drop-shadow(0 0 6px var(--w-edge-glow, rgba(0, 0, 0, 0.2)));
-  animation: edge-highlight-pulse 0.8s ease-in-out 2;
+}
+
+.edge-dimmed {
+  opacity: 0.12 !important;
+}
+
+.react-flow__node {
+  transition: opacity 200ms ease;
+}
+
+.react-flow__node.node-dimmed {
+  opacity: 0.35;
 }
 
 /* Tweet embed: hide raw blockquote, show spinner, reveal after hydration */
