@@ -179,6 +179,8 @@ export async function fetchNodeBlob(opts: {
  */
 export interface NodeUnionView {
   title: string
+  /** Image cards: label, else fileName. Empty for link cards. */
+  imageLabel: string
   authorName: string
   authorHandle: string
   tweetText: string
@@ -193,6 +195,7 @@ export function buildUnionView(
 ): NodeUnionView {
   return {
     title: blobString(blob, 'title'),
+    imageLabel: blobString(blob, 'label') || blobString(blob, 'fileName'),
     authorName: blobString(blob, 'authorName'),
     authorHandle: blobString(blob, 'authorHandle'),
     tweetText: blobString(blob, 'tweetText'),
@@ -217,6 +220,8 @@ export function buildUnionView(
  *   YouTube:     title — authorName — contentDescription — transcript
  *   Video tweet: contentDescription — authorName — tweetText —
  *                media_analysis — transcript
+ *   Photo tweet: same as video tweet (no transcript)
+ *   Image card:  label (else fileName, else 'Image') — media_analysis
  *
  * All present fields, full length; the transcript rides last so a budget
  * overflow only ever cuts its tail. content_summary IS this text —
@@ -224,11 +229,24 @@ export function buildUnionView(
  * actually-composed text.
  */
 export function composeEmbedText(opts: {
-  nodeType: 'youtube' | 'twitter'
+  nodeType: 'youtube' | 'twitter' | 'image'
   view: NodeUnionView
   fallbackUrl: string
 }): ComposedEmbedText {
-  const { transcript, mediaAnalysis, contentDescription, authorName, tweetText } = opts.view
+  const { mediaAnalysis, contentDescription, authorName, tweetText } = opts.view
+  // Image cards carry no transcript or description slot.
+  const transcript = opts.nodeType === 'image' ? '' : opts.view.transcript
+
+  if (opts.nodeType === 'image') {
+    const text = [opts.view.imageLabel || 'Image', mediaAnalysis].filter(Boolean).join(' — ')
+    return {
+      text,
+      hadTranscript: false,
+      hadDescription: false,
+      hadAnalysis: Boolean(mediaAnalysis),
+      truncatedFromChars: null,
+    }
+  }
 
   let segments: string[]
   if (opts.nodeType === 'youtube') {
@@ -275,6 +293,8 @@ export async function upsertEmbedding(opts: {
   userId: string
   composed: ComposedEmbedText
   embedding: number[]
+  /** weave_embeddings.node_type — the client node type the row belongs to. */
+  nodeType?: 'linkCard' | 'imageCard'
   hasVideo: boolean
   /** null when unknown (YouTube URL path has no ffprobe). */
   durationSeconds: number | null
@@ -309,7 +329,7 @@ export async function upsertEmbedding(opts: {
       board_id: opts.boardId,
       node_id: opts.nodeId,
       user_id: opts.userId,
-      node_type: 'linkCard',
+      node_type: opts.nodeType ?? 'linkCard',
       embedding: JSON.stringify(opts.embedding),
       // Full composed text, uncapped — content_summary is exactly what
       // was embedded.
@@ -332,4 +352,45 @@ export async function upsertEmbedding(opts: {
   )
   if (error) throw new Error(`upsertEmbedding failed: ${error.message}`)
   return { embedGeneration }
+}
+
+const MEDIA_BUCKET = 'weave-media'
+
+export interface NodeImageSource {
+  /** Storage object key in weave-media (nodes.image_url); null until uploaded. */
+  path: string | null
+  /** Stored tweetText, '' for image cards — the photo-link gate reads it. */
+  tweetText: string
+}
+
+/**
+ * Read where a node's image lives: nodes.image_url when it is a Storage
+ * path (never an http URL — those are external thumbnails, not the
+ * user's bytes; path is null then, and while the upload hasn't landed).
+ * Null when the row itself can't be read.
+ */
+export async function fetchNodeImageSource(ref: ClientNodeRef): Promise<NodeImageSource | null> {
+  const { data, error } = await admin
+    .from('nodes')
+    .select('image_url, data')
+    .eq('board_id', ref.boardId)
+    .eq('user_id', ref.userId)
+    .eq('data->>_clientNodeId', ref.nodeId)
+    .maybeSingle()
+  if (error) {
+    console.warn(`[supabase] image source lookup failed: ${error.message}`)
+    return null
+  }
+  const row = data as { image_url: string | null; data: Record<string, unknown> | null } | null
+  if (!row) return null
+  const raw = row.image_url ?? ''
+  const path = raw && !/^https?:\/\//i.test(raw) ? raw : null
+  return { path, tweetText: blobString(row.data, 'tweetText') }
+}
+
+/** Download an object from weave-media with the service role. */
+export async function downloadMediaObject(path: string): Promise<{ data: Buffer; mimeType: string }> {
+  const { data, error } = await admin.storage.from(MEDIA_BUCKET).download(path)
+  if (error || !data) throw new Error(`storage download failed: ${error?.message ?? 'no data'}`)
+  return { data: Buffer.from(await data.arrayBuffer()), mimeType: data.type }
 }
