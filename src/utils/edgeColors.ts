@@ -7,7 +7,6 @@ export type EdgeColorSet = {
   text: string
   fill: string
   glow: string
-  ink: string
 }
 
 const COLORS: Record<WeaveMode, EdgeColorSet> = {
@@ -18,7 +17,6 @@ const COLORS: Record<WeaveMode, EdgeColorSet> = {
     text: 'var(--w-standard-accent)',
     fill: 'var(--w-standard-accent)',
     glow: 'var(--w-standard-glow)',
-    ink: 'var(--w-standard-ink)',
   },
   deeper: {
     stroke: 'var(--w-deeper-accent)',
@@ -27,7 +25,6 @@ const COLORS: Record<WeaveMode, EdgeColorSet> = {
     text: 'var(--w-deeper-accent)',
     fill: 'var(--w-deeper-accent)',
     glow: 'var(--w-deeper-glow)',
-    ink: 'var(--w-deeper-ink)',
   },
   tensions: {
     stroke: 'var(--w-tensions-accent)',
@@ -36,7 +33,6 @@ const COLORS: Record<WeaveMode, EdgeColorSet> = {
     text: 'var(--w-tensions-accent)',
     fill: 'var(--w-tensions-accent)',
     glow: 'var(--w-tensions-glow)',
-    ink: 'var(--w-tensions-ink)',
   },
 }
 

@@ -2,20 +2,6 @@ import type { Connection } from '../api/claude'
 import type { WeaveMode } from '../types/board'
 import type { HighlightState } from '../hooks/useSelectedNode'
 
-/**
- * Preview-only switch for the selected-node edge highlight.
- * `?edgeHl=a|b|c` picks a variant; anything else keeps today's look.
- * Removed once a variant is chosen.
- */
-export type EdgeHighlightVariant = 'current' | 'a' | 'b' | 'c'
-
-export function getEdgeHighlightVariant(
-  search: string = typeof window === 'undefined' ? '' : window.location.search,
-): EdgeHighlightVariant {
-  const v = new URLSearchParams(search).get('edgeHl')
-  return v === 'a' || v === 'b' || v === 'c' ? v : 'current'
-}
-
 function strip(id: string): string {
   return id.replace(/^node-/, '')
 }

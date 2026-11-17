@@ -53,7 +53,7 @@ import { embedNodeAsync, embedEdgeAsync } from './services/embeddingService'
 import { enrichLinkNode, triggerMediaPipeline } from './services/linkEnrichment'
 import { buildProcessingLogAppender, createNodeLogger } from './utils/logger'
 import { detectRenderAnomaly } from './utils/renderAnomaly'
-import { getEdgeHighlightVariant, getLitNodeIds } from './utils/edgeHighlight'
+import { getLitNodeIds } from './utils/edgeHighlight'
 
 const nodeTypes = {
   textCard: TextCardNode,
@@ -135,9 +135,9 @@ export function App() {
     Edge<WeaveEdgeData>
   > | null>(null)
   const edges = useStaggeredEdges(connections, activeLayer, highlightState)
-  // Preview variant C dims nodes outside the highlighted neighbourhood.
+  // While a node or connection is highlighted, dim every node outside
+  // its neighbourhood. Display-only: `nodes` (what gets saved) is untouched.
   const displayNodes = useMemo(() => {
-    if (getEdgeHighlightVariant() !== 'c') return nodes
     const lit = getLitNodeIds(connections, activeLayer, highlightState)
     if (!lit) return nodes
     return nodes.map((n) =>

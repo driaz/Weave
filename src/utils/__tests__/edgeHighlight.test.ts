@@ -1,20 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { Connection } from '../../api/claude'
-import { getEdgeHighlightVariant, getLitNodeIds } from '../edgeHighlight'
+import { getLitNodeIds } from '../edgeHighlight'
 
 const conn = (from: string, to: string, mode?: Connection['mode']) =>
   ({ from, to, mode, label: '', explanation: '', type: '', strength: 0.5, surprise: 0.5 }) as Connection
-
-describe('getEdgeHighlightVariant', () => {
-  it('reads a, b, c from the query string', () => {
-    expect(getEdgeHighlightVariant('?edgeHl=a')).toBe('a')
-    expect(getEdgeHighlightVariant('?x=1&edgeHl=c')).toBe('c')
-  })
-  it('falls back to current', () => {
-    expect(getEdgeHighlightVariant('')).toBe('current')
-    expect(getEdgeHighlightVariant('?edgeHl=z')).toBe('current')
-  })
-})
 
 describe('getLitNodeIds', () => {
   const connections = [
