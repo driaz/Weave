@@ -301,7 +301,16 @@ function isEmptyNode(node: Node): boolean {
   }
 }
 
-async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
+function trimmedAnalysis(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * Exported for tests. A node with `media_analysis` (#17, written once at
+ * ingest by the media server) goes in as that text and sends no image
+ * block; without it, the image block is the fallback.
+ */
+export async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
   const content: ContentBlock[] = []
 
   content.push({
@@ -323,11 +332,14 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
       case 'imageCard': {
         const data = node.data as ImageCardData
         const label = data.label || data.fileName
+        const analysis = trimmedAnalysis(data.media_analysis)
         content.push({
           type: 'text',
-          text: `[Node ${node.id} — Image Card] (label: "${label}"):\n`,
+          text: analysis
+            ? `[Node ${node.id} — Image Card] (label: "${label}"):\nImage analysis: ${analysis}\n`
+            : `[Node ${node.id} — Image Card] (label: "${label}"):\n`,
         })
-        if (data.imageDataUrl) {
+        if (!analysis && data.imageDataUrl) {
           try {
             const { mediaType, base64 } = await loadImageAsBase64(
               data.imageDataUrl,
@@ -370,8 +382,13 @@ async function serializeNodes(nodes: Node[]): Promise<ContentBlock[]> {
           const truncated = data.youtubeTranscript.length > 3000 ? data.youtubeTranscript.slice(0, 3000) : data.youtubeTranscript
           description += `Embedded YouTube video transcript: ${truncated}\n`
         }
+        const tweetAnalysis =
+          data.type === 'twitter' ? trimmedAnalysis(data.media_analysis) : ''
+        if (tweetAnalysis) {
+          description += `Tweet media analysis (what the attached video or image shows): ${tweetAnalysis}\n`
+        }
         content.push({ type: 'text', text: description })
-        if (data.type === 'twitter') {
+        if (data.type === 'twitter' && !tweetAnalysis) {
           // Pre-cutover: tweet avatars lived in `data.imageBase64`.
           // Post-cutover: hydration drops them in `data.imageUrl` as a
           // Supabase Storage signed URL. Accept either — broaden the
