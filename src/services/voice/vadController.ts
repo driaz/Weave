@@ -72,6 +72,7 @@ import {
   type DepositCorpusRow,
   type ScoredDeposit,
 } from './depositRetrieval'
+import { audioDurationMs, isShortTurn } from './sttGate'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -88,8 +89,6 @@ const VAD_RMS_THRESHOLD = 0.02
 const VAD_MIN_SPEECH_DURATION_MS = 200
 const VAD_MIN_SILENCE_DURATION_MS = 200
 const VAD_PRE_ROLL_MS = 300
-const STT_MIN_DURATION_MS = 500
-const STT_MIN_WORDS = 2
 
 /**
  * Cap on concurrent in-flight TTS work for a single turn. "In flight" =
@@ -1357,18 +1356,21 @@ export class VadController {
       this.rearmWorklet()
       return
     }
-    if (sttResult.durationMs < STT_MIN_DURATION_MS || wordCount < STT_MIN_WORDS) {
+    // Gate on the length of the audio, not on sttResult.durationMs (the STT
+    // round-trip time): a fast transcription must not reject a valid turn.
+    const audioMs = Math.round(audioDurationMs(merged.length, sampleRate))
+    if (isShortTurn(audioMs, wordCount)) {
       this.logger.event(
         'voice.stt.short_result',
         'skipped',
-        { transcript, durationMs: sttResult.durationMs, wordCount },
+        { transcript, audioMs, wordCount },
         correlationIds,
       )
       this.store.sttReturnedTooShort()
       this.logger.event(
         'voice.turn.rejected',
         'skipped',
-        { reason: 'short_transcript', durationMs: sttResult.durationMs, wordCount },
+        { reason: 'short_transcript', audioMs, wordCount },
         correlationIds,
       )
       this.rearmWorklet()
