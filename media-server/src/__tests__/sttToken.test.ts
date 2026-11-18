@@ -28,6 +28,7 @@ describe('mintSttToken', () => {
     expect(url).toContain('/v1/single-use-token/realtime_scribe')
     expect(init.method).toBe('POST')
     expect(init.headers).toEqual({ 'xi-api-key': 'key-1' })
+    expect(init.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('reports an upstream error status with a trimmed body', async () => {
@@ -52,7 +53,39 @@ describe('mintSttToken', () => {
   })
 })
 
+/** An upstream that never answers; it only settles when the request is aborted. */
+const hangingFetch = ((_url: string, init?: RequestInit) =>
+  new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+  })) as unknown as typeof fetch
+
+describe('mintSttToken timeout', () => {
+  it('gives up on a hung upstream and reports status 0', async () => {
+    const startedAt = Date.now()
+    const result = await mintSttToken('key-1', hangingFetch, 50)
+    expect(result).toEqual({ ok: false, status: 0, detail: 'timed out after 50 ms' })
+    expect(Date.now() - startedAt).toBeLessThan(2000)
+  })
+})
+
 describe('POST /api/stt-token', () => {
+  it('answers 502 instead of hanging when ElevenLabs does not respond', async () => {
+    const app = Fastify()
+    registerSttTokenRoute(app, {
+      verifyUserToken: async () => 'user-1',
+      getApiKey: () => 'key-1',
+      fetchImpl: hangingFetch,
+      timeoutMs: 50,
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/stt-token',
+      headers: { authorization: 'Bearer good-jwt' },
+    })
+    expect(res.statusCode).toBe(502)
+    expect(res.json()).toEqual({ error: 'STT token request failed', statusCode: 0 })
+  })
+
   function build(opts: { apiKey?: string; upstream?: () => Promise<Response> } = {}) {
     const fetchImpl = vi.fn(opts.upstream ?? (async () => jsonResponse(200, { token: 'sutkn_abc' })))
     const app = Fastify()

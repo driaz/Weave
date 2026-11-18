@@ -9,20 +9,32 @@ export const STT_TOKEN_URL = 'https://api.elevenlabs.io/v1/single-use-token/real
 // socket carries one user turn; the longest prod turn is about 2 minutes.
 export const STT_TOKEN_MAX_SESSION_SECONDS = 600
 
+// ElevenLabs normally answers in well under a second. Without a limit a
+// hung upstream holds one of the machine's few request slots indefinitely.
+export const STT_TOKEN_TIMEOUT_MS = 5000
+
 export type MintSttTokenResult =
   | { ok: true; token: string }
   | { ok: false; status: number; detail: string }
 
-/** Mint one token. Never throws: a network error comes back as status 0. */
+/** Mint one token. Never throws: a network error or timeout comes back as status 0. */
 export async function mintSttToken(
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = STT_TOKEN_TIMEOUT_MS,
 ): Promise<MintSttTokenResult> {
   const url = `${STT_TOKEN_URL}?max_session_duration_seconds=${STT_TOKEN_MAX_SESSION_SECONDS}`
   let upstream: Response
   try {
-    upstream = await fetchImpl(url, { method: 'POST', headers: { 'xi-api-key': apiKey } })
+    upstream = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
   } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      return { ok: false, status: 0, detail: `timed out after ${timeoutMs} ms` }
+    }
     return { ok: false, status: 0, detail: err instanceof Error ? err.message : String(err) }
   }
   if (!upstream.ok) {
@@ -40,6 +52,7 @@ export interface SttTokenRouteDeps {
   verifyUserToken: (token: string) => Promise<string | null>
   getApiKey: () => string | undefined
   fetchImpl?: typeof fetch
+  timeoutMs?: number
 }
 
 /**
@@ -66,7 +79,7 @@ export function registerSttTokenRoute(app: FastifyInstance, deps: SttTokenRouteD
     }
 
     const startedAt = Date.now()
-    const result = await mintSttToken(apiKey, deps.fetchImpl)
+    const result = await mintSttToken(apiKey, deps.fetchImpl, deps.timeoutMs)
     const durationMs = Date.now() - startedAt
     if (!result.ok) {
       log.error(
