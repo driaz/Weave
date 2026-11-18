@@ -73,6 +73,7 @@ import {
   type ScoredDeposit,
 } from './depositRetrieval'
 import { audioDurationMs, isShortTurn } from './sttGate'
+import { startSttShadowTurn, type SttShadowTurn } from './sttShadow'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -265,6 +266,8 @@ export class VadController {
   private messages: ConversationMessage[] = []
 
   private teardownInProgress = false
+  /** Streaming STT shadow for the turn being spoken; null when the flag is off. */
+  private sttShadow: SttShadowTurn | null = null
 
   // ------- Phase 8 turn-boundary timestamps -------
   //
@@ -419,6 +422,7 @@ export class VadController {
       // the silence-timer expiry. Captured before the state mutation.
       this.currentUserSpeechEndedAt = new Date().toISOString()
       this.cancelSilenceTimer()
+      this.sttShadow?.onCommit('user_stop')
       this.sendToWorklet({ type: 'stop' })
       this.store.userClickedStop()
       this.store.setSubstep('stt')
@@ -1145,6 +1149,15 @@ export class VadController {
           parentCorrelationId: next.sessionId ?? undefined,
         },
       )
+      this.sttShadow?.cancel()
+      this.sttShadow = startSttShadowTurn({
+        sampleRate: this.audioContext?.sampleRate ?? CAPTURE_SAMPLE_RATE,
+        logger: this.logger,
+        correlationIds: {
+          correlationId: next.turnId ?? undefined,
+          parentCorrelationId: next.sessionId ?? undefined,
+        },
+      })
       this.logger.event(
         'voice.vad.speech_started',
         'success',
@@ -1175,6 +1188,7 @@ export class VadController {
     const state = this.store.getState()
     if (state.status !== 'user_speaking') return
     this.startSilenceTimer()
+    this.sttShadow?.onSilenceStarted()
     this.logger.event(
       'voice.vad.silence_started',
       'success',
@@ -1221,6 +1235,7 @@ export class VadController {
     }
     this.lastSequence = sequence
     this.chunkAccumulator.push(samples)
+    this.sttShadow?.onAudioChunk(samples)
     const state = this.store.getState()
     this.logger.event(
       'voice.vad.chunk_received',
@@ -1255,6 +1270,7 @@ export class VadController {
           parentCorrelationId: state.sessionId ?? undefined,
         },
       )
+      this.sttShadow?.onCommit('silence_timer')
       this.sendToWorklet({ type: 'stop' })
       this.store.vadSpeechEnded()
       this.store.setSubstep('stt')
@@ -1290,8 +1306,12 @@ export class VadController {
     const merged = mergeFloat32(this.chunkAccumulator)
     this.chunkAccumulator = []
     this.lastSequence = -1
+    // The shadow turn is committed by now; it finishes on its own from here.
+    const shadow = this.sttShadow
+    this.sttShadow = null
 
     if (merged.length === 0) {
+      shadow?.cancel()
       this.logger.event(
         'voice.stt.empty_result',
         'skipped',
@@ -1317,9 +1337,10 @@ export class VadController {
     let sttResult: TranscribeAudioOutput
     try {
       sttResult = await transcribeAudio({ audioBlob: wav, recordingId: turnId })
-      if (abort.signal.aborted) return
+      if (abort.signal.aborted) return shadow?.cancel()
     } catch (err) {
-      if (abort.signal.aborted) return
+      if (abort.signal.aborted) return shadow?.cancel()
+      shadow?.onWhisperResult(null)
       const vErr = toVoiceError(err, 'stt_failed', 'stt')
       this.logger.event(
         'voice.stt.failed',
@@ -1341,6 +1362,7 @@ export class VadController {
       },
       correlationIds,
     )
+    shadow?.onWhisperResult(sttResult.transcript)
 
     const transcript = sttResult.transcript.trim()
     const wordCount = transcript.split(/\s+/).filter(Boolean).length
@@ -2133,6 +2155,8 @@ export class VadController {
     if (!this.workletNode) return
     this.chunkAccumulator = []
     this.lastSequence = -1
+    this.sttShadow?.cancel()
+    this.sttShadow = null
     this.workletNode.port.postMessage({ type: 'start' })
   }
 
@@ -2204,6 +2228,8 @@ export class VadController {
   private teardownSession(endReason: EndReason = 'user_closed'): void {
     if (this.teardownInProgress) return
     this.teardownInProgress = true
+    this.sttShadow?.cancel()
+    this.sttShadow = null
 
     // Phase 8: flush the persistence session before destroying any
     // ephemeral pipeline state. The controller captures its buffer +
