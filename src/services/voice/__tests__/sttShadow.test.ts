@@ -254,6 +254,39 @@ describe('SttShadowTurn', () => {
     })
   })
 
+  it('gives up on a token request that never returns, without waiting for the final timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = new FakeSttSocket()
+      const events: Array<{ phase: string; detail: Record<string, unknown> }> = []
+      const turn = startSttShadowTurn({
+        config: EXPIRY,
+        sampleRate: 16000,
+        logger: { event: (phase, _outcome, detail) => events.push({ phase, detail: detail ?? {} }) },
+        correlationIds: IDS,
+        fetchToken: () => new Promise<string>(() => undefined),
+        createSocket: socket.factory,
+        tokenTimeoutMs: 6000,
+        finalTimeoutMs: 10000,
+      })
+      turn?.onAudioChunk(chunk())
+      await vi.advanceTimersByTimeAsync(6000)
+      // The turn is still being spoken; the failure is already known.
+      turn?.onCommit('silence_timer')
+      turn?.onWhisperResult('hello there')
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(socket.created).toBe(false)
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({
+        phase: 'voice.stt.shadow_failed',
+        detail: { error: 'token_failed: token_timeout', tokenMs: null },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('still logs the streaming timing when Whisper failed', async () => {
     const { turn, clock, events, sessionStarted, committed } = start(EXPIRY)
     await flushPromises()

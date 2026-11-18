@@ -24,6 +24,8 @@ import type { VoiceSessionLogger } from './voiceSessionLogger'
 export const STT_SHADOW_FLAG = 'weave.sttShadow'
 export const STT_SHADOW_SAMPLE_RATE = 16000
 export const STT_SHADOW_FINAL_TIMEOUT_MS = 10000
+// The media server gives ElevenLabs 5 s to mint a token; allow for the hop.
+export const STT_SHADOW_TOKEN_TIMEOUT_MS = 6000
 const STT_TOKEN_URL = 'https://weave-media.fly.dev/api/stt-token'
 const SHADOW_TRANSCRIPT_LOG_CHARS = 2000
 
@@ -63,6 +65,7 @@ export async function fetchSttToken(recordingId: string): Promise<string> {
   const response = await fetch(STT_TOKEN_URL, {
     method: 'POST',
     headers: { Authorization: `Bearer ${jwt}`, 'X-Recording-Id': recordingId },
+    signal: AbortSignal.timeout(STT_SHADOW_TOKEN_TIMEOUT_MS),
   })
   if (!response.ok) throw new Error(`stt-token ${response.status}`)
   const json = (await response.json()) as { token?: unknown }
@@ -79,6 +82,15 @@ export interface SttShadowTurnOptions {
   createSocket?: SttSocketFactory
   now?: () => number
   finalTimeoutMs?: number
+  tokenTimeoutMs?: number
+}
+
+/** Rejects with `token_timeout` if the token is not in hand in time. */
+function withTokenTimeout(token: Promise<string>, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('token_timeout')), timeoutMs)
+    token.then(resolve, reject).finally(() => clearTimeout(timer))
+  })
 }
 
 export type SttShadowCommitSource = 'silence_timer' | 'user_stop'
@@ -99,7 +111,10 @@ export class SttShadowTurn {
     this.now = opts.now ?? (() => performance.now())
     this.startedAt = this.now()
     const fetchToken = opts.fetchToken ?? fetchSttToken
-    const token = fetchToken(String(opts.correlationIds.correlationId ?? '')).then((t) => {
+    const token = withTokenTimeout(
+      fetchToken(String(opts.correlationIds.correlationId ?? '')),
+      opts.tokenTimeoutMs ?? STT_SHADOW_TOKEN_TIMEOUT_MS,
+    ).then((t) => {
       this.tokenMs = Math.round(this.now() - this.startedAt)
       return t
     })
