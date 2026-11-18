@@ -14,6 +14,7 @@ import { verifyUserToken } from './auth.js'
 import { processMedia } from './process.js'
 import { buildTtsStreamUpstreamBody, resolveTtsStreamModel, TTS_STREAM_MODELS } from './ttsStreamModel.js'
 import { isUploadTooLarge, STT_BODY_LIMIT, sttMultipartOptions } from './sttLimits.js'
+import { registerSttTokenRoute } from './sttToken.js'
 
 const PORT = Number(process.env.PORT ?? 3000)
 
@@ -366,6 +367,11 @@ app.post('/api/stt', async (req, reply) => {
   )
 
   return reply.send({ transcript, durationMs })
+})
+
+registerSttTokenRoute(app, {
+  verifyUserToken,
+  getApiKey: () => process.env.ELEVENLABS_API_KEY,
 })
 
 await app.listen({ host: '0.0.0.0', port: PORT })
