@@ -49,6 +49,13 @@ describe('buildSttStreamUrl', () => {
       commit_strategy: 'manual',
     })
   })
+
+  it('adds no_verbatim only when asked', () => {
+    const on = new URL(buildSttStreamUrl('sutkn_1', 'scribe_v2_realtime', 16000, true))
+    expect(on.searchParams.get('no_verbatim')).toBe('true')
+    const off = new URL(buildSttStreamUrl('sutkn_1', 'scribe_v2_realtime', 16000, false))
+    expect(off.searchParams.has('no_verbatim')).toBe(false)
+  })
 })
 
 describe('SttStream', () => {
@@ -97,7 +104,13 @@ describe('SttStream', () => {
     clock.t = 310
     socket.serverSends({ message_type: 'committed_transcript', text: ' hello there ' })
 
-    await expect(final).resolves.toEqual({ text: 'hello there', segments: 1, finalAt: 310 })
+    await expect(final).resolves.toEqual({
+      text: 'hello there',
+      segments: 1,
+      finalAt: 310,
+      selfCommits: 0,
+      selfCommitGuard: false,
+    })
     expect(socket.closed).toBe(true)
   })
 
@@ -118,6 +131,81 @@ describe('SttStream', () => {
 
     socket.serverSends({ message_type: 'committed_transcript', text: 'second part' })
     await expect(final).resolves.toMatchObject({ text: 'first part second part', segments: 2 })
+  })
+
+  it('records the no_verbatim setting the server echoes', async () => {
+    const { socket, stream } = open()
+    await flushPromises()
+    expect(stream.noVerbatimAcked).toBeNull()
+    socket.serverSends({ message_type: 'session_started', session_id: 's1', config: { no_verbatim: true } })
+    expect(stream.noVerbatimAcked).toBe(true)
+  })
+
+  it('waits for two segments when a self-commit may be in flight at our commit', async () => {
+    const { socket, stream } = open()
+    await flushPromises()
+    socket.serverSends({ message_type: 'session_started', session_id: 's1', config: {} })
+    // 36 s sent and no segment back yet: the server's own commit is on its way.
+    for (let i = 0; i < 720; i++) stream.sendAudio(new Float32Array(800))
+    stream.commit()
+    let settled = false
+    const final = stream.waitForFinal(1000)
+    void final.then(() => (settled = true))
+
+    socket.serverSends({ message_type: 'committed_transcript', text: 'the long part' })
+    await flushPromises()
+    expect(settled).toBe(false)
+    socket.serverSends({ message_type: 'committed_transcript', text: 'the tail' })
+    await expect(final).resolves.toMatchObject({
+      text: 'the long part the tail',
+      segments: 2,
+      selfCommitGuard: true,
+    })
+  })
+
+  it('does not wait for a second segment when little audio is outstanding', async () => {
+    const { socket, stream } = open()
+    await flushPromises()
+    socket.serverSends({ message_type: 'session_started', session_id: 's1', config: {} })
+    for (let i = 0; i < 720; i++) stream.sendAudio(new Float32Array(800))
+    socket.serverSends({ message_type: 'committed_transcript', text: 'the long part' })
+    for (let i = 0; i < 80; i++) stream.sendAudio(new Float32Array(800))
+    stream.commit()
+    const final = stream.waitForFinal(1000)
+    socket.serverSends({ message_type: 'committed_transcript', text: 'the tail' })
+    await expect(final).resolves.toMatchObject({
+      text: 'the long part the tail',
+      selfCommits: 1,
+      selfCommitGuard: false,
+    })
+  })
+
+  it('stays open for the linger window and reports a segment that arrives late', async () => {
+    vi.useFakeTimers()
+    const socket = new FakeSttSocket()
+    const late: string[] = []
+    const stream = new SttStream({
+      token: Promise.resolve('sutkn_1'),
+      modelId: 'scribe_v2_realtime',
+      sampleRate: 16000,
+      createSocket: socket.factory,
+      lingerMs: 2000,
+      onLateSegment: (text) => late.push(text),
+    })
+    await flushPromises()
+    socket.serverSends({ message_type: 'session_started', session_id: 's1', config: {} })
+    stream.commit()
+    const final = stream.waitForFinal(500)
+    socket.serverSends({ message_type: 'committed_transcript', text: 'on time' })
+    await expect(final).resolves.toMatchObject({ text: 'on time' })
+    expect(socket.closed).toBe(false)
+
+    socket.serverSends({ message_type: 'committed_transcript', text: '' })
+    socket.serverSends({ message_type: 'committed_transcript', text: 'too late' })
+    expect(late).toEqual(['too late'])
+
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(socket.closed).toBe(true)
   })
 
   it('waits for every commit sent before resolving', async () => {

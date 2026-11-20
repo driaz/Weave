@@ -32,7 +32,7 @@ import {
 } from './conversationOrchestrator'
 import { buildSystemBlocks, type SystemBlocks } from './buildSystemPrompt'
 import { createSentenceSegmenter } from './sentenceSegmenter'
-import { transcribeAudio, type TranscribeAudioOutput } from './sttClient'
+import { transcribeAudio } from './sttClient'
 import { fetchTtsStream } from './ttsStreamClient'
 import { encodeWav } from './wavEncode'
 import {
@@ -73,7 +73,7 @@ import {
   type ScoredDeposit,
 } from './depositRetrieval'
 import { audioDurationMs, isShortTurn } from './sttGate'
-import { startSttShadowTurn, type SttShadowTurn } from './sttShadow'
+import { resolveTurnTranscript, startScribeTurn, type ScribeTurn, type TurnTranscript } from './sttScribe'
 
 const WORKLET_URL = '/voice/vad-processor.js'
 const WORKLET_PROCESSOR_NAME = 'vad-processor'
@@ -266,8 +266,8 @@ export class VadController {
   private messages: ConversationMessage[] = []
 
   private teardownInProgress = false
-  /** Streaming STT shadow for the turn being spoken; null when the flag is off. */
-  private sttShadow: SttShadowTurn | null = null
+  /** Streaming STT for the turn being spoken; null when the kill switch is set. */
+  private sttScribe: ScribeTurn | null = null
 
   // ------- Phase 8 turn-boundary timestamps -------
   //
@@ -422,7 +422,7 @@ export class VadController {
       // the silence-timer expiry. Captured before the state mutation.
       this.currentUserSpeechEndedAt = new Date().toISOString()
       this.cancelSilenceTimer()
-      this.sttShadow?.onCommit('user_stop')
+      this.sttScribe?.onCommit('user_stop')
       this.sendToWorklet({ type: 'stop' })
       this.store.userClickedStop()
       this.store.setSubstep('stt')
@@ -1157,8 +1157,8 @@ export class VadController {
           parentCorrelationId: next.sessionId ?? undefined,
         },
       )
-      this.sttShadow?.cancel()
-      this.sttShadow = startSttShadowTurn({
+      this.sttScribe?.cancel()
+      this.sttScribe = startScribeTurn({
         sampleRate: this.audioContext?.sampleRate ?? CAPTURE_SAMPLE_RATE,
         logger: this.logger,
         correlationIds: {
@@ -1196,7 +1196,6 @@ export class VadController {
     const state = this.store.getState()
     if (state.status !== 'user_speaking') return
     this.startSilenceTimer()
-    this.sttShadow?.onSilenceStarted()
     this.logger.event(
       'voice.vad.silence_started',
       'success',
@@ -1243,7 +1242,7 @@ export class VadController {
     }
     this.lastSequence = sequence
     this.chunkAccumulator.push(samples)
-    this.sttShadow?.onAudioChunk(samples)
+    this.sttScribe?.onAudioChunk(samples)
     const state = this.store.getState()
     this.logger.event(
       'voice.vad.chunk_received',
@@ -1278,7 +1277,7 @@ export class VadController {
           parentCorrelationId: state.sessionId ?? undefined,
         },
       )
-      this.sttShadow?.onCommit('silence_timer')
+      this.sttScribe?.onCommit('silence_timer')
       this.sendToWorklet({ type: 'stop' })
       this.store.vadSpeechEnded()
       this.store.setSubstep('stt')
@@ -1314,12 +1313,12 @@ export class VadController {
     const merged = mergeFloat32(this.chunkAccumulator)
     this.chunkAccumulator = []
     this.lastSequence = -1
-    // The shadow turn is committed by now; it finishes on its own from here.
-    const shadow = this.sttShadow
-    this.sttShadow = null
+    // The streamed turn is committed by now.
+    const scribe = this.sttScribe
+    this.sttScribe = null
 
     if (merged.length === 0) {
-      shadow?.cancel()
+      scribe?.cancel()
       this.logger.event(
         'voice.stt.empty_result',
         'skipped',
@@ -1331,24 +1330,42 @@ export class VadController {
       return
     }
 
+    // The batch WAV stays in hand for the Whisper fallback.
     const wav = encodeWav(merged, sampleRate)
-    this.logger.event(
-      'voice.stt.upload_started',
-      'success',
-      { sizeBytes: wav.size, samples: merged.length, sampleRate },
-      correlationIds,
-    )
 
     const abort = new AbortController()
     this.currentTurnAbort = abort
 
-    let sttResult: TranscribeAudioOutput
+    // Scribe's streamed transcript drives the turn. Whisper is called only
+    // when Scribe has no final in time; the two are never both awaited.
+    const transcribeBatch = async (): Promise<string> => {
+      this.logger.event(
+        'voice.stt.upload_started',
+        'success',
+        { sizeBytes: wav.size, samples: merged.length, sampleRate },
+        correlationIds,
+      )
+      const result = await transcribeAudio({ audioBlob: wav, recordingId: turnId })
+      this.logger.event(
+        'voice.stt.response_received',
+        'success',
+        { transcriptLength: result.transcript.length, durationMs: result.durationMs },
+        correlationIds,
+      )
+      return result.transcript
+    }
+
+    let sttResult: TurnTranscript
     try {
-      sttResult = await transcribeAudio({ audioBlob: wav, recordingId: turnId })
-      if (abort.signal.aborted) return shadow?.cancel()
+      sttResult = await resolveTurnTranscript({
+        scribe,
+        transcribeBatch,
+        logger: this.logger,
+        correlationIds,
+      })
+      if (abort.signal.aborted) return
     } catch (err) {
-      if (abort.signal.aborted) return shadow?.cancel()
-      shadow?.onWhisperResult(null)
+      if (abort.signal.aborted) return
       const vErr = toVoiceError(err, 'stt_failed', 'stt')
       this.logger.event(
         'voice.stt.failed',
@@ -1360,17 +1377,6 @@ export class VadController {
       this.teardownSession('error')
       return
     }
-
-    this.logger.event(
-      'voice.stt.response_received',
-      'success',
-      {
-        transcriptLength: sttResult.transcript.length,
-        durationMs: sttResult.durationMs,
-      },
-      correlationIds,
-    )
-    shadow?.onWhisperResult(sttResult.transcript)
 
     const transcript = sttResult.transcript.trim()
     const wordCount = transcript.split(/\s+/).filter(Boolean).length
@@ -2163,8 +2169,8 @@ export class VadController {
     if (!this.workletNode) return
     this.chunkAccumulator = []
     this.lastSequence = -1
-    this.sttShadow?.cancel()
-    this.sttShadow = null
+    this.sttScribe?.cancel()
+    this.sttScribe = null
     this.workletNode.port.postMessage({ type: 'start' })
   }
 
@@ -2236,8 +2242,8 @@ export class VadController {
   private teardownSession(endReason: EndReason = 'user_closed'): void {
     if (this.teardownInProgress) return
     this.teardownInProgress = true
-    this.sttShadow?.cancel()
-    this.sttShadow = null
+    this.sttScribe?.cancel()
+    this.sttScribe = null
 
     // Phase 8: flush the persistence session before destroying any
     // ephemeral pipeline state. The controller captures its buffer +
