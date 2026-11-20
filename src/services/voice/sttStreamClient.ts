@@ -10,11 +10,22 @@
  * Commit strategy is manual: our VAD decides when a turn ends. The server
  * also commits by itself after about 36 s of accumulated audio, so one turn
  * can produce several committed segments; they are joined in order.
+ *
+ * A committed_transcript does not say which commit it answers. If our commit
+ * goes out while a server self-commit may still be on its way back, the
+ * stream waits for two segments rather than one (see STT_SELF_COMMIT_GUARD_S),
+ * so the tail of a long turn cannot be dropped.
  */
 
 export const STT_STREAM_URL = 'wss://api.elevenlabs.io/v1/speech-to-text/realtime'
 export const STT_STREAM_MODELS = ['scribe_v2_realtime', 'scribe_v3_live'] as const
 export type SttStreamModel = (typeof STT_STREAM_MODELS)[number]
+/**
+ * Audio sent since the last committed segment, in seconds, at or above which
+ * a server self-commit (documented as "approximately 36 seconds") may be in
+ * flight when we commit.
+ */
+export const STT_SELF_COMMIT_GUARD_S = 34
 
 export interface SttSocketHandlers {
   onMessage: (data: string) => void
@@ -35,7 +46,12 @@ const browserSocketFactory: SttSocketFactory = (url, handlers) => {
   return { send: (data) => ws.send(data), close: () => ws.close() }
 }
 
-export function buildSttStreamUrl(token: string, modelId: SttStreamModel, sampleRate: number): string {
+export function buildSttStreamUrl(
+  token: string,
+  modelId: SttStreamModel,
+  sampleRate: number,
+  noVerbatim = false,
+): string {
   const params = new URLSearchParams({
     model_id: modelId,
     token,
@@ -43,6 +59,8 @@ export function buildSttStreamUrl(token: string, modelId: SttStreamModel, sample
     language_code: 'en',
     commit_strategy: 'manual',
   })
+  // Filler words and disfluencies are removed from the transcript.
+  if (noVerbatim) params.set('no_verbatim', 'true')
   return `${STT_STREAM_URL}?${params.toString()}`
 }
 
@@ -65,6 +83,14 @@ export interface SttStreamOptions {
   token: Promise<string>
   modelId: SttStreamModel
   sampleRate: number
+  noVerbatim?: boolean
+  /**
+   * Keep the socket open this long after the final is delivered, to catch a
+   * segment that arrives late. 0 (the default) closes at once.
+   */
+  lingerMs?: number
+  /** A non-empty segment arrived after the final was delivered: words were lost. */
+  onLateSegment?: (text: string) => void
   createSocket?: SttSocketFactory
   now?: () => number
 }
@@ -74,6 +100,10 @@ export interface SttStreamFinal {
   segments: number
   /** `now()` when the last committed segment arrived. */
   finalAt: number
+  /** Segments the server committed by itself, before our commit. */
+  selfCommits: number
+  /** Our commit waited for two segments because a self-commit could be in flight. */
+  selfCommitGuard: boolean
 }
 
 export class SttStream {
@@ -81,31 +111,47 @@ export class SttStream {
   commitsSent = 0
   /** `now()` when session_started arrived; null until then. */
   readyAt: number | null = null
+  /** `no_verbatim` as echoed in session_started; null if not echoed. */
+  noVerbatimAcked: boolean | null = null
+  /** Why the stream failed; null while healthy. */
+  failure: string | null = null
 
   private socket: SttSocket | null = null
   private queue: string[] = []
   private segments: string[] = []
   private pendingCommits = 0
   private finalAt = 0
-  private failure: string | null = null
+  private selfCommits = 0
+  private selfCommitGuard = false
+  /** Samples sent since the last committed segment came back. */
+  private unackedSamples = 0
+  private delivered = false
+  private lingerTimer: ReturnType<typeof setTimeout> | null = null
   private closed = false
   private waiter: { resolve: (f: SttStreamFinal) => void; reject: (e: Error) => void } | null = null
   private waiterTimer: ReturnType<typeof setTimeout> | null = null
   private readonly sampleRate: number
+  private readonly lingerMs: number
+  private readonly onLateSegment?: (text: string) => void
   private readonly now: () => number
 
   constructor(opts: SttStreamOptions) {
     this.sampleRate = opts.sampleRate
+    this.lingerMs = opts.lingerMs ?? 0
+    this.onLateSegment = opts.onLateSegment
     this.now = opts.now ?? (() => performance.now())
     const createSocket = opts.createSocket ?? browserSocketFactory
     opts.token.then(
       (token) => {
         if (this.closed) return
         try {
-          this.socket = createSocket(buildSttStreamUrl(token, opts.modelId, opts.sampleRate), {
-            onMessage: (data) => this.handleMessage(data),
-            onClose: () => this.fail('socket_closed'),
-          })
+          this.socket = createSocket(
+            buildSttStreamUrl(token, opts.modelId, opts.sampleRate, opts.noVerbatim),
+            {
+              onMessage: (data) => this.handleMessage(data),
+              onClose: () => this.fail('socket_closed'),
+            },
+          )
         } catch (err) {
           this.fail(`socket_open_failed: ${errorText(err)}`)
         }
@@ -116,6 +162,7 @@ export class SttStream {
 
   sendAudio(samples: Float32Array): void {
     this.chunksSent++
+    this.unackedSamples += samples.length
     this.enqueue(floatToPcm16Base64(samples), false)
   }
 
@@ -123,6 +170,11 @@ export class SttStream {
   commit(): void {
     this.commitsSent++
     this.pendingCommits++
+    if (this.unackedSamples / this.sampleRate >= STT_SELF_COMMIT_GUARD_S) {
+      // A server self-commit may be on its way back; ours is answered after it.
+      this.pendingCommits++
+      this.selfCommitGuard = true
+    }
     this.enqueue('', true)
   }
 
@@ -144,6 +196,7 @@ export class SttStream {
     this.closed = true
     this.queue = []
     if (this.waiterTimer) clearTimeout(this.waiterTimer)
+    if (this.lingerTimer) clearTimeout(this.lingerTimer)
     try {
       this.socket?.close()
     } catch {
@@ -176,7 +229,7 @@ export class SttStream {
 
   private handleMessage(data: string): void {
     if (this.closed) return
-    let msg: { message_type?: unknown; text?: unknown; error?: unknown }
+    let msg: { message_type?: unknown; text?: unknown; error?: unknown; config?: unknown }
     try {
       msg = JSON.parse(data)
     } catch {
@@ -184,18 +237,26 @@ export class SttStream {
     }
     if (msg.message_type === 'session_started') {
       this.readyAt = this.now()
+      const echoed = (msg.config as { no_verbatim?: unknown } | null | undefined)?.no_verbatim
+      if (typeof echoed === 'boolean') this.noVerbatimAcked = echoed
       this.flush()
     } else if (msg.message_type === 'committed_transcript') {
       const text = typeof msg.text === 'string' ? msg.text.trim() : ''
+      if (this.delivered) {
+        if (text) this.onLateSegment?.(text)
+        return
+      }
       if (text) this.segments.push(text)
       this.finalAt = this.now()
+      this.unackedSamples = 0
       if (this.pendingCommits > 0) this.pendingCommits--
+      else this.selfCommits++
       this.resolveIfFinal()
     } else if (typeof msg.error === 'string') {
       // error, auth_error, quota_exceeded, commit_throttled, input_error, ...
       this.fail(`${String(msg.message_type)}: ${msg.error}`)
     }
-    // partial_transcript and warning are not used in shadow mode.
+    // partial_transcript and warning are not used.
   }
 
   private resolveIfFinal(): void {
@@ -206,12 +267,18 @@ export class SttStream {
       text: this.segments.join(' '),
       segments: this.segments.length,
       finalAt: this.finalAt,
+      selfCommits: this.selfCommits,
+      selfCommitGuard: this.selfCommitGuard,
     })
-    this.close()
+    this.delivered = true
+    if (this.waiterTimer) clearTimeout(this.waiterTimer)
+    if (this.lingerMs > 0) this.lingerTimer = setTimeout(() => this.close(), this.lingerMs)
+    else this.close()
   }
 
   private fail(reason: string): void {
     if (this.closed || this.failure) return
+    if (this.delivered) return this.close()
     this.failure = reason
     const waiter = this.waiter
     this.waiter = null
