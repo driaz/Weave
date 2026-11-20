@@ -13,6 +13,7 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { verifyUserToken } from './auth.js'
 import { processMedia } from './process.js'
 import { buildTtsStreamUpstreamBody, resolveTtsStreamModel, TTS_STREAM_MODELS } from './ttsStreamModel.js'
+import { buildCorsOptions } from './corsOptions.js'
 import { isUploadTooLarge, STT_BODY_LIMIT, sttMultipartOptions } from './sttLimits.js'
 import { registerSttTokenRoute } from './sttToken.js'
 
@@ -35,11 +36,7 @@ const allowedOrigins = (process.env.WEAVE_ALLOWED_ORIGINS ?? 'http://localhost:5
 
 const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 })
 await app.register(sensible)
-await app.register(cors, {
-  origin: allowedOrigins,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Playback-Id', 'X-Recording-Id'],
-})
+await app.register(cors, buildCorsOptions(allowedOrigins))
 await app.register(multipart, sttMultipartOptions)
 
 app.get('/health', async () => ({ status: 'ok' }))
