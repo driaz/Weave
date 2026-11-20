@@ -646,20 +646,28 @@ export class VadController {
     }
 
     // Opener: the deposit band (first-call corpus download, ≈2.8 MB in prod)
-    // runs alongside the node band instead of ahead of it, and nobody awaits
-    // it here. Admissions keep their original order — deposits, then node —
-    // via the pending chain, so working memory (and its overflow eviction
-    // order) ends up exactly as the serial path leaves it.
+    // starts only once the node band has its answer, and nobody awaits it
+    // here. Starting it alongside the node band left the two competing for
+    // the device's bandwidth (prod after #97: node band 0.46–1.4 s against
+    // ~0.24 s for the RPC alone before). Admissions keep their original
+    // order — deposits, then node — via the pending chain, so working memory
+    // (and its overflow eviction order) ends up exactly as the serial path
+    // leaves it.
     const s = this.store.getState()
     const corr = {
       correlationId: s.turnId ?? undefined,
       parentCorrelationId: s.sessionId ?? undefined,
     }
-    const depositsDone = this.runDepositBand(client, queryVector, corr)
-    this.pendingRetrievalAdmissions = depositsDone
-    const node = await this.runNodeBand(client, queryVector)
-    if (node) {
-      this.pendingRetrievalAdmissions = depositsDone.then(() => node.admit())
+    let node: Awaited<ReturnType<typeof this.runNodeBand>> | undefined
+    try {
+      node = await this.runNodeBand(client, queryVector)
+    } finally {
+      // Runs on node-band failure too: deposits never depended on it.
+      const depositsDone = this.runDepositBand(client, queryVector, corr)
+      const admitNode = node?.admit
+      this.pendingRetrievalAdmissions = admitNode
+        ? depositsDone.then(() => admitNode())
+        : depositsDone
     }
     return node?.block ?? null
   }

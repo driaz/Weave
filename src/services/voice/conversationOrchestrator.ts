@@ -6,10 +6,9 @@ import { buildSystemBlocks, type SystemBlocks } from './buildSystemPrompt'
 
 // Overridable so scripts/opener-timing can point the voice turn at a local
 // media server or a mock SSE stream. Unset → the deployed Fly proxy.
-export const CLAUDE_PROXY_URL =
+const PROXY_URL =
   (import.meta.env.VITE_CLAUDE_PROXY_URL as string | undefined) ??
   'https://weave-media.fly.dev/api/claude'
-const PROXY_URL = CLAUDE_PROXY_URL
 const MODEL = 'claude-opus-5'
 const MAX_TOKENS = 4096
 
