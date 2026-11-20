@@ -3,8 +3,9 @@ import type { Connection } from '../../../api/claude'
 import type { DepositCorpusLoad, DepositCorpusRow } from '../depositRetrieval'
 import type { RetrievalRow, WorkingMemoryEntry } from '../retrievalContext'
 
-// The opener runs the deposit band in the background (its output can't reach
-// the opener's own prompt), while the node band still feeds RELATED MATERIAL.
+// The opener runs the deposit band in the background, after the node band (its
+// output can't reach the opener's own prompt, and its download would compete
+// with the node band's reads), while the node band still feeds RELATED MATERIAL.
 // These tests pin the two promises that change makes: the opener no longer
 // waits on the corpus download, and the next turn's working memory is exactly
 // what the old serial path produced.
@@ -138,6 +139,24 @@ describe('opener retrieval with the deposit band in the background', () => {
 
     expect(backgroundBlock).toBe(serialBlock)
     expect(snapshot(background.workingMemory)).toEqual(snapshot(serial.workingMemory))
+  })
+
+  it('starts the corpus download only after the node band answers', async () => {
+    const rpc = deferred<RetrievalRow[]>()
+    fetchRetrievalContext.mockReturnValue(rpc.promise)
+    loadDepositCorpus.mockResolvedValue({ corpus: [deposit(1, 200)], scanned: 1, dropped: 0 })
+
+    const c = makeController()
+    const block = c.runRetrieval({}, [1, 0], { depositsInBackground: true })
+    await new Promise((r) => setTimeout(r, 0))
+    // Node band still in flight → the 2.8 MB download must not compete with it.
+    expect(loadDepositCorpus).not.toHaveBeenCalled()
+
+    rpc.resolve([nodeRow('3', 100)])
+    expect(await block).toContain('node 3')
+    expect(loadDepositCorpus).toHaveBeenCalledTimes(1)
+    await c.awaitPendingRetrievalAdmissions()
+    expect([...c.workingMemory.values()].map((e) => e.refType)).toEqual(['deposit', 'node'])
   })
 
   it('still admits the deposits when the node band fails', async () => {
