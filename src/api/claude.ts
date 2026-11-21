@@ -9,7 +9,7 @@ import { supabase } from '../services/supabaseClient'
 
 const API_URL = 'https://api.anthropic.com/v1/messages'
 const PROXY_URL = 'https://weave-media.fly.dev/api/claude'
-const MODEL = 'claude-opus-4-6'
+const MODEL = 'claude-opus-5-5'
 
 type ClaudeMessageResult = {
   text: string
@@ -537,7 +537,9 @@ export async function analyzeCanvas(
 
   const requestBody = JSON.stringify({
     model: MODEL,
-    max_tokens: 4096,
+    // Thinking is always on for Opus 5.5 and counts toward max_tokens, so
+    // the cap covers the thinking as well as the JSON reply.
+    max_tokens: 16000,
     system: getSystemPrompt(mode),
     messages: [{ role: 'user', content }],
   })
