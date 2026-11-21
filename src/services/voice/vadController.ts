@@ -62,8 +62,15 @@ import {
   lookupEdgeQueryVector,
   RETRIEVAL_FLOOR,
   WORKING_MEMORY_MAX_CHARS,
+  type RetrievalRow,
   type WorkingMemoryEntry,
 } from './retrievalContext'
+import {
+  readSpeculativeRetrievalEnabled,
+  RetrievalSpeculator,
+  SPECULATION_DELAY_MS,
+  type SpeculationTake,
+} from './retrievalSpeculation'
 import {
   DEPOSIT_BAND_LOG_HEAD,
   DEPOSIT_K,
@@ -90,6 +97,59 @@ const VAD_RMS_THRESHOLD = 0.02
 const VAD_MIN_SPEECH_DURATION_MS = 200
 const VAD_MIN_SILENCE_DURATION_MS = 200
 const VAD_PRE_ROLL_MS = 300
+
+/** The node band's read half: what `fetchNodeBand` returns. */
+interface NodeBandFetch {
+  rows: RetrievalRow[]
+  excludedNodeIds: string[]
+  timing: { wallMs: number }
+}
+
+/** One speculative run: the inline embed and the node-band rows for it. */
+interface SpeculativeRetrieval {
+  /** Raw embedding of the speculated text. */
+  embedding: number[]
+  embedMs: number
+  /** Blend of `embedding` with the prior user turn, as the commit would compute it. */
+  queryVector: number[]
+  /** Null when retrieval is disabled (no anchor connection). */
+  nodeBand: NodeBandFetch | null
+}
+
+const RPC_PATH = '/rest/v1/rpc/match_retrieval_context'
+/** How long after the RPC resolves to look up its resource-timing entry. */
+const RPC_TIMING_LOOKUP_DELAY_MS = 500
+
+// Resource-timing durations of recent match_retrieval_context requests. An
+// observer, not the performance buffer: the buffer stops recording at 250
+// entries, which a long canvas session passes before voice starts.
+const rpcTimings: Array<{ start: number; duration: number }> = []
+let rpcObserver: PerformanceObserver | null = null
+
+function ensureRpcObserver(): void {
+  if (rpcObserver || typeof PerformanceObserver === 'undefined') return
+  try {
+    rpcObserver = new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) {
+        if (!e.name.includes(RPC_PATH)) continue
+        rpcTimings.push({ start: e.startTime, duration: e.duration })
+        if (rpcTimings.length > 20) rpcTimings.shift()
+      }
+    })
+    rpcObserver.observe({ type: 'resource' })
+  } catch {
+    rpcObserver = null
+  }
+}
+
+/**
+ * Network duration of the first match_retrieval_context request that
+ * started at or after `since`. Null when no entry was observed.
+ */
+function rpcNetworkMs(since: number): number | null {
+  const hit = rpcTimings.find((t) => t.start >= since - 1)
+  return hit ? Math.round(hit.duration) : null
+}
 
 /**
  * Cap on concurrent in-flight TTS work for a single turn. "In flight" =
@@ -332,6 +392,20 @@ export class VadController {
   // the same as if the opener had waited. Null when nothing is pending.
   private pendingRetrievalAdmissions: Promise<void> | null = null
 
+  // ------- speculative follow-up retrieval -------
+  //
+  // While the silence timer runs, the turn's embed + node-band RPC start on
+  // Scribe's running transcript (docs/reads/speculative-retrieval.md). The
+  // speculation only reads; everything that marks or admits runs at the
+  // commit. Armed SPECULATION_DELAY_MS after the timer starts, disarmed when
+  // the timer ends either way.
+  private readonly speculationEnabled = readSpeculativeRetrievalEnabled()
+  private speculationDelayTimer: number | null = null
+  private speculationArmed = false
+  private readonly speculator = new RetrievalSpeculator<SpeculativeRetrieval>({
+    run: (text, signal) => this.runSpeculativeRetrieval(text, signal),
+  })
+
   constructor(opts: VadControllerOptions) {
     this.opts = opts
     this.store = opts.store ?? voiceSessionStore
@@ -422,6 +496,7 @@ export class VadController {
       // the silence-timer expiry. Captured before the state mutation.
       this.currentUserSpeechEndedAt = new Date().toISOString()
       this.cancelSilenceTimer()
+      this.disarmSpeculation({ cancel: false })
       this.sttScribe?.onCommit('user_stop')
       this.sendToWorklet({ type: 'stop' })
       this.store.userClickedStop()
@@ -634,13 +709,17 @@ export class VadController {
   private async runRetrieval(
     client: ReturnType<typeof requireClient>,
     queryVector: number[],
-    opts: { depositsInBackground?: boolean } = {},
+    opts: {
+      depositsInBackground?: boolean
+      /** Node-band rows a speculation already fetched for this query vector. */
+      prefetchedNodeBand?: NodeBandFetch | null
+    } = {},
   ): Promise<string | null> {
     if (!opts.depositsInBackground) {
       // Deposit band first: it needs no anchor connection, so it runs even on
       // follow-up turns without one (where the node band below early-returns).
       await this.runDepositBand(client, queryVector)
-      const node = await this.runNodeBand(client, queryVector)
+      const node = await this.runNodeBand(client, queryVector, opts.prefetchedNodeBand ?? undefined)
       node?.admit()
       return node?.block ?? null
     }
@@ -699,25 +778,12 @@ export class VadController {
   private async runNodeBand(
     client: ReturnType<typeof requireClient>,
     queryVector: number[],
+    /** Rows a speculation fetched for this same query vector; skips the RPC. */
+    prefetched?: NodeBandFetch,
   ): Promise<{ block: string | null; admit: () => void } | null> {
-    const conn = this.opts.anchorConnection
-    if (!conn) return null
-
-    const excludedNodeIds = computeRetrievalExclusions(this.opts.connections ?? [], [
-      conn.from,
-      conn.to,
-    ])
-
-    // RPC returns the FULL ranked band (threshold 0); the floor is applied here,
-    // client-side, so we can log the whole curve before cutting.
-    const rows = await fetchRetrievalContext(client, {
-      queryVector,
-      boardId: this.opts.boardId,
-      excludedNodeIds,
-      // Live board membership for orphan-drop. Absent → null → orphan-drop
-      // disabled (migration 034), never an empty array (which would drop all).
-      liveNodeIds: this.opts.liveNodeIds ?? null,
-    })
+    const fetched = prefetched ?? (await this.fetchNodeBand(client, queryVector))
+    if (!fetched) return null
+    const { rows, excludedNodeIds, timing } = fetched
 
     // Diagnostic: the full returned band (scores) BEFORE the floor cut — so the
     // whole distribution is visible, not just survivors. Tune RETRIEVAL_FLOOR by
@@ -732,6 +798,10 @@ export class VadController {
         liveNodeCount: this.opts.liveNodeIds?.length ?? null,
         returned: rows.length,
         aboveFloor: rows.filter((r) => r.similarity >= RETRIEVAL_FLOOR).length,
+        // Wall-clock await vs the request's own resource-timing duration: the
+        // gap is time spent in the browser, not on the wire.
+        speculative: Boolean(prefetched),
+        rpcWallMs: timing.wallMs,
         band: rows.map((r) => ({
           ref_id: r.ref_id,
           similarity: Number(r.similarity.toFixed(4)),
@@ -772,6 +842,59 @@ export class VadController {
       )
     }
     return { block, admit }
+  }
+
+  /**
+   * The node band's read half: exclusion set + 10A RPC. No side effects, so a
+   * speculation can run it ahead of the commit. Null when retrieval is
+   * disabled (no anchor).
+   */
+  private async fetchNodeBand(
+    client: ReturnType<typeof requireClient>,
+    queryVector: number[],
+    signal?: AbortSignal,
+  ): Promise<NodeBandFetch | null> {
+    const conn = this.opts.anchorConnection
+    if (!conn) return null
+
+    const excludedNodeIds = computeRetrievalExclusions(this.opts.connections ?? [], [
+      conn.from,
+      conn.to,
+    ])
+
+    // RPC returns the FULL ranked band (threshold 0); the floor is applied
+    // client-side in runNodeBand, so we can log the whole curve before cutting.
+    ensureRpcObserver()
+    const s0 = this.store.getState()
+    const corr = {
+      correlationId: s0.turnId ?? undefined,
+      parentCorrelationId: s0.sessionId ?? undefined,
+    }
+    const startedAt = performance.now()
+    const rows = await fetchRetrievalContext(client, {
+      queryVector,
+      boardId: this.opts.boardId,
+      excludedNodeIds,
+      // Live board membership for orphan-drop. Absent → null → orphan-drop
+      // disabled (migration 034), never an empty array (which would drop all).
+      liveNodeIds: this.opts.liveNodeIds ?? null,
+      signal,
+    })
+    const wallMs = Math.round(performance.now() - startedAt)
+    // Wall-clock await vs the request's own network duration: the gap is time
+    // spent in the browser, not on the wire. The resource-timing entry reaches
+    // the observer after the response, so this logs a moment later.
+    const speculative = Boolean(signal)
+    setTimeout(() => {
+      if (signal?.aborted) return
+      this.logger.event(
+        'voice.retrieval.rpc_timing',
+        'success',
+        { speculative, wallMs, networkMs: rpcNetworkMs(startedAt) },
+        corr,
+      )
+    }, RPC_TIMING_LOOKUP_DELAY_MS)
+    return { rows, excludedNodeIds, timing: { wallMs } }
   }
 
   /**
@@ -1138,6 +1261,8 @@ export class VadController {
 
   private handleSpeechStarted(rms: number): void {
     this.cancelSilenceTimer()
+    // Speech resumed (or a new turn began): what was speculated is stale.
+    this.disarmSpeculation({ cancel: true })
     const state = this.store.getState()
     if (state.status === 'listening') {
       // Capture the user turn's start timestamp before any state mutates.
@@ -1165,6 +1290,7 @@ export class VadController {
           correlationId: next.turnId ?? undefined,
           parentCorrelationId: next.sessionId ?? undefined,
         },
+        onTextUpdate: (text) => this.handleTranscriptUpdate(text),
       })
       this.logger.event(
         'voice.vad.speech_started',
@@ -1196,6 +1322,7 @@ export class VadController {
     const state = this.store.getState()
     if (state.status !== 'user_speaking') return
     this.startSilenceTimer()
+    this.armSpeculation()
     this.logger.event(
       'voice.vad.silence_started',
       'success',
@@ -1268,6 +1395,8 @@ export class VadController {
       // reader can rely on it being set by the time STT processing
       // starts.
       this.currentUserSpeechEndedAt = new Date().toISOString()
+      // The speculation in flight (if any) is kept for processUserTurn.
+      this.disarmSpeculation({ cancel: false })
       this.logger.event(
         'voice.vad.silence_timer_expired',
         'success',
@@ -1299,6 +1428,129 @@ export class VadController {
         parentCorrelationId: state.sessionId ?? undefined,
       },
     )
+  }
+
+  // ------- speculative follow-up retrieval -------
+
+  /** Silence timer started: speculate once the delay has passed. */
+  private armSpeculation(): void {
+    if (!this.speculationEnabled) return
+    this.clearSpeculationDelay()
+    this.speculationDelayTimer = window.setTimeout(() => {
+      this.speculationDelayTimer = null
+      if (this.store.getState().status !== 'user_speaking') return
+      this.speculationArmed = true
+      this.speculate(this.sttScribe?.currentText() ?? '')
+    }, SPECULATION_DELAY_MS)
+  }
+
+  /**
+   * The silence timer ended. On a commit the speculation is left for
+   * processUserTurn to take; when speech resumes or the session ends it is
+   * aborted.
+   */
+  private disarmSpeculation({ cancel }: { cancel: boolean }): void {
+    this.clearSpeculationDelay()
+    this.speculationArmed = false
+    if (cancel) this.speculator.cancel()
+  }
+
+  private clearSpeculationDelay(): void {
+    if (this.speculationDelayTimer === null) return
+    window.clearTimeout(this.speculationDelayTimer)
+    this.speculationDelayTimer = null
+  }
+
+  /** Scribe's running transcript changed; re-speculate if the timer is armed. */
+  private handleTranscriptUpdate(text: string): void {
+    if (!this.speculationArmed) return
+    this.speculate(text)
+  }
+
+  private speculate(text: string): void {
+    const state = this.store.getState()
+    if (state.status !== 'user_speaking' || !state.turnId) return
+    // Same text as the run in flight → no-op; new text → abort and restart.
+    this.speculator.start(state.turnId, text)
+  }
+
+  /**
+   * The read-only half of a follow-up turn's retrieval, on speculated text:
+   * embed, blend with the prior turn (fixed until this turn commits), fetch
+   * the node-band rows. Nothing here marks, admits or logs a band.
+   */
+  private async runSpeculativeRetrieval(
+    text: string,
+    signal: AbortSignal,
+  ): Promise<SpeculativeRetrieval> {
+    const client = requireClient()
+    const embedStartedAt = performance.now()
+    const embedding = await embedText(text, { signal })
+    const embedMs = Math.round(performance.now() - embedStartedAt)
+    if (signal.aborted) throw new Error('speculation_aborted')
+    const queryVector = blendQueryVectors(embedding, this.lastUserQueryEmbedding)
+    const nodeBand = await this.fetchNodeBand(client, queryVector, signal)
+    if (signal.aborted) throw new Error('speculation_aborted')
+    return { embedding, embedMs, queryVector, nodeBand }
+  }
+
+  /**
+   * Resolve the commit's speculation: the result on a hit, null otherwise.
+   * Logs one `voice.retrieval.speculation` line either way.
+   */
+  private async resolveSpeculation(
+    take: SpeculationTake<SpeculativeRetrieval>,
+    finalChars: number,
+    correlationIds: { correlationId: string; parentCorrelationId: string },
+  ): Promise<SpeculativeRetrieval | null> {
+    const base = {
+      enabled: this.speculationEnabled,
+      runs: take.runs,
+      speculatedChars: take.speculatedChars,
+      finalChars,
+    }
+    if (take.outcome !== 'hit') {
+      this.logger.event(
+        'voice.retrieval.speculation',
+        'skipped',
+        { ...base, outcome: take.outcome, reason: take.reason },
+        correlationIds,
+      )
+      return null
+    }
+    const waitStartedAt = performance.now()
+    try {
+      const result = await take.result
+      this.logger.event(
+        'voice.retrieval.speculation',
+        'success',
+        {
+          ...base,
+          outcome: 'hit',
+          exact: take.exact,
+          ageMs: take.ageMs,
+          waitedMs: Math.round(performance.now() - waitStartedAt),
+          embedMs: result.embedMs,
+          rpcWallMs: result.nodeBand?.timing.wallMs ?? null,
+        },
+        correlationIds,
+      )
+      return result
+    } catch (err) {
+      this.logger.event(
+        'voice.retrieval.speculation',
+        'failed',
+        {
+          ...base,
+          outcome: 'miss',
+          reason: 'failed',
+          waitedMs: Math.round(performance.now() - waitStartedAt),
+          error: err instanceof Error ? err.message : String(err),
+        },
+        correlationIds,
+      )
+      return null
+    }
   }
 
   private async processUserTurn(): Promise<void> {
@@ -1426,18 +1678,33 @@ export class VadController {
     // embed latency is ~218–360ms, under the 500ms budget. On failure, degrade:
     // skip retrieval this turn and let the row write embed in the background as
     // before — never block the turn.
-    let userEmbedding: number[] | null = null
-    const embedStartedAt = performance.now()
-    try {
-      userEmbedding = await embedText(transcript)
-    } catch (err) {
-      console.warn(
-        '[VadController] inline utterance embed failed; skipping retrieval this turn:',
-        err,
-      )
-    }
-    const embedMs = Math.round(performance.now() - embedStartedAt)
+    //
+    // Speculation: if the silence timer's speculative run embedded the same
+    // text, its embedding and node-band rows stand in for the inline work.
+    const take = this.speculator.take(turnId, transcript)
+    const speculation = await this.resolveSpeculation(take, transcript.length, correlationIds)
     if (abort.signal.aborted) return
+
+    let userEmbedding: number[] | null = speculation?.embedding ?? null
+    let embedMs = speculation?.embedMs ?? 0
+    if (!speculation) {
+      const embedStartedAt = performance.now()
+      try {
+        userEmbedding = await embedText(transcript)
+      } catch (err) {
+        console.warn(
+          '[VadController] inline utterance embed failed; skipping retrieval this turn:',
+          err,
+        )
+      }
+      embedMs = Math.round(performance.now() - embedStartedAt)
+      if (abort.signal.aborted) return
+    }
+    // The utterance row keeps an embedding of its exact text: a speculation
+    // that matched only after normalizing leaves the row to embed in the
+    // background, off the critical path.
+    const rowEmbedding =
+      speculation && take.outcome === 'hit' && !take.exact ? null : userEmbedding
 
     // Working-memory snapshot for THIS turn's prompt, taken before retrieval
     // runs — this turn's new survivors enter memory for the NEXT turn, never
@@ -1462,7 +1729,11 @@ export class VadController {
           phase: 'voice.embed.inline',
           outcome: 'success',
           ts: new Date().toISOString(),
-          detail: { textLen: transcript.length, dims: userEmbedding.length },
+          detail: {
+            textLen: transcript.length,
+            dims: userEmbedding.length,
+            speculative: Boolean(speculation),
+          },
           durationMs: embedMs,
           correlationId: turnId,
           parentCorrelationId: sessionId,
@@ -1470,12 +1741,17 @@ export class VadController {
       }
       // Query = recency-weighted blend of this turn and the prior USER turn.
       // No fall-back to the edge vector on follow-ups (that throws away drift).
-      const queryVector = blendQueryVectors(userEmbedding, this.lastUserQueryEmbedding)
+      // A speculation already blended against the same prior (it can't change
+      // before this turn commits).
+      const queryVector =
+        speculation?.queryVector ?? blendQueryVectors(userEmbedding, this.lastUserQueryEmbedding)
       // Carry the RAW current vector as next turn's prior (the blend is of raw
       // embeddings, never of prior blends).
       this.lastUserQueryEmbedding = userEmbedding
       try {
-        relatedMaterial = await this.runRetrieval(requireClient(), queryVector)
+        relatedMaterial = await this.runRetrieval(requireClient(), queryVector, {
+          prefetchedNodeBand: speculation?.nodeBand,
+        })
       } catch (err) {
         console.warn(
           '[VadController] follow-up retrieval failed; proceeding without relatedMaterial:',
@@ -1501,7 +1777,7 @@ export class VadController {
             text: transcript,
             startedAt: ts.user.speechStartedAt,
             endedAt: ts.user.speechEndedAt,
-            embedding: userEmbedding ?? undefined,
+            embedding: rowEmbedding ?? undefined,
           })
           .catch((err) =>
             console.error(
@@ -2259,6 +2535,7 @@ export class VadController {
     }
 
     this.cancelSilenceTimer()
+    this.disarmSpeculation({ cancel: true })
 
     if (this.currentTurnAbort) {
       this.currentTurnAbort.abort()

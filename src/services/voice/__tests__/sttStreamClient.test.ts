@@ -285,3 +285,45 @@ describe('SttStream', () => {
     expect(socket.sent).toEqual([])
   })
 })
+
+describe('SttStream running transcript', () => {
+  async function openWithUpdates() {
+    const socket = new FakeSttSocket()
+    const updates: string[] = []
+    const stream = new SttStream({
+      token: Promise.resolve('sutkn_1'),
+      modelId: 'scribe_v2_realtime',
+      sampleRate: 16000,
+      createSocket: socket.factory,
+      now: () => 0,
+      onTextUpdate: (text) => updates.push(text),
+    })
+    await flushPromises()
+    socket.serverSends({ message_type: 'session_started', session_id: 's1', config: {} })
+    return { socket, stream, updates }
+  }
+
+  it('reports committed segments followed by the latest partial', async () => {
+    const { socket, stream, updates } = await openWithUpdates()
+    expect(stream.currentText()).toBe('')
+    socket.serverSends({ message_type: 'partial_transcript', text: 'hello' })
+    socket.serverSends({ message_type: 'partial_transcript', text: 'hello there' })
+    // A repeated partial is not a change.
+    socket.serverSends({ message_type: 'partial_transcript', text: 'hello there' })
+    socket.serverSends({ message_type: 'committed_transcript', text: 'Hello there.' })
+    socket.serverSends({ message_type: 'partial_transcript', text: 'how are' })
+    expect(stream.currentText()).toBe('Hello there. how are')
+    expect(updates).toEqual(['hello', 'hello there', 'Hello there.', 'Hello there. how are'])
+  })
+
+  it('stops reporting once the final is delivered', async () => {
+    const { socket, stream, updates } = await openWithUpdates()
+    stream.sendAudio(new Float32Array(800))
+    stream.commit()
+    const final = stream.waitForFinal(1000)
+    socket.serverSends({ message_type: 'committed_transcript', text: 'done' })
+    await final
+    socket.serverSends({ message_type: 'partial_transcript', text: 'late' })
+    expect(updates).toEqual([])
+  })
+})

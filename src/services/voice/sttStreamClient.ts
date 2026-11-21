@@ -91,6 +91,8 @@ export interface SttStreamOptions {
   lingerMs?: number
   /** A non-empty segment arrived after the final was delivered: words were lost. */
   onLateSegment?: (text: string) => void
+  /** The running transcript (committed segments + latest partial) changed. */
+  onTextUpdate?: (text: string) => void
   createSocket?: SttSocketFactory
   now?: () => number
 }
@@ -119,6 +121,8 @@ export class SttStream {
   private socket: SttSocket | null = null
   private queue: string[] = []
   private segments: string[] = []
+  /** Latest partial_transcript for the audio not yet committed. */
+  private partial = ''
   private pendingCommits = 0
   private finalAt = 0
   private selfCommits = 0
@@ -133,12 +137,14 @@ export class SttStream {
   private readonly sampleRate: number
   private readonly lingerMs: number
   private readonly onLateSegment?: (text: string) => void
+  private readonly onTextUpdate?: (text: string) => void
   private readonly now: () => number
 
   constructor(opts: SttStreamOptions) {
     this.sampleRate = opts.sampleRate
     this.lingerMs = opts.lingerMs ?? 0
     this.onLateSegment = opts.onLateSegment
+    this.onTextUpdate = opts.onTextUpdate
     this.now = opts.now ?? (() => performance.now())
     const createSocket = opts.createSocket ?? browserSocketFactory
     opts.token.then(
@@ -189,6 +195,15 @@ export class SttStream {
       this.waiterTimer = setTimeout(() => this.fail('final_timeout'), timeoutMs)
       this.resolveIfFinal()
     })
+  }
+
+  /**
+   * The running transcript: committed segments, then the latest partial for
+   * the audio not yet committed. Unlike the final, it can lag the audio by a
+   * word or two.
+   */
+  currentText(): string {
+    return [...this.segments, this.partial].filter(Boolean).join(' ')
   }
 
   close(): void {
@@ -247,16 +262,34 @@ export class SttStream {
         return
       }
       if (text) this.segments.push(text)
+      // The committed segment supersedes the partial it was built from.
+      this.partial = ''
       this.finalAt = this.now()
       this.unackedSamples = 0
       if (this.pendingCommits > 0) this.pendingCommits--
       else this.selfCommits++
       this.resolveIfFinal()
+      this.emitTextUpdate()
+    } else if (msg.message_type === 'partial_transcript') {
+      if (this.delivered) return
+      const text = typeof msg.text === 'string' ? msg.text.trim() : ''
+      if (text === this.partial) return
+      this.partial = text
+      this.emitTextUpdate()
     } else if (typeof msg.error === 'string') {
       // error, auth_error, quota_exceeded, commit_throttled, input_error, ...
       this.fail(`${String(msg.message_type)}: ${msg.error}`)
     }
-    // partial_transcript and warning are not used.
+    // warning is not used.
+  }
+
+  private emitTextUpdate(): void {
+    if (!this.onTextUpdate || this.delivered) return
+    try {
+      this.onTextUpdate(this.currentText())
+    } catch {
+      // A listener fault must not break the stream.
+    }
   }
 
   private resolveIfFinal(): void {

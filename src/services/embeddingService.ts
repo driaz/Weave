@@ -408,14 +408,17 @@ export function embedNodeAsync(
  * session's processing_log and leaving the utterance row's embedding
  * column null.
  */
-export async function embedText(text: string): Promise<number[]> {
+export async function embedText(
+  text: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<number[]> {
   if (!ai) throw new Error('Gemini client not configured (VITE_GEMINI_API_KEY missing)')
   if (!text.trim()) throw new Error('embedText: empty text')
 
   const response = await ai.models.embedContent({
     model: GEMINI_EMBEDDING_MODEL,
     contents: { parts: [{ text }] },
-    config: { taskType: 'SEMANTIC_SIMILARITY' },
+    config: { taskType: 'SEMANTIC_SIMILARITY', abortSignal: opts.signal },
   })
 
   const embedding = response.embeddings?.[0]?.values

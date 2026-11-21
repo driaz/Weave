@@ -149,6 +149,8 @@ export interface FetchRetrievalParams {
    */
   liveNodeIds: string[] | null
   k?: number
+  /** Aborts the request (a dropped speculation). */
+  signal?: AbortSignal
 }
 
 /**
@@ -167,7 +169,7 @@ export async function fetchRetrievalContext(
   client: SupabaseClient<Database>,
   params: FetchRetrievalParams,
 ): Promise<RetrievalRow[]> {
-  const { data, error } = await client.rpc('match_retrieval_context', {
+  let request = client.rpc('match_retrieval_context', {
     // halfvec arg: same stringified-array form as the stored column writes.
     query_embedding: JSON.stringify(params.queryVector) as unknown as never,
     p_board_id: params.boardId,
@@ -179,6 +181,8 @@ export async function fetchRetrievalContext(
     // non-nullable, so cast.
     p_live_node_ids: (params.liveNodeIds ?? null) as unknown as string[],
   })
+  if (params.signal) request = request.abortSignal(params.signal)
+  const { data, error } = await request
 
   if (error || !data) return []
   return data as RetrievalRow[]
