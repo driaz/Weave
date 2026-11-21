@@ -97,6 +97,8 @@ export interface ScribeTurnOptions {
   finalTimeoutMs?: number
   tokenTimeoutMs?: number
   lingerMs?: number
+  /** The running transcript (segments + latest partial) changed. */
+  onTextUpdate?: (text: string) => void
 }
 
 /** One user turn streamed to Scribe. Every method is safe to call in any state. */
@@ -136,6 +138,7 @@ export class ScribeTurn {
         noVerbatim: true,
         lingerMs: opts.lingerMs ?? STT_SCRIBE_LINGER_MS,
         onLateSegment: (text) => this.logLateSegment(text),
+        onTextUpdate: opts.onTextUpdate,
         createSocket: opts.createSocket,
         now: this.now,
       })
@@ -183,6 +186,11 @@ export class ScribeTurn {
       const message = errorText(err)
       return this.giveUp(message === 'final_timeout' ? 'timeout' : 'socket_error', message)
     }
+  }
+
+  /** The running transcript so far (segments + latest partial); '' when none. */
+  currentText(): string {
+    return this.stream?.currentText() ?? ''
   }
 
   /** Fields for the per-turn `voice.stt.source` log line. */
