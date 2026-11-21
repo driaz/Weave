@@ -195,7 +195,7 @@ describe('runConversationTurn — request body', () => {
     // No top-level automatic caching; request settings unchanged.
     expect(body).not.toHaveProperty('cache_control')
     expect(body).toMatchObject({
-      model: 'claude-opus-5',
+      model: 'claude-opus-5-5',
       max_tokens: 4096,
       thinking: { type: 'adaptive' },
       output_config: { effort: 'low' },

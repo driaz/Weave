@@ -9,7 +9,7 @@ import { buildSystemBlocks, type SystemBlocks } from './buildSystemPrompt'
 const PROXY_URL =
   (import.meta.env.VITE_CLAUDE_PROXY_URL as string | undefined) ??
   'https://weave-media.fly.dev/api/claude'
-const MODEL = 'claude-opus-5'
+const MODEL = 'claude-opus-5-5'
 const MAX_TOKENS = 4096
 
 export interface ConversationMessage {
