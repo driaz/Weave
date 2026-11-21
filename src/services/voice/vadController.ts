@@ -102,7 +102,7 @@ const VAD_PRE_ROLL_MS = 300
 interface NodeBandFetch {
   rows: RetrievalRow[]
   excludedNodeIds: string[]
-  timing: { wallMs: number; networkMs: number | null }
+  timing: { wallMs: number }
 }
 
 /** One speculative run: the inline embed and the node-band rows for it. */
@@ -117,24 +117,38 @@ interface SpeculativeRetrieval {
 }
 
 const RPC_PATH = '/rest/v1/rpc/match_retrieval_context'
+/** How long after the RPC resolves to look up its resource-timing entry. */
+const RPC_TIMING_LOOKUP_DELAY_MS = 500
+
+// Resource-timing durations of recent match_retrieval_context requests. An
+// observer, not the performance buffer: the buffer stops recording at 250
+// entries, which a long canvas session passes before voice starts.
+const rpcTimings: Array<{ start: number; duration: number }> = []
+let rpcObserver: PerformanceObserver | null = null
+
+function ensureRpcObserver(): void {
+  if (rpcObserver || typeof PerformanceObserver === 'undefined') return
+  try {
+    rpcObserver = new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) {
+        if (!e.name.includes(RPC_PATH)) continue
+        rpcTimings.push({ start: e.startTime, duration: e.duration })
+        if (rpcTimings.length > 20) rpcTimings.shift()
+      }
+    })
+    rpcObserver.observe({ type: 'resource' })
+  } catch {
+    rpcObserver = null
+  }
+}
 
 /**
- * Network duration of the latest match_retrieval_context request that
- * started at or after `since`, from resource timing. Null when the entry
- * isn't there (buffer full, or no resource timing).
+ * Network duration of the first match_retrieval_context request that
+ * started at or after `since`. Null when no entry was observed.
  */
 function rpcNetworkMs(since: number): number | null {
-  try {
-    const entries = performance.getEntriesByType('resource')
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i]
-      if (e.startTime < since - 1) break
-      if (e.name.includes(RPC_PATH)) return Math.round(e.duration)
-    }
-  } catch {
-    // no resource timing
-  }
-  return null
+  const hit = rpcTimings.find((t) => t.start >= since - 1)
+  return hit ? Math.round(hit.duration) : null
 }
 
 /**
@@ -788,7 +802,6 @@ export class VadController {
         // gap is time spent in the browser, not on the wire.
         speculative: Boolean(prefetched),
         rpcWallMs: timing.wallMs,
-        rpcNetworkMs: timing.networkMs,
         band: rows.map((r) => ({
           ref_id: r.ref_id,
           similarity: Number(r.similarity.toFixed(4)),
@@ -851,6 +864,12 @@ export class VadController {
 
     // RPC returns the FULL ranked band (threshold 0); the floor is applied
     // client-side in runNodeBand, so we can log the whole curve before cutting.
+    ensureRpcObserver()
+    const s0 = this.store.getState()
+    const corr = {
+      correlationId: s0.turnId ?? undefined,
+      parentCorrelationId: s0.sessionId ?? undefined,
+    }
     const startedAt = performance.now()
     const rows = await fetchRetrievalContext(client, {
       queryVector,
@@ -862,11 +881,20 @@ export class VadController {
       signal,
     })
     const wallMs = Math.round(performance.now() - startedAt)
-    return {
-      rows,
-      excludedNodeIds,
-      timing: { wallMs, networkMs: rpcNetworkMs(startedAt) },
-    }
+    // Wall-clock await vs the request's own network duration: the gap is time
+    // spent in the browser, not on the wire. The resource-timing entry reaches
+    // the observer after the response, so this logs a moment later.
+    const speculative = Boolean(signal)
+    setTimeout(() => {
+      if (signal?.aborted) return
+      this.logger.event(
+        'voice.retrieval.rpc_timing',
+        'success',
+        { speculative, wallMs, networkMs: rpcNetworkMs(startedAt) },
+        corr,
+      )
+    }, RPC_TIMING_LOOKUP_DELAY_MS)
+    return { rows, excludedNodeIds, timing: { wallMs } }
   }
 
   /**
