@@ -16,6 +16,10 @@ import { buildTtsStreamUpstreamBody, resolveTtsStreamModel, TTS_STREAM_MODELS } 
 import { buildCorsOptions } from './corsOptions.js'
 import { isUploadTooLarge, STT_BODY_LIMIT, sttMultipartOptions } from './sttLimits.js'
 import { registerSttTokenRoute } from './sttToken.js'
+import { registerAgentRecallRoute } from './agentRecall.js'
+import { supabaseRecallReads } from './agentRecallDeps.js'
+import { embedQueryText } from './embed.js'
+import { admin } from './supabase.js'
 
 const PORT = Number(process.env.PORT ?? 3000)
 
@@ -369,6 +373,16 @@ app.post('/api/stt', async (req, reply) => {
 registerSttTokenRoute(app, {
   verifyUserToken,
   getApiKey: () => process.env.ELEVENLABS_API_KEY,
+})
+
+registerAgentRecallRoute(app, {
+  getEnv: () => ({
+    enabled: process.env.AGENT_RECALL_ENABLED,
+    key: process.env.AGENT_RECALL_KEY,
+    boardId: process.env.AGENT_RECALL_BOARD_ID,
+  }),
+  embedQuery: embedQueryText,
+  ...supabaseRecallReads(admin),
 })
 
 await app.listen({ host: '0.0.0.0', port: PORT })
