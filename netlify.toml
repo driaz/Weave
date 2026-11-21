@@ -9,7 +9,7 @@
   timeout = 300
 
 [functions."generate-snapshot-narrative"]
-  timeout = 120
+  timeout = 300
 
 [[redirects]]
   from = "/*"

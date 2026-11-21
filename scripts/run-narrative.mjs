@@ -58,7 +58,7 @@ async function callClaude(userPrompt) {
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 2048,
+      max_tokens: 16000,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: userPrompt }],
     }),
@@ -68,9 +68,13 @@ async function callClaude(userPrompt) {
     return { text: null, error: `HTTP ${res.status}: ${body.slice(0, 200)}` }
   }
   const data = await res.json()
-  const text = data?.content?.[0]?.text
+  // Thinking is always on for STAGE2_MODEL: the reply is the text blocks, not content[0].
+  if (data?.stop_reason === 'refusal' || data?.stop_reason === 'max_tokens') {
+    return { text: null, error: `Stopped: ${data.stop_reason}` }
+  }
+  const text = (data?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim()
   if (!text) return { text: null, error: `Bad response: ${JSON.stringify(data).slice(0, 200)}` }
-  return { text: text.trim(), error: null }
+  return { text, error: null }
 }
 
 // Get snapshot_id from arg or fetch latest

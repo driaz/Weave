@@ -216,5 +216,5 @@ export default async (req: Request) => {
 
 export const config = {
   path: '/api/generate-snapshot-narrative',
-  timeoutSeconds: 120,
+  timeoutSeconds: 300,
 }

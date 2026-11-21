@@ -71,7 +71,9 @@ export const TITLE_PROMPT_TEMPLATE = `Below is a snapshot narrative. Find the ph
 ---
 
 `
-export const TITLE_MAX_TOKENS = 150
+// max_tokens is a ceiling on thinking plus reply, not a length target: the
+// stage-2 models always think, and thinking tokens count against it.
+export const TITLE_MAX_TOKENS = 4096
 export const TITLE_MAX_LENGTH = 64
-export const THEME_MAX_TOKENS = 1024
-export const NARRATIVE_MAX_TOKENS = 2048
+export const THEME_MAX_TOKENS = 16000
+export const NARRATIVE_MAX_TOKENS = 16000
