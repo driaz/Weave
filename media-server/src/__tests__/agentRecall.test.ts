@@ -9,6 +9,7 @@ import {
   buildRecallResponse,
   keysMatch,
   registerAgentRecallRoute,
+  titleKey,
   trimSnippet,
   type AgentRecallDeps,
   type AgentRecallRow,
@@ -29,8 +30,8 @@ const ROWS: AgentRecallRow[] = [
   { ref_id: 'n6', content: 'Below the floor, must not be returned.', similarity: 0.49 },
 ]
 const TITLES = new Map([
-  ['n1', 'Courage'],
-  ['n2', 'Long one'],
+  [titleKey(BOARD, 'n1'), 'Courage'],
+  [titleKey(BOARD, 'n2'), 'Long one'],
 ])
 
 function build(overrides: Partial<AgentRecallDeps> = {}, env: Partial<ReturnType<AgentRecallDeps['getEnv']>> = {}) {
@@ -123,6 +124,69 @@ describe('POST /api/agent-recall: validation and board scoping', () => {
   })
 })
 
+describe('POST /api/agent-recall: several boards', () => {
+  const bands: Record<string, AgentRecallRow[]> = {
+    [BOARD]: [
+      { ref_id: '1', content: 'Board A top node, long enough.', similarity: 0.7 },
+      { ref_id: '2', content: 'Board A second node, long enough.', similarity: 0.55 },
+    ],
+    [OTHER_BOARD]: [
+      { ref_id: '1', content: 'Board B top node, long enough.', similarity: 0.9 },
+      { ref_id: '2', content: 'Board B below the floor.', similarity: 0.4 },
+    ],
+  }
+  const titles = new Map([
+    [titleKey(BOARD, '1'), 'A one'],
+    [titleKey(OTHER_BOARD, '1'), 'B one'],
+  ])
+  const multi = () =>
+    build(
+      {
+        matchNodes: vi.fn(async ({ boardId }: { boardId: string }) => bands[boardId] ?? []),
+        fetchTitles: vi.fn(async () => titles),
+      },
+      { boardId: ` ${BOARD}, ${OTHER_BOARD.toUpperCase()},${BOARD} ` },
+    )
+
+  it('searches each board once and merges the bands by similarity', async () => {
+    const { deps, post } = multi()
+    const res = await post({ query: 'courage' })
+    expect(res.statusCode).toBe(200)
+    expect(deps.matchNodes).toHaveBeenCalledTimes(2)
+    expect(deps.fetchTitles).toHaveBeenCalledWith([BOARD, OTHER_BOARD], expect.any(AbortSignal))
+    // Node id '1' exists on both boards; each keeps its own title.
+    expect((res.json() as { results: unknown[] }).results).toEqual([
+      { title: 'B one', snippet: 'Board B top node, long enough.', similarity: 0.9 },
+      { title: 'A one', snippet: 'Board A top node, long enough.', similarity: 0.7 },
+      { title: null, snippet: 'Board A second node, long enough.', similarity: 0.55 },
+    ])
+  })
+
+  it('a boardId in the body narrows the search to that board', async () => {
+    const { deps, post } = multi()
+    await post({ query: 'courage', boardId: OTHER_BOARD })
+    expect(deps.matchNodes).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails the request if any board fails', async () => {
+    const { post } = build(
+      {
+        matchNodes: async ({ boardId }) => {
+          if (boardId === OTHER_BOARD) throw new Error('bad')
+          return ROWS
+        },
+      },
+      { boardId: `${BOARD},${OTHER_BOARD}` },
+    )
+    expect((await post({ query: 'courage' })).statusCode).toBe(502)
+  })
+
+  it('is 500 for a malformed env list', async () => {
+    const { post } = build({}, { boardId: `${BOARD},nope` })
+    expect((await post({ query: 'courage' })).statusCode).toBe(500)
+  })
+})
+
 describe('POST /api/agent-recall: response shape', () => {
   it('returns the top 5 above the floor as title, snippet, similarity', async () => {
     const { deps, post } = build()
@@ -171,11 +235,12 @@ describe('POST /api/agent-recall: response shape', () => {
 
   it('keeps the whole response under the budget with five maximal results', () => {
     const rows = Array.from({ length: 6 }, (_, i) => ({
+      boardId: BOARD,
       ref_id: `n${i}`,
       content: '"\n'.repeat(2000),
       similarity: 0.9 - i * 0.01,
     }))
-    const titles = new Map(rows.map((r) => [r.ref_id, 'T'.repeat(500)]))
+    const titles = new Map(rows.map((r) => [titleKey(BOARD, r.ref_id), 'T'.repeat(500)]))
     const body = buildRecallResponse(rows, titles)
     expect(JSON.stringify(body).length).toBeLessThanOrEqual(AGENT_RECALL_RESPONSE_MAX_CHARS)
     expect(body.results.length).toBeGreaterThan(0)
@@ -247,7 +312,7 @@ describe('read-only path', () => {
         return {
           select(cols: string) {
             calls.push(`select:${table}:${cols}`)
-            return { eq: () => result([{ title: 'Courage', client_id: 'n1' }]) }
+            return { in: () => result([{ title: 'Courage', board_id: BOARD, client_id: 'n1' }]) }
           },
           insert: writer('insert'),
           upsert: writer('upsert'),
@@ -268,7 +333,7 @@ describe('read-only path', () => {
 
     expect([...calls].sort()).toEqual([
       'rpc:match_retrieval_context',
-      'select:nodes:title, client_id:data->>_clientNodeId',
+      'select:nodes:title, board_id, client_id:data->>_clientNodeId',
     ])
     // Same arguments as fetchRetrievalContext, minus an anchor edge.
     expect(rpcArgs[0]).toEqual({
@@ -284,7 +349,7 @@ describe('read-only path', () => {
   it('surfaces an RPC error as a failure rather than an empty result', async () => {
     const client = {
       rpc: () => ({ abortSignal: async () => ({ data: null, error: { message: 'bad' } }) }),
-      from: () => ({ select: () => ({ eq: () => ({ abortSignal: async () => ({ data: [], error: null }) }) }) }),
+      from: () => ({ select: () => ({ in: () => ({ abortSignal: async () => ({ data: [], error: null }) }) }) }),
     } as unknown as SupabaseClient
     const { post } = build(supabaseRecallReads(client))
     expect((await post({ query: 'courage' })).statusCode).toBe(502)

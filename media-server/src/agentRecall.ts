@@ -17,6 +17,7 @@ export const AGENT_RECALL_SNIPPET_MAX_CHARS = 600
 export const AGENT_RECALL_RESPONSE_MAX_CHARS = 4000
 export const AGENT_RECALL_TIMEOUT_MS = 5000
 const QUERY_MAX_CHARS = 2000
+const MAX_BOARDS = 20
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The match_retrieval_context columns this route reads (migration 038). */
@@ -24,6 +25,16 @@ export interface AgentRecallRow {
   ref_id: string
   content: string
   similarity: number
+}
+
+/** A row tagged with the board it came from; client node ids are only unique within a board. */
+export interface BoardRecallRow extends AgentRecallRow {
+  boardId: string
+}
+
+/** Key for the titles map. */
+export function titleKey(boardId: string, nodeId: string): string {
+  return `${boardId}:${nodeId}`
 }
 
 export interface AgentRecallResult {
@@ -41,8 +52,8 @@ export interface AgentRecallDeps {
     args: { queryVector: number[]; boardId: string; cap: number },
     signal: AbortSignal,
   ) => Promise<AgentRecallRow[]>
-  /** Client node id → title for one board. Throws on a query error. */
-  fetchTitles: (boardId: string, signal: AbortSignal) => Promise<Map<string, string>>
+  /** `titleKey(boardId, clientNodeId)` → title for the given boards. Throws on a query error. */
+  fetchTitles: (boardIds: string[], signal: AbortSignal) => Promise<Map<string, string>>
   timeoutMs?: number
 }
 
@@ -92,16 +103,22 @@ export function trimSnippet(text: string, max: number = AGENT_RECALL_SNIPPET_MAX
   return `${clipped.trimEnd()}…`
 }
 
-/** Floor, top N, trim, then drop trailing results until the JSON fits the budget. */
+/**
+ * Rank across boards, floor, top N, trim, then drop trailing results until
+ * the JSON fits the budget. With one board the sort is a no-op (the RPC
+ * already returns its band ranked); with several, each board's band is
+ * scored against the same query vector, so similarities compare directly.
+ */
 export function buildRecallResponse(
-  rows: AgentRecallRow[],
+  rows: BoardRecallRow[],
   titles: Map<string, string>,
 ): { results: AgentRecallResult[] } {
-  const results = rows
+  const results = [...rows]
+    .sort((a, b) => b.similarity - a.similarity)
     .filter((r) => r.similarity >= AGENT_RECALL_FLOOR)
     .slice(0, AGENT_RECALL_TOP_N)
     .map((r) => ({
-      title: titles.get(r.ref_id)?.trim().slice(0, 200) || null,
+      title: titles.get(titleKey(r.boardId, r.ref_id))?.trim().slice(0, 200) || null,
       snippet: trimSnippet(r.content),
       similarity: Number(r.similarity.toFixed(4)),
     }))
@@ -114,6 +131,8 @@ export function buildRecallResponse(
 /**
  * POST /api/agent-recall, body `{ query, boardId? }`. 404 unless
  * AGENT_RECALL_ENABLED=1; 401 without a matching X-Agent-Recall-Key.
+ * AGENT_RECALL_BOARD_ID may be a comma-separated list: each board is
+ * searched with the same RPC and the bands are merged by similarity.
  */
 export function registerAgentRecallRoute(app: FastifyInstance, deps: AgentRecallDeps): void {
   app.post('/api/agent-recall', async (req, reply) => {
@@ -134,11 +153,23 @@ export function registerAgentRecallRoute(app: FastifyInstance, deps: AgentRecall
     if (body.boardId !== undefined && typeof body.boardId !== 'string') {
       return reply.code(400).send({ error: 'boardId must be a string' })
     }
-    const boardId = body.boardId || env.boardId
-    if (!boardId) {
+    const fromBody = Boolean(body.boardId)
+    const boardIds = [
+      ...new Set(
+        (body.boardId || env.boardId || '')
+          .split(',')
+          .map((id) => id.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ]
+    if (boardIds.length === 0) {
       return reply.code(500).send({ error: 'AGENT_RECALL_BOARD_ID not configured' })
     }
-    if (!UUID_RE.test(boardId)) return reply.code(400).send({ error: 'boardId must be a uuid' })
+    if (boardIds.length > MAX_BOARDS || !boardIds.every((id) => UUID_RE.test(id))) {
+      return fromBody
+        ? reply.code(400).send({ error: `boardId must be 1-${MAX_BOARDS} uuids` })
+        : reply.code(500).send({ error: 'AGENT_RECALL_BOARD_ID is not a list of uuids' })
+    }
 
     const timeoutMs = deps.timeoutMs ?? AGENT_RECALL_TIMEOUT_MS
     const startedAt = Date.now()
@@ -148,7 +179,7 @@ export function registerAgentRecallRoute(app: FastifyInstance, deps: AgentRecall
 
     // Titles are decoration, fetched alongside the embed so they add no wall
     // time; a failure degrades to null titles rather than failing the recall.
-    const titlesPromise = withTimeout(timeoutMs, (signal) => deps.fetchTitles(boardId, signal)).catch(
+    const titlesPromise = withTimeout(timeoutMs, (signal) => deps.fetchTitles(boardIds, signal)).catch(
       (err: unknown) => {
         req.log.warn({ event: 'agent_recall.titles_failed', err: String(err) }, 'agent_recall.titles_failed')
         return new Map<string, string>()
@@ -161,21 +192,28 @@ export function registerAgentRecallRoute(app: FastifyInstance, deps: AgentRecall
 
       phase = 'rpc'
       const rpcStartedAt = Date.now()
-      const rows = await withTimeout(timeoutMs, (signal) =>
-        deps.matchNodes({ queryVector, boardId, cap: AGENT_RECALL_RPC_CAP }, signal),
+      // One RPC per board, in parallel, under a single timeout.
+      const bands = await withTimeout(timeoutMs, (signal) =>
+        Promise.all(
+          boardIds.map(async (boardId) => {
+            const band = await deps.matchNodes({ queryVector, boardId, cap: AGENT_RECALL_RPC_CAP }, signal)
+            return band.map((r) => ({ ...r, boardId }))
+          }),
+        ),
       )
+      const rows = bands.flat()
       rpcMs = Date.now() - rpcStartedAt
 
       const response = buildRecallResponse(rows, await titlesPromise)
       req.log.info(
         {
           event: 'agent_recall.completed',
-          boardId,
+          boardIds,
           queryChars: query.length,
           embedMs,
           rpcMs,
           totalMs: Date.now() - startedAt,
-          band: rows.map((r) => Number(r.similarity.toFixed(4))),
+          band: rows.map((r) => Number(r.similarity.toFixed(4))).sort((a, b) => b - a),
           returned: response.results.length,
         },
         'agent_recall.completed',
@@ -186,7 +224,7 @@ export function registerAgentRecallRoute(app: FastifyInstance, deps: AgentRecall
       req.log.error(
         {
           event: 'agent_recall.error',
-          boardId,
+          boardIds,
           phase,
           timedOut,
           embedMs,

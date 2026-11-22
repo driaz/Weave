@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { AgentRecallDeps, AgentRecallRow } from './agentRecall.js'
+import { titleKey, type AgentRecallDeps, type AgentRecallRow } from './agentRecall.js'
 
 /**
  * The two Supabase reads behind /api/agent-recall. Kept apart from the
@@ -29,16 +29,17 @@ export function supabaseRecallReads(
       return (data ?? []) as AgentRecallRow[]
     },
 
-    async fetchTitles(boardId, signal) {
+    async fetchTitles(boardIds, signal) {
       const { data, error } = await client
         .from('nodes')
-        .select('title, client_id:data->>_clientNodeId')
-        .eq('board_id', boardId)
+        .select('title, board_id, client_id:data->>_clientNodeId')
+        .in('board_id', boardIds)
         .abortSignal(signal)
       if (error) throw new Error(`nodes titles: ${error.message}`)
       const titles = new Map<string, string>()
-      for (const row of (data ?? []) as unknown as { title: string | null; client_id: string | null }[]) {
-        if (row.client_id && row.title) titles.set(row.client_id, row.title)
+      type Row = { title: string | null; board_id: string; client_id: string | null }
+      for (const row of (data ?? []) as unknown as Row[]) {
+        if (row.client_id && row.title) titles.set(titleKey(row.board_id, row.client_id), row.title)
       }
       return titles
     },
