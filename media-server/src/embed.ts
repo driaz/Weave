@@ -52,3 +52,20 @@ export async function embedMultimodal(input: MultimodalEmbedInput): Promise<numb
   if (!vec) throw new Error('embedMultimodal: no embedding returned')
   return vec
 }
+
+/**
+ * Embed a retrieval query. Same model, task type and (default 3072) dims
+ * as `embedText` in src/services/embeddingService.ts, so the vector is
+ * comparable with stored node embeddings. No retry: the caller is
+ * latency-bound and applies its own timeout through `signal`.
+ */
+export async function embedQueryText(text: string, signal?: AbortSignal): Promise<number[]> {
+  const res = await ai.models.embedContent({
+    model: MODEL,
+    contents: { parts: [{ text }] },
+    config: { taskType: 'SEMANTIC_SIMILARITY', abortSignal: signal },
+  })
+  const vec = res.embeddings?.[0]?.values
+  if (!vec) throw new Error('embedQueryText: no embedding returned')
+  return vec
+}
